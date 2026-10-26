@@ -131,6 +131,8 @@ pub enum EndReason {
     PeerLost,
     /// A message did not match the session state.
     ProtocolError,
+    /// A new handoff of the same device ended this session (FLOW-6).
+    NewHandoff,
 }
 
 /// The latest pointer position, on the unreliable channel (NET-2).

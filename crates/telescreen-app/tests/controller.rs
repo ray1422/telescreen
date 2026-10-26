@@ -13,7 +13,7 @@ use telescreen_app::controller::{
 };
 use telescreen_core::config::Config;
 use telescreen_core::driver::{OperationKind, Outcome};
-use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::input::InputEvent;
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{
@@ -23,7 +23,7 @@ use telescreen_core::platform::{
 use telescreen_core::pointer::{Normalized, Point, Rect};
 use telescreen_core::session::VideoInput;
 use telescreen_core::session::source::HandoffResult;
-use telescreen_core::wire::EndReason;
+use telescreen_core::wire::{EndReason, Message, RefuseReason};
 use telescreen_transport::{NetCommand, NetEvent};
 use telescreen_view::{Intent, Matching, PromptPresenter, PromptScreen, SessionPhase};
 
@@ -61,6 +61,15 @@ fn config() -> Config {
             "pc2": {
                 "endpoint": {"host": "pc2.test", "port": 24800},
                 "devices": {"Screen": {"id": "shared-lg", "input-target": op("target")}}
+            },
+            "pc3": {
+                "endpoint": {"host": "pc3.test", "port": 24800},
+                "devices": {
+                    "Screen": {
+                        "id": "shared-lg",
+                        "handoff": {"pc1": {"steps": [op("to-pc1")]}}
+                    }
+                }
             }
         }
     }))
@@ -299,14 +308,24 @@ impl World {
                         } => {
                             // Only the external display matches.
                             let token = request.portal.unwrap().display_token.unwrap();
-                            JobOutput::Operation(Ok(Outcome::Matched(token.0 == "lg")))
+                            JobOutput::Operation(Ok(Outcome::Matched(
+                                token.0 == "lg" || token.0 == "HDMI-A-2",
+                            )))
                         }
                         Job::Operation {
                             kind: OperationKind::InputTarget,
+                            request,
                             ..
-                        } => JobOutput::Operation(Ok(Outcome::Display(DisplayToken::from(
-                            "HDMI-A-2",
-                        )))),
+                        } => {
+                            // The external display of the receiving computer.
+                            let token = request
+                                .displays
+                                .iter()
+                                .map(|d| d.token.clone())
+                                .find(|t| t.0 == "lg" || t.0 == "HDMI-A-2")
+                                .unwrap();
+                            JobOutput::Operation(Ok(Outcome::Display(token)))
+                        }
                         Job::Operation { .. } => JobOutput::Operation(Err("unexpected".into())),
                         Job::Handoff { .. } => JobOutput::Handoff {
                             result: self.handoff,
@@ -616,6 +635,66 @@ fn ac23_target_disconnects() {
         })
     );
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+}
+
+#[test]
+fn flow6_reverse_handoff_ends_the_old_session() {
+    // Hardware test 2026-10-27: Mac to Linux forwarded, then a click in the Linux
+    // portal started Linux to Mac. Both sessions forwarded, and the input looped.
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::Input(key(56, true)));
+    w.pump();
+    w.pc1
+        .controller
+        .open_portal(display("HDMI-A-2", 0.0, 2048.0), vec![]);
+    w.pump();
+    w.pc1.controller.start_handoff(ComputerId::from("mac"));
+    w.pump();
+    assert_eq!(
+        w.phase(),
+        Some(SessionPhase::Ended {
+            reason: "a new handoff of this display started".into()
+        })
+    );
+    assert!(
+        w.mac.log.borrow().capture.contains(&"disarm".to_string()),
+        "the Mac stops capture"
+    );
+    assert_eq!(
+        w.pc1.log.borrow().injected.last(),
+        Some(&key(56, false)),
+        "Linux releases the held key"
+    );
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert_eq!(w.mac.controller.control_screen().incoming.len(), 1);
+}
+
+#[test]
+fn ac20_second_source_gets_busy() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let pc3 = ComputerId::from("pc3");
+    w.pc1.controller.on_net(
+        NetEvent::Message {
+            peer: pc3.clone(),
+            message: Message::RequestSession {
+                device: DeviceId::from("shared-lg"),
+            },
+        },
+        w.now,
+    );
+    let refused = w.pc1.log.borrow().net.iter().any(|c| {
+        matches!(c, NetCommand::Send { peer, message: Message::SessionRefused { reason: RefuseReason::Busy, .. } } if *peer == pc3)
+    });
+    assert!(refused, "pc3 gets Busy");
+    assert_eq!(
+        w.phase(),
+        Some(SessionPhase::Forwarding),
+        "the Mac keeps its session"
+    );
 }
 
 #[test]

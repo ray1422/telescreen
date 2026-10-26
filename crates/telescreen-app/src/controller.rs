@@ -525,6 +525,8 @@ impl Controller {
         let Some(device) = self.portal_device() else {
             return;
         };
+        // FLOW-6: stop each old input stream of this device first, in both roles.
+        self.end_device_sessions(&device.id);
         let (session, actions) = SourceSession::start(target, device.id);
         if let Some(portal) = self.portal.as_mut() {
             portal.session = Some(session);
@@ -551,16 +553,34 @@ impl Controller {
         if let Capability::Missing(reason) = &self.ports.capabilities.suppress {
             return Some(format!("input suppress: {reason}"));
         }
-        if !self.connected.contains(target) {
-            return Some("offline".into());
-        }
-        let busy = self
+        (!self.connected.contains(target)).then(|| "offline".into())
+    }
+
+    /// Ends the unfinished session of the portal if it uses this device.
+    fn end_portal_session_of(&mut self, device: &DeviceId) {
+        let active = self
             .portal
-            .as_ref()?
-            .session
             .as_ref()
-            .is_some_and(|s| !s.is_finished());
-        busy.then(|| "a session is active".into())
+            .and_then(|p| p.session.as_ref())
+            .is_some_and(|s| !s.is_finished() && s.device() == device);
+        if active {
+            self.end_portal_session(EndReason::NewHandoff);
+        }
+    }
+
+    /// Ends each unfinished session of this device: the session of the portal and
+    /// the sessions where this computer is the target. It releases the held state.
+    fn end_device_sessions(&mut self, device: &DeviceId) {
+        self.end_portal_session_of(device);
+        let incoming: Vec<_> = self
+            .incoming
+            .iter()
+            .filter(|(_, t)| !t.is_finished() && t.device() == device)
+            .map(|(s, _)| *s)
+            .collect();
+        for session in incoming {
+            self.end_incoming(session, EndReason::NewHandoff);
+        }
     }
 
     fn run_source_actions(&mut self, actions: Vec<SourceAction>) {
@@ -884,6 +904,9 @@ impl Controller {
         {
             return self.refuse(peer, device_id, RefuseReason::NoInjection);
         }
+        // FLOW-6: a new handoff of this device ends the session of the local
+        // portal. A session of a different source keeps its lease (AC-20).
+        self.end_portal_session_of(&device_id);
         let session = match self.leases.acquire(&device_id, &peer) {
             Ok(session) => session,
             Err(_) => return self.refuse(peer, device_id, RefuseReason::Busy),
@@ -1322,6 +1345,7 @@ fn end_text(reason: EndReason) -> &'static str {
         EndReason::PermissionLost => "a permission is missing",
         EndReason::PeerLost => "connection lost",
         EndReason::ProtocolError => "protocol error",
+        EndReason::NewHandoff => "a new handoff of this display started",
     }
 }
 
