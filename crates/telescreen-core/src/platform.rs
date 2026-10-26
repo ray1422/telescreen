@@ -54,18 +54,16 @@ pub trait Injector {
 /// and pushes it to a bounded queue (IN-2).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CapturedEvent {
+    /// A key, button, or scroll event that the capture suppressed (its route is
+    /// `Forward`, see [`crate::key_route`]).
     Input(InputEvent),
-    /// A relative pointer motion in logical pixels, while the cursor is frozen.
-    Motion {
-        dx: f64,
-        dy: f64,
-    },
-    /// While armed and not forwarding: the pointer is in the portal (FLOW-14).
-    PointerEntered {
-        at: Point,
-    },
-    /// The pointer left the portal by a way that the capture does not control, for
-    /// example a focus change that ended the pointer lock (FLOW-14).
+    /// While forwarding: the latest cursor position in the portal, in local
+    /// desktop logical coordinates. The capture merges motions, so that a fast
+    /// motion does not fill the queue.
+    PointerMoved { at: Point },
+    /// The cursor came into the portal, at this position (FLOW-14).
+    PointerEntered { at: Point },
+    /// The cursor left the portal (FLOW-14).
     PointerLeft,
     /// The release shortcut (IN-7). It is never forwarded.
     ReleaseShortcut,
@@ -91,18 +89,25 @@ pub struct InputCapabilities {
     pub inject: Capability,
 }
 
-/// Input capture on the source (FLOW-13, FLOW-14, IN-1, IN-2). The capture sends
-/// [`CapturedEvent`]s to the app through a bounded queue.
+/// Input capture on the source (FLOW-13, FLOW-14, FLOW-20, IN-1, IN-2). The
+/// capture sends [`CapturedEvent`]s to the app through a bounded queue.
+///
+/// The cursor is always free: the capture never freezes, locks, or hides it, and
+/// it never suppresses pointer motion (FLOW-20).
 pub trait InputCapture {
-    /// Watches the pointer with no suppression. Reports `PointerEntered` when the
-    /// pointer is in `portal`, also at once if it is there now.
+    /// Watches the cursor with no suppression, for the portal area `portal`.
+    /// Reports `PointerEntered` and `PointerLeft` at each crossing of the portal
+    /// edge, and `PointerEntered` at once if the cursor is in the portal now. A
+    /// second call replaces the portal area (AC-8).
     fn arm(&mut self, portal: Rect) -> Result<(), PlatformError>;
-    /// Freezes the cursor, suppresses all input, and reports it. Returns the cursor
-    /// position, where the virtual pointer starts.
-    fn forward(&mut self) -> Result<Point, PlatformError>;
-    /// Stops suppression and shows the cursor, at `at` if given. Stays armed.
-    fn pause(&mut self, at: Option<Point>);
-    /// Stops all capture. Local input and the cursor come back.
+    /// Starts forwarding. From now on, while the cursor is in the portal, the
+    /// capture suppresses key, button, scroll, and gesture events and reports
+    /// them, and it reports `PointerMoved`. Outside the portal it lets all input
+    /// through. It uses [`crate::key_route::KeyRoutes`], so that each up event
+    /// goes where its down event went (IN-3). Forwarding continues across each
+    /// leave and entry, until `disarm`.
+    fn forward(&mut self) -> Result<(), PlatformError>;
+    /// Stops all capture. Local input comes back.
     fn disarm(&mut self);
     /// The main loop calls this on each turn. A capture with a watchdog stops
     /// suppression when the heartbeat stops (IN-9).

@@ -8,6 +8,7 @@ pub mod config;
 pub mod driver;
 pub mod ids;
 pub mod input;
+pub mod key_route;
 pub mod keys;
 pub mod platform;
 pub mod pointer;

@@ -9,7 +9,7 @@ use telescreen_platform_macos::capture::MacCapture;
 use telescreen_platform_macos::displays::{self, MacDisplays};
 use telescreen_platform_macos::inject::MacInjector;
 use telescreen_platform_macos::window;
-use winit::event::{DeviceEvent, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::EventLoopProxy;
 use winit::monitor::MonitorHandle;
 use winit::platform::macos::{MonitorHandleExtMacOS, WindowAttributesExtMacOS};
@@ -37,14 +37,11 @@ impl InputCapture for NoCapture {
             self.0.clone(),
         ))
     }
-    fn forward(
-        &mut self,
-    ) -> Result<telescreen_core::pointer::Point, telescreen_core::platform::PlatformError> {
+    fn forward(&mut self) -> Result<(), telescreen_core::platform::PlatformError> {
         Err(telescreen_core::platform::PlatformError::Permission(
             self.0.clone(),
         ))
     }
-    fn pause(&mut self, _: Option<telescreen_core::pointer::Point>) {}
     fn disarm(&mut self) {}
 }
 
@@ -150,10 +147,6 @@ impl Hooks {
 
     /// The event tap captures the input, not the window.
     pub(crate) fn portal_window_event(&mut self, _: &WindowEvent) -> bool {
-        false
-    }
-
-    pub(crate) fn device_event(&mut self, _: &DeviceEvent) -> bool {
         false
     }
 }

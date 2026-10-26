@@ -14,7 +14,7 @@ use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
 use telescreen_core::platform::{
     Capability, CapturedEvent, DisplayInfo, Displays, Injector, InputCapabilities, InputCapture,
 };
-use telescreen_core::pointer::{self, Motion, Point, Rect};
+use telescreen_core::pointer::{self, Point, Rect};
 use telescreen_core::routes;
 use telescreen_core::session::lease::LeaseTable;
 use telescreen_core::session::source::{HandoffResult, SourceAction, SourcePhase, SourceSession};
@@ -161,7 +161,6 @@ struct Portal {
     id: u64,
     display: DisplayInfo,
     bounds: Rect,
-    others: Vec<Rect>,
     focused: bool,
     matching: Matching,
     match_pending: usize,
@@ -170,7 +169,6 @@ struct Portal {
     device: Option<String>,
     session: Option<SourceSession>,
     pointer: Point,
-    warp_on_pause: Option<Point>,
     notice: Option<String>,
 }
 
@@ -328,9 +326,8 @@ impl Controller {
 
     // ----- Portal and source side -----
 
-    /// The user opened a portal on a display. `others` are the bounds of the other
-    /// local displays (for the pause edges, FLOW-14). Starts `portal-match` (FLOW-2).
-    pub fn open_portal(&mut self, display: DisplayInfo, others: Vec<Rect>) {
+    /// The user opened a portal on a display. Starts `portal-match` (FLOW-2).
+    pub fn open_portal(&mut self, display: DisplayInfo) {
         self.close_portal(EndReason::SourceClosed);
         let Some(bounds) = display.bounds else {
             self.notice(
@@ -344,7 +341,6 @@ impl Controller {
             id,
             display,
             bounds,
-            others,
             focused: true,
             matching: Matching::Evaluating,
             match_pending: 0,
@@ -353,7 +349,6 @@ impl Controller {
             device: None,
             session: None,
             pointer: Point::default(),
-            warp_on_pause: None,
             notice: None,
         });
         self.evaluate_portal_match();
@@ -361,7 +356,7 @@ impl Controller {
 
     /// The portal moved to a different display, or the display topology changed
     /// (FLOW-4). The old device binding does not apply.
-    pub fn portal_display_changed(&mut self, display: DisplayInfo, others: Vec<Rect>) {
+    pub fn portal_display_changed(&mut self, display: DisplayInfo) {
         self.end_portal_session(EndReason::PortalGone);
         let Some(portal) = self.portal.as_mut() else {
             return;
@@ -372,7 +367,6 @@ impl Controller {
         };
         portal.display = display;
         portal.bounds = bounds;
-        portal.others = others;
         portal.device = None;
         self.evaluate_portal_match();
     }
@@ -629,12 +623,7 @@ impl Controller {
                 }
                 SourceAction::RunHandoff => self.run_handoff(),
                 SourceAction::StartForwarding => match self.ports.capture.forward() {
-                    Ok(at) => {
-                        if let Some(portal) = self.portal.as_mut() {
-                            portal.pointer = portal.bounds.clamp(at);
-                        }
-                        self.send_pointer();
-                    }
+                    Ok(()) => self.send_pointer(),
                     Err(e) => {
                         self.notice(format!("Input capture failed: {e}"));
                         let actions = self.end_actions(EndReason::PermissionLost);
@@ -642,10 +631,8 @@ impl Controller {
                         return;
                     }
                 },
-                SourceAction::StopForwarding => {
-                    let at = portal.warp_on_pause.take();
-                    self.ports.capture.pause(at);
-                }
+                // The capture lets input through outside the portal (FLOW-20).
+                SourceAction::StopForwarding => {}
             }
         }
         let finished = self
@@ -735,21 +722,12 @@ impl Controller {
         };
         let actions = match event {
             CapturedEvent::Input(input) => session.on_input(input),
-            CapturedEvent::Motion { dx, dy } => {
-                if session.phase() != SourcePhase::Forwarding {
-                    return;
+            CapturedEvent::PointerMoved { at } => {
+                portal.pointer = portal.bounds.clamp(at);
+                if session.phase() == SourcePhase::Forwarding {
+                    self.send_pointer();
                 }
-                match pointer::step(portal.bounds, &portal.others, portal.pointer, dx, dy) {
-                    Motion::Inside(at) => {
-                        portal.pointer = at;
-                        self.send_pointer();
-                        return;
-                    }
-                    Motion::Exit(at) => {
-                        portal.warp_on_pause = Some(at);
-                        session.set_pointer_inside(false)
-                    }
-                }
+                return;
             }
             CapturedEvent::PointerEntered { at } => {
                 portal.pointer = portal.bounds.clamp(at);
@@ -1205,12 +1183,7 @@ impl Controller {
                 Some(display) => {
                     let changed = self.portal.as_ref().is_some_and(|p| p.display != display);
                     if changed {
-                        let others = displays
-                            .iter()
-                            .filter(|d| d.token != token)
-                            .filter_map(|d| d.bounds)
-                            .collect();
-                        self.portal_display_changed(display, others);
+                        self.portal_display_changed(display);
                     }
                 }
             }
@@ -1228,14 +1201,6 @@ impl Controller {
     }
 
     /// The bounds of all displays except the one with this token.
-    pub fn other_display_bounds(&self, token: &telescreen_core::ids::DisplayToken) -> Vec<Rect> {
-        self.display_cache
-            .iter()
-            .filter(|d| &d.token != token)
-            .filter_map(|d| d.bounds)
-            .collect()
-    }
-
     pub fn has_portal(&self) -> bool {
         self.portal.is_some()
     }

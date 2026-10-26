@@ -1,4 +1,4 @@
-//! Pointer mapping (IN-11) and the source virtual pointer (FLOW-14, FLOW-15, ADR 0003).
+//! Pointer mapping (IN-11).
 //!
 //! All coordinates are local desktop logical coordinates: the origin is at the
 //! top-left, x increases to the right, y increases downward, and negative values
@@ -72,34 +72,5 @@ pub fn denormalize(area: Rect, n: Normalized) -> Point {
     Point {
         x: area.x + nx * span(area.width),
         y: area.y + ny * span(area.height),
-    }
-}
-
-/// The result of one relative motion of the virtual pointer in the portal.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Motion {
-    /// The pointer stays in the portal at this point.
-    Inside(Point),
-    /// The pointer leaves the portal into an adjacent local display at this point.
-    /// The source pauses forwarding (FLOW-14).
-    Exit(Point),
-}
-
-/// Moves the virtual pointer by a relative motion.
-///
-/// If the new point is in the portal, the pointer stays inside. If the new point is
-/// in one of the other local displays, the pointer exits there (FLOW-14). Else the
-/// portal edge stops the pointer (FLOW-15).
-pub fn step(portal: Rect, others: &[Rect], from: Point, dx: f64, dy: f64) -> Motion {
-    let to = Point {
-        x: from.x + dx,
-        y: from.y + dy,
-    };
-    if portal.contains(to) {
-        Motion::Inside(to)
-    } else if others.iter().any(|d| d.contains(to)) {
-        Motion::Exit(to)
-    } else {
-        Motion::Inside(portal.clamp(to))
     }
 }

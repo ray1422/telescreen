@@ -1,9 +1,10 @@
 //! Linux (Wayland) parts of the window layer (ADR 0006, UI-6).
 //!
-//! The capture on Linux is the portal window itself: while forwarding it locks the
-//! pointer, reads relative motion, and inhibits compositor shortcuts. Wayland does
-//! not let a client move the pointer, so a pause unlocks the pointer with a
-//! position hint at the portal edge. Not tested on hardware yet.
+//! The capture on Linux is the portal window itself. The cursor is always free
+//! (FLOW-20): the portal does not lock or hide it. While forwarding, the portal
+//! inhibits compositor shortcuts and forwards the input that [`KeyRoutes`] sends
+//! to the target. Pointer enter and leave of the window give the pause. Not tested
+//! on hardware yet.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -13,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use telescreen_core::ids::DisplayToken;
 use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::key_route::{KeyRoutes, Route};
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
 use telescreen_core::pointer::{Point, Rect};
@@ -20,13 +22,12 @@ use telescreen_platform_linux::displays::LinuxDisplays;
 use telescreen_platform_linux::inhibit::ShortcutInhibitor;
 use telescreen_platform_linux::inject::LinuxInjector;
 use telescreen_platform_linux::prompt::LayerPrompt;
-use winit::dpi::LogicalPosition;
-use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::monitor::MonitorHandle;
 use winit::platform::scancode::PhysicalKeyExtScancode;
-use winit::window::{CursorGrabMode, Window, WindowAttributes};
+use winit::window::{Window, WindowAttributes};
 
 use super::prompt_queue::{PromptQueue, PromptRequest};
 use super::{Parts, UserEvent};
@@ -51,34 +52,87 @@ struct CaptureState {
     portal: Rect,
     /// The last cursor position in the window, in logical pixels.
     cursor: Option<Point>,
+    /// The cursor is in the portal window, and the window has the keyboard focus.
     inside: bool,
     inhibitor: Option<ShortcutInhibitor>,
     modifiers: ModifiersState,
     escapes: VecDeque<Instant>,
+    /// Where each key and button that is down went (IN-3).
+    routes: KeyRoutes,
     events: Vec<CapturedEvent>,
+}
+
+impl CaptureState {
+    fn global(&self, local: Point) -> Point {
+        Point {
+            x: self.portal.x + local.x,
+            y: self.portal.y + local.y,
+        }
+    }
+
+    fn cursor_global(&self) -> Point {
+        self.global(self.cursor.unwrap_or_default())
+    }
+
+    fn forward_now(&self) -> bool {
+        self.mode == Mode::Forwarding && self.inside
+    }
+
+    /// Reports the latest cursor position while forwarding. Merges motions.
+    fn report_position(&mut self) {
+        if !self.forward_now() {
+            return;
+        }
+        let at = self.cursor_global();
+        if let Some(CapturedEvent::PointerMoved { at: last }) = self.events.last_mut() {
+            *last = at;
+        } else {
+            self.events.push(CapturedEvent::PointerMoved { at });
+        }
+    }
+
+    fn set_inside(&mut self, inside: bool) {
+        if inside == self.inside {
+            return;
+        }
+        self.inside = inside;
+        if self.mode == Mode::Off {
+            return;
+        }
+        let event = if inside {
+            CapturedEvent::PointerEntered {
+                at: self.cursor_global(),
+            }
+        } else {
+            CapturedEvent::PointerLeft
+        };
+        self.events.push(event);
+        self.report_position();
+    }
+
+    /// Routes one input event (IN-3). Reports it and returns true if it goes to
+    /// the target.
+    fn route(&mut self, input: InputEvent) -> bool {
+        let forward_now = self.forward_now();
+        if self.routes.route(&input, forward_now) == Route::Forward {
+            self.events.push(CapturedEvent::Input(input));
+            true
+        } else {
+            false
+        }
+    }
+
+    fn stop(&mut self, event: CapturedEvent) {
+        self.inhibitor = None;
+        self.mode = Mode::Off;
+        self.routes.clear();
+        self.events.push(event);
+    }
 }
 
 /// The capture handle that the controller gets. The window layer feeds it events.
 #[derive(Clone)]
 struct LinuxCapture(Rc<RefCell<CaptureState>>);
-
-impl LinuxCapture {
-    fn global(&self, local: Point) -> Point {
-        let s = self.0.borrow();
-        Point {
-            x: s.portal.x + local.x,
-            y: s.portal.y + local.y,
-        }
-    }
-
-    fn unlock(state: &mut CaptureState) {
-        state.inhibitor = None;
-        if let Some(window) = &state.window {
-            let _ = window.set_cursor_grab(CursorGrabMode::None);
-            window.set_cursor_visible(true);
-        }
-    }
-}
 
 impl InputCapture for LinuxCapture {
     fn arm(&mut self, portal: Rect) -> Result<(), PlatformError> {
@@ -88,27 +142,18 @@ impl InputCapture for LinuxCapture {
             s.mode = Mode::Armed;
         }
         if s.inside {
-            let at = s.cursor.unwrap_or_default();
-            let at = Point {
-                x: portal.x + at.x,
-                y: portal.y + at.y,
-            };
+            let at = s.cursor_global();
             s.events.push(CapturedEvent::PointerEntered { at });
         }
         Ok(())
     }
 
-    fn forward(&mut self) -> Result<Point, PlatformError> {
-        let at = self.global(self.0.borrow().cursor.unwrap_or_default());
+    fn forward(&mut self) -> Result<(), PlatformError> {
         let mut s = self.0.borrow_mut();
         let window = s
             .window
             .clone()
             .ok_or_else(|| PlatformError::Failed("no portal window".into()))?;
-        window
-            .set_cursor_grab(CursorGrabMode::Locked)
-            .map_err(|e| PlatformError::Unsupported(format!("pointer lock: {e}")))?;
-        window.set_cursor_visible(false);
         s.inhibitor = match ShortcutInhibitor::new(&*window) {
             Ok(inhibitor) => Some(inhibitor),
             Err(e) => {
@@ -119,29 +164,15 @@ impl InputCapture for LinuxCapture {
         };
         s.escapes.clear();
         s.mode = Mode::Forwarding;
-        Ok(at)
-    }
-
-    fn pause(&mut self, at: Option<Point>) {
-        let mut s = self.0.borrow_mut();
-        if let (Some(at), Some(window)) = (at, &s.window) {
-            // The hint must be in the surface: put it at the nearest portal edge.
-            let local = s.portal.clamp(at);
-            let hint = LogicalPosition::new(local.x - s.portal.x, local.y - s.portal.y);
-            let _ = window.set_cursor_position(hint);
-        }
-        Self::unlock(&mut s);
-        if s.mode == Mode::Forwarding {
-            s.mode = Mode::Armed;
-        }
-        // The pointer is at the edge, still in the window. A new entry needs a leave.
-        s.inside = true;
+        s.report_position();
+        Ok(())
     }
 
     fn disarm(&mut self) {
         let mut s = self.0.borrow_mut();
-        Self::unlock(&mut s);
+        s.inhibitor = None;
         s.mode = Mode::Off;
+        s.routes.clear();
     }
 }
 
@@ -184,6 +215,7 @@ pub(crate) fn parts(_proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> 
         inhibitor: None,
         modifiers: ModifiersState::empty(),
         escapes: VecDeque::new(),
+        routes: KeyRoutes::new(),
         events: Vec::new(),
     })));
     Ok(Parts {
@@ -228,8 +260,8 @@ impl Hooks {
         std::mem::take(&mut self.capture.0.borrow_mut().events)
     }
 
-    /// The compositor removes the pointer lock and the inhibitor when the app
-    /// stops, so no watchdog is needed here.
+    /// The compositor removes the inhibitor when the app stops, so no watchdog
+    /// is needed here.
     pub(crate) fn heartbeat(&mut self) {}
 
     pub(crate) fn take_prompt_requests(&mut self) -> Vec<PromptRequest> {
@@ -248,19 +280,24 @@ impl Hooks {
 
     pub(crate) fn portal_closed(&mut self) {
         let mut s = self.capture.0.borrow_mut();
-        LinuxCapture::unlock(&mut s);
+        s.inhibitor = None;
         s.window = None;
         s.mode = Mode::Off;
+        s.routes.clear();
     }
 
+    /// Without the keyboard focus the portal gets no keys: that is the same as a
+    /// leave. The focus coming back with the cursor in the window is an entry.
     pub(crate) fn portal_focus(&mut self, _: &Window, focused: bool, _: bool) {
         let mut s = self.capture.0.borrow_mut();
-        if !focused && s.mode == Mode::Forwarding {
-            // The compositor ended the pointer lock with the focus. Pause.
-            LinuxCapture::unlock(&mut s);
-            s.mode = Mode::Armed;
-            s.inside = false;
-            s.events.push(CapturedEvent::PointerLeft);
+        if focused {
+            if s.cursor.is_some() {
+                s.set_inside(true);
+            }
+        } else {
+            s.set_inside(false);
+            // The source pauses and the target releases all held state.
+            s.routes.clear();
         }
     }
 
@@ -268,7 +305,10 @@ impl Hooks {
     pub(crate) fn portal_window_event(&mut self, event: &WindowEvent) -> bool {
         let mut s = self.capture.0.borrow_mut();
         match event {
-            WindowEvent::ModifiersChanged(modifiers) => s.modifiers = modifiers.state(),
+            WindowEvent::ModifiersChanged(modifiers) => {
+                s.modifiers = modifiers.state();
+                false
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let scale = s.window.as_ref().map_or(1.0, |w| w.scale_factor());
                 let logical = position.to_logical::<f64>(scale);
@@ -276,47 +316,39 @@ impl Hooks {
                     x: logical.x,
                     y: logical.y,
                 });
+                s.report_position();
+                false
             }
             WindowEvent::CursorEntered { .. } => {
-                if s.mode == Mode::Armed && !s.inside {
-                    let local = s.cursor.unwrap_or_default();
-                    let at = Point {
-                        x: s.portal.x + local.x,
-                        y: s.portal.y + local.y,
-                    };
-                    s.events.push(CapturedEvent::PointerEntered { at });
-                }
-                s.inside = true;
+                s.set_inside(true);
+                false
             }
-            WindowEvent::CursorLeft { .. } => s.inside = false,
-            _ => {}
-        }
-        if s.mode != Mode::Forwarding {
-            return false;
-        }
-        match event {
+            WindowEvent::CursorLeft { .. } => {
+                s.set_inside(false);
+                s.cursor = None;
+                false
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let down = event.state == ElementState::Pressed;
                 let escape = event.physical_key == PhysicalKey::Code(KeyCode::Escape);
                 let release = ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SHIFT;
-                if escape && down && s.modifiers.contains(release) {
+                if s.mode == Mode::Forwarding && escape && down && s.modifiers.contains(release) {
                     // IN-7: never forwarded.
-                    LinuxCapture::unlock(&mut s);
-                    s.mode = Mode::Off;
-                    s.events.push(CapturedEvent::ReleaseShortcut);
+                    s.stop(CapturedEvent::ReleaseShortcut);
                     return true;
                 }
-                if let Some(code) = event
+                let Some(code) = event
                     .physical_key
                     .to_scancode()
                     .and_then(|c| u16::try_from(c).ok())
-                {
-                    s.events.push(CapturedEvent::Input(InputEvent::Key {
-                        key: Key(code),
-                        down,
-                    }));
-                }
-                if escape && down && !event.repeat {
+                else {
+                    return s.forward_now();
+                };
+                let forwarded = s.route(InputEvent::Key {
+                    key: Key(code),
+                    down,
+                });
+                if forwarded && escape && down && !event.repeat {
                     let now = Instant::now();
                     s.escapes.push_back(now);
                     while s
@@ -327,43 +359,30 @@ impl Hooks {
                         s.escapes.pop_front();
                     }
                     if s.escapes.len() >= SAFETY_PRESSES {
-                        LinuxCapture::unlock(&mut s);
-                        s.mode = Mode::Off;
-                        s.events.push(CapturedEvent::SafetyExit);
+                        s.stop(CapturedEvent::SafetyExit);
                     }
                 }
+                forwarded
             }
             WindowEvent::MouseInput {
                 state, button: b, ..
-            } => {
-                if let Some(button) = button(*b) {
-                    let down = *state == ElementState::Pressed;
-                    s.events
-                        .push(CapturedEvent::Input(InputEvent::Button { button, down }));
-                }
-            }
+            } => match button(*b) {
+                Some(button) => s.route(InputEvent::Button {
+                    button,
+                    down: *state == ElementState::Pressed,
+                }),
+                None => s.forward_now(),
+            },
             WindowEvent::MouseWheel { delta, .. } => {
                 // winit: positive is up or left. The wire is the opposite.
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (-x * LINE, -y * LINE),
                     MouseScrollDelta::PixelDelta(p) => (-p.x as f32, -p.y as f32),
                 };
-                s.events
-                    .push(CapturedEvent::Input(InputEvent::Scroll { dx, dy }));
+                s.route(InputEvent::Scroll { dx, dy })
             }
-            _ => return false,
+            _ => false,
         }
-        true
-    }
-
-    /// Relative motion while the pointer is locked.
-    pub(crate) fn device_event(&mut self, event: &DeviceEvent) -> bool {
-        let mut s = self.capture.0.borrow_mut();
-        if let (Mode::Forwarding, DeviceEvent::MouseMotion { delta: (dx, dy) }) = (s.mode, event) {
-            s.events.push(CapturedEvent::Motion { dx: *dx, dy: *dy });
-            return true;
-        }
-        false
     }
 }
 

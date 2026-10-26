@@ -1,7 +1,7 @@
 //! IN-11 pointer mapping, FLOW-14 and FLOW-15 edges, AC-12.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests may panic on a failed setup.
 
-use telescreen_core::pointer::{Motion, Normalized, Point, Rect, denormalize, normalize, step};
+use telescreen_core::pointer::{Normalized, Point, Rect, denormalize, normalize};
 
 const PORTAL: Rect = Rect {
     x: 0.0,
@@ -61,56 +61,5 @@ fn degenerate_area() {
     assert_eq!(
         denormalize(line, Normalized { x: 1.0, y: 1.0 }),
         p(5.0, 5.0)
-    );
-}
-
-#[test]
-fn flow14_exit_into_adjacent_display() {
-    // The built-in display is to the left of the portal, with a different height.
-    let builtin = Rect {
-        x: -1512.0,
-        y: 200.0,
-        width: 1512.0,
-        height: 982.0,
-    };
-    assert_eq!(
-        step(PORTAL, &[builtin], p(2.0, 500.0), -5.0, 0.0),
-        Motion::Exit(p(-3.0, 500.0))
-    );
-}
-
-#[test]
-fn flow15_edges_without_display_stop_the_pointer() {
-    let builtin = Rect {
-        x: -1512.0,
-        y: 200.0,
-        width: 1512.0,
-        height: 982.0,
-    };
-    // Left edge above the built-in display: no display there.
-    assert_eq!(
-        step(PORTAL, &[builtin], p(2.0, 50.0), -5.0, 0.0),
-        Motion::Inside(p(0.0, 50.0))
-    );
-    // Top, right, and bottom edges.
-    assert_eq!(
-        step(PORTAL, &[builtin], p(10.0, 3.0), 0.0, -9.0),
-        Motion::Inside(p(10.0, 0.0))
-    );
-    assert_eq!(
-        step(PORTAL, &[builtin], p(3410.0, 9.0), 9.0, 0.0),
-        Motion::Inside(p(3411.0, 9.0))
-    );
-    assert_eq!(
-        step(PORTAL, &[builtin], p(9.0, 1439.0), 0.0, 3.5),
-        Motion::Inside(p(9.0, 1439.0))
-    );
-}
-
-#[test]
-fn inside_motion() {
-    assert_eq!(
-        step(PORTAL, &[], p(100.0, 100.0), 1.5, -2.5),
-        Motion::Inside(p(101.5, 97.5))
     );
 }

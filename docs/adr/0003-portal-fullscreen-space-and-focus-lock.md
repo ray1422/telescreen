@@ -10,13 +10,16 @@ While input is forwarded, the display shows the target computer, so the user can
 
 Pausing forwarding and ending the session are different (user, 2026-10-27):
 
-- **Pause (the session stays).** Move the pointer out of a portal edge that touches a different local display. Input goes back to the source computer, and the user can use the other displays. The target display does not change. When the pointer comes back into the portal, forwarding starts again with no new confirmation (ADR 0002). On macOS, the source computer tracks a virtual pointer while the cursor is frozen. When the virtual pointer crosses such an edge, it releases the cursor and puts it at the matching point of the adjacent display. Portal edges with no adjacent display stop the pointer. The event tap is global, so while the pointer is in the portal, keys go to the target also when a different local application has the focus.
+- **Pause (the session stays).** Move the pointer out of a portal edge that touches a different local display. Input goes back to the source computer, and the user can use the other displays. The target display does not change. When the pointer comes back into the portal, forwarding starts again with no new confirmation (ADR 0002). The cursor is always free (user, 2026-10-27): the source does not freeze, lock, or hide it, and pointer motion is never suppressed. The event tap forwards input only while the cursor is in the portal area. Portal edges with no adjacent display stop the cursor, because the OS stops it at the edge of the desktop. The event tap is global, so while the pointer is in the portal, keys go to the target also when a different local application has the focus.
+  - Correction (2026-10-27): an earlier version of this ADR said that the cursor is frozen and that the source tracks a virtual pointer from relative motion. That was a proposal of Claude, not a decision of the user. The user's requirement is that the input focus follows the portal region.
+  - Each key and button up goes where its down went (IN-3). For example, Shift pressed on a different display and released in the portal goes to the source, not to the target.
+  - Tentative (proposed by Claude, not confirmed by the user): the cursor stays visible in the portal. The portal display shows the target, so the source cursor is not in that video signal.
 - **End the session.** One of these:
   - Press the release shortcut (macOS: Control+Option+Command+Escape; Linux: Control+Alt+Shift+Escape, user, 2026-10-27; fixed in v0.1.0).
   - The source computer detects that the target computer is disconnected (heartbeat timeout or a closed connection).
   - On the target computer, the user selects "disconnect". The target computer ends the session.
   - The target computer requests control back: it ends the session, and then it can be the source computer in the reverse direction (ADR 0006).
-  - Safety exit: press Escape 10 times in 5 seconds. The event tap callback counts the presses itself, with no dependency on the main thread, the UI, or the network. The 10th press stops suppression, restores the cursor, and stops the session. Escape is still forwarded to the target computer.
+  - Safety exit: press Escape 10 times in 5 seconds. The event tap callback counts the presses itself, with no dependency on the main thread, the UI, or the network. The 10th press stops suppression and stops the session. Escape is still forwarded to the target computer.
 
 ## Considered Options
 

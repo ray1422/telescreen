@@ -31,7 +31,7 @@ use telescreen_transport::{Identity, NetConfig, NetEvent, Network};
 use telescreen_view::{Intent, PromptScreen};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::{DeviceEvent, DeviceId, ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
@@ -267,8 +267,7 @@ impl App {
             return;
         };
         portal.opened = true;
-        let others = self.controller.other_display_bounds(&portal.token);
-        self.controller.open_portal(display, others);
+        self.controller.open_portal(display);
     }
 
     /// FLOW-4, AC-8: the portal window is on a different monitor now. Evaluate
@@ -291,8 +290,7 @@ impl App {
         }
         match self.controller.display(&token) {
             Some(display) => {
-                let others = self.controller.other_display_bounds(&token);
-                self.controller.portal_display_changed(display, others);
+                self.controller.portal_display_changed(display);
             }
             None => self.controller.close_portal(EndReason::PortalGone),
         }
@@ -544,12 +542,6 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.sync(event_loop);
-    }
-
-    fn device_event(&mut self, event_loop: &ActiveEventLoop, _: DeviceId, event: DeviceEvent) {
-        if self.hooks.device_event(&event) {
-            self.sync(event_loop);
-        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {

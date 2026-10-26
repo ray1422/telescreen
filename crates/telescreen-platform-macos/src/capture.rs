@@ -6,6 +6,11 @@
 //! queue (IN-2). The callback itself handles the release shortcut and the safety
 //! exit, so they work when the main thread does not respond (IN-7, IN-8). A
 //! watchdog thread stops suppression when the main thread stops its heartbeat (IN-9).
+//!
+//! The cursor is always free (FLOW-20). The tap never suppresses pointer motion,
+//! drags included. While forwarding, it suppresses and reports the key, button,
+//! and scroll events that [`KeyRoutes`] sends to the target, and the other event
+//! types (gestures) while the cursor is in the portal.
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -16,11 +21,12 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::key_route::{KeyRoutes, Route};
 use telescreen_core::keys::{self, Key};
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
 use telescreen_core::pointer::{Point, Rect};
 
-use crate::ffi::{self, CGEventRef, CGPoint};
+use crate::ffi::{self, CGEventRef};
 
 /// The queue size. A full queue ends the session (IN-3).
 const QUEUE: usize = 4096;
@@ -43,8 +49,12 @@ struct Shared {
     mode: AtomicU8,
     /// The portal bounds as f64 bits: x, y, width, height.
     portal: [AtomicU64; 4],
+    /// The cursor is in the portal.
     entered: AtomicBool,
-    frozen: AtomicBool,
+    /// The latest cursor position as f64 bits, for the merged `PointerMoved`.
+    moved: [AtomicU64; 2],
+    /// A `PointerMoved` is in the queue and not drained yet.
+    move_queued: AtomicBool,
     heartbeat_ms: AtomicU64,
     overflow: AtomicBool,
     woken: AtomicBool,
@@ -60,6 +70,8 @@ struct KeyState {
     escapes: VecDeque<Instant>,
     /// Modifier keys that are down (evdev codes).
     modifiers: Vec<Key>,
+    /// Where each key and button that is down went (IN-3).
+    routes: KeyRoutes,
 }
 
 /// The event tap. Clone it to keep a handle for [`MacCapture::drain`] and
@@ -88,7 +100,8 @@ impl MacCapture {
             mode: AtomicU8::new(OFF),
             portal: Default::default(),
             entered: AtomicBool::new(false),
-            frozen: AtomicBool::new(false),
+            moved: Default::default(),
+            move_queued: AtomicBool::new(false),
             heartbeat_ms: AtomicU64::new(0),
             overflow: AtomicBool::new(false),
             woken: AtomicBool::new(false),
@@ -114,10 +127,20 @@ impl MacCapture {
         Ok(Self { shared, rx })
     }
 
-    /// Takes the queued events. Adds `Overflow` if the queue was full (IN-3).
+    /// Takes the queued events. Adds `Overflow` if the queue was full (IN-3). A
+    /// `PointerMoved` gets the latest cursor position.
     pub fn drain(&self) -> Vec<CapturedEvent> {
-        self.shared.woken.store(false, SeqCst);
-        let mut events: Vec<_> = self.rx.try_iter().collect();
+        let s = &self.shared;
+        s.woken.store(false, SeqCst);
+        s.move_queued.store(false, SeqCst);
+        let mut events: Vec<_> = self
+            .rx
+            .try_iter()
+            .map(|event| match event {
+                CapturedEvent::PointerMoved { .. } => CapturedEvent::PointerMoved { at: s.moved() },
+                other => other,
+            })
+            .collect();
         if self.shared.overflow.swap(false, SeqCst) {
             events.push(CapturedEvent::Overflow);
         }
@@ -139,20 +162,15 @@ impl InputCapture for MacCapture {
         {
             cell.store(value.to_bits(), SeqCst);
         }
-        s.entered.store(false, SeqCst);
         if s.mode.load(SeqCst) == OFF {
             s.mode.store(ARMED, SeqCst);
         }
         let at = ffi::cursor_position();
-        if portal.contains(Point { x: at.x, y: at.y }) && !s.entered.swap(true, SeqCst) {
-            s.push(CapturedEvent::PointerEntered {
-                at: Point { x: at.x, y: at.y },
-            });
-        }
+        s.cursor_at(Point { x: at.x, y: at.y });
         Ok(())
     }
 
-    fn forward(&mut self) -> Result<Point, PlatformError> {
+    fn forward(&mut self) -> Result<(), PlatformError> {
         if crate::secure_event_input() {
             return Err(PlatformError::Permission(
                 "Secure Event Input is on (a password field has the focus). macOS blocks the capture of keys."
@@ -161,29 +179,18 @@ impl InputCapture for MacCapture {
         }
         let s = &self.shared;
         s.beat();
-        let at = ffi::cursor_position();
         s.lock_keys().escapes.clear();
         s.mode.store(FORWARDING, SeqCst);
-        s.freeze();
-        Ok(Point { x: at.x, y: at.y })
-    }
-
-    fn pause(&mut self, at: Option<Point>) {
-        let s = &self.shared;
-        s.entered.store(false, SeqCst);
-        if s.mode.load(SeqCst) == FORWARDING {
-            s.mode.store(ARMED, SeqCst);
-        }
-        if let Some(at) = at {
-            // SAFETY: moves the cursor; it is frozen until restore below.
-            unsafe { ffi::CGWarpMouseCursorPosition(CGPoint { x: at.x, y: at.y }) };
-        }
-        s.restore();
+        let at = ffi::cursor_position();
+        s.cursor_at(Point { x: at.x, y: at.y });
+        Ok(())
     }
 
     fn disarm(&mut self) {
-        self.shared.mode.store(OFF, SeqCst);
-        self.shared.restore();
+        let s = &self.shared;
+        s.mode.store(OFF, SeqCst);
+        s.entered.store(false, SeqCst);
+        s.lock_keys().routes.clear();
     }
 
     fn heartbeat(&mut self) {
@@ -214,22 +221,34 @@ impl Shared {
         }
     }
 
-    fn freeze(&self) {
-        if !self.frozen.swap(true, SeqCst) {
-            // SAFETY: CG cursor calls; `restore` undoes them once.
-            unsafe {
-                ffi::CGAssociateMouseAndMouseCursorPosition(false);
-                ffi::CGDisplayHideCursor(ffi::CGMainDisplayID());
-            }
+    fn moved(&self) -> Point {
+        Point {
+            x: f64::from_bits(self.moved[0].load(SeqCst)),
+            y: f64::from_bits(self.moved[1].load(SeqCst)),
         }
     }
 
-    fn restore(&self) {
-        if self.frozen.swap(false, SeqCst) {
-            // SAFETY: undoes `freeze`.
-            unsafe {
-                ffi::CGAssociateMouseAndMouseCursorPosition(true);
-                ffi::CGDisplayShowCursor(ffi::CGMainDisplayID());
+    /// True while the input in the portal goes to the target.
+    fn forward_now(&self) -> bool {
+        self.mode.load(SeqCst) == FORWARDING && self.entered.load(SeqCst)
+    }
+
+    /// The cursor is at `at`: report a crossing of the portal edge (FLOW-14), and
+    /// the position while forwarding in the portal.
+    fn cursor_at(&self, at: Point) {
+        let inside = self.portal().contains(at);
+        if inside != self.entered.swap(inside, SeqCst) {
+            self.push(if inside {
+                CapturedEvent::PointerEntered { at }
+            } else {
+                CapturedEvent::PointerLeft
+            });
+        }
+        if inside && self.mode.load(SeqCst) == FORWARDING {
+            self.moved[0].store(at.x.to_bits(), SeqCst);
+            self.moved[1].store(at.y.to_bits(), SeqCst);
+            if !self.move_queued.swap(true, SeqCst) {
+                self.push(CapturedEvent::PointerMoved { at });
             }
         }
     }
@@ -237,7 +256,6 @@ impl Shared {
     /// Stops suppression from the callback or the watchdog, and reports why.
     fn stop(&self, event: CapturedEvent) {
         self.mode.store(OFF, SeqCst);
-        self.restore();
         self.push(event);
     }
 
@@ -248,7 +266,6 @@ impl Shared {
                 // IN-3: a lost event ends the session. Stop suppression now.
                 self.overflow.store(true, SeqCst);
                 self.mode.store(OFF, SeqCst);
-                self.restore();
             }
             Err(TrySendError::Disconnected(_)) => return,
         }
@@ -323,81 +340,59 @@ extern "C" fn callback(
         unsafe { ffi::CGEventTapEnable(shared.tap.load(SeqCst), true) };
         return event;
     }
-    match shared.mode.load(SeqCst) {
-        FORWARDING => forwarding(shared, kind, event),
-        ARMED => {
-            armed(shared, kind, event);
-            event
-        }
-        _ => event,
+    if shared.mode.load(SeqCst) == OFF {
+        return event;
     }
-}
-
-/// While paused: report when the pointer enters the portal (FLOW-14). No suppression.
-fn armed(shared: &Shared, kind: u32, event: CGEventRef) {
-    if !matches!(
-        kind,
-        ffi::MOUSE_MOVED | ffi::LEFT_DRAGGED | ffi::RIGHT_DRAGGED | ffi::OTHER_DRAGGED
-    ) {
-        return;
-    }
-    // SAFETY: the event is valid during the callback.
-    let at = unsafe { ffi::CGEventGetLocation(event) };
-    let at = Point { x: at.x, y: at.y };
-    if shared.portal().contains(at) {
-        if !shared.entered.swap(true, SeqCst) {
-            shared.push(CapturedEvent::PointerEntered { at });
-        }
+    if handle(shared, kind, event) {
+        std::ptr::null_mut()
     } else {
-        shared.entered.store(false, SeqCst);
+        event
     }
 }
 
-/// While forwarding: capture and suppress all input (FLOW-13, IN-10).
-fn forwarding(shared: &Shared, kind: u32, event: CGEventRef) -> CGEventRef {
-    // SAFETY (for the field reads below): the event is valid during the callback.
+/// Handles one event while armed or forwarding. Returns true to suppress it.
+fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
+    // SAFETY (for the event reads below): the event is valid during the callback.
     let field = |f: u32| unsafe { ffi::CGEventGetIntegerValueField(event, f) };
+    let forwarding = shared.mode.load(SeqCst) == FORWARDING;
     match kind {
+        // Motion moves the free cursor: never suppressed (FLOW-20).
+        ffi::MOUSE_MOVED | ffi::LEFT_DRAGGED | ffi::RIGHT_DRAGGED | ffi::OTHER_DRAGGED => {
+            // SAFETY: as above.
+            let at = unsafe { ffi::CGEventGetLocation(event) };
+            shared.cursor_at(Point { x: at.x, y: at.y });
+            false
+        }
         ffi::KEY_DOWN | ffi::KEY_UP => {
             let code = field(ffi::FIELD_KEYCODE);
             let down = kind == ffi::KEY_DOWN;
-            if down && code == KEYCODE_ESCAPE {
+            if forwarding && down && code == KEYCODE_ESCAPE {
                 // SAFETY: as above.
                 let flags = unsafe { ffi::CGEventGetFlags(event) };
                 if flags & RELEASE_FLAGS == RELEASE_FLAGS {
                     // IN-7: never forwarded.
                     shared.stop(CapturedEvent::ReleaseShortcut);
-                    return std::ptr::null_mut();
+                    return true;
                 }
-                shared.push(CapturedEvent::Input(InputEvent::Key {
-                    key: Key::ESC,
-                    down,
-                }));
-                if safety_exit(shared) {
-                    shared.stop(CapturedEvent::SafetyExit);
-                }
-                return std::ptr::null_mut();
             }
-            if let Some(key) = u16::try_from(code).ok().and_then(keys::from_mac) {
-                shared.push(CapturedEvent::Input(InputEvent::Key { key, down }));
+            let Some(key) = u16::try_from(code).ok().and_then(keys::from_mac) else {
+                return shared.forward_now();
+            };
+            let forwarded = route(shared, InputEvent::Key { key, down });
+            if forwarded && down && key == Key::ESC && safety_exit(shared) {
+                shared.stop(CapturedEvent::SafetyExit);
             }
+            forwarded
         }
         ffi::FLAGS_CHANGED => {
             // SAFETY: as above.
             let flags = unsafe { ffi::CGEventGetFlags(event) };
             let code = field(ffi::FIELD_KEYCODE);
+            let mut forwarded = false;
             for input in modifier_events(shared, code, flags) {
-                shared.push(CapturedEvent::Input(input));
+                forwarded |= route(shared, input);
             }
-        }
-        ffi::MOUSE_MOVED | ffi::LEFT_DRAGGED | ffi::RIGHT_DRAGGED | ffi::OTHER_DRAGGED => {
-            let (dx, dy) = (field(ffi::FIELD_DELTA_X), field(ffi::FIELD_DELTA_Y));
-            if dx != 0 || dy != 0 {
-                shared.push(CapturedEvent::Motion {
-                    dx: dx as f64,
-                    dy: dy as f64,
-                });
-            }
+            forwarded
         }
         ffi::LEFT_DOWN
         | ffi::LEFT_UP
@@ -416,23 +411,37 @@ fn forwarding(shared: &Shared, kind: u32, event: CGEventRef) -> CGEventRef {
                     _ => None,
                 },
             };
-            if let Some(button) = button {
-                shared.push(CapturedEvent::Input(InputEvent::Button { button, down }));
+            match button {
+                Some(button) => route(shared, InputEvent::Button { button, down }),
+                None => shared.forward_now(),
             }
         }
         ffi::SCROLL_WHEEL => {
             // Point deltas: positive is up or left on macOS; the wire is the opposite.
             let dy = -(field(ffi::FIELD_SCROLL_POINT_DELTA_1) as f32);
             let dx = -(field(ffi::FIELD_SCROLL_POINT_DELTA_2) as f32);
-            if dx != 0.0 || dy != 0.0 {
-                shared.push(CapturedEvent::Input(InputEvent::Scroll { dx, dy }));
+            if dx == 0.0 && dy == 0.0 {
+                return shared.forward_now();
             }
+            route(shared, InputEvent::Scroll { dx, dy })
         }
         // Gestures (Space swipes, Mission Control), system-defined events, and all
-        // other types: suppress and do not forward (IN-10, ADR 0003).
-        _ => {}
+        // other types: in the portal, suppress and do not forward (IN-10, ADR 0003).
+        _ => shared.forward_now(),
     }
-    std::ptr::null_mut()
+}
+
+/// Routes one input event (IN-3). Reports it if it goes to the target, and
+/// returns true to suppress it.
+fn route(shared: &Shared, input: InputEvent) -> bool {
+    let forward_now = shared.forward_now();
+    let route = shared.lock_keys().routes.route(&input, forward_now);
+    if route == Route::Forward {
+        shared.push(CapturedEvent::Input(input));
+        true
+    } else {
+        false
+    }
 }
 
 /// Counts Escape presses in the callback (IN-8). True at the tenth press in 5 s.

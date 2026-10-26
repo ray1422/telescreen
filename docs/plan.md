@@ -10,10 +10,10 @@ One Cargo workspace under `crates/`. Dependencies point downward only. No crate 
 | --- | --- | --- |
 | `telescreen-core` | config parse and semantic validation (parity with `tools/validate_config.py`), the domain model (peer, device, session, lease), the session state machine (FLOW-*), the wire messages and their encoding, key identity and the macOS-to-evdev key table, pointer mapping (IN-11), the platform traits (capture, inject, display switch, prompt), the `command` driver runner | I/O threads, sockets, windows, OS APIs |
 | `telescreen-transport` | QUIC (quinn) peer endpoint: dialer and listener, mutual pinning (ADR 0004), the trust store and the key pair files, reliable stream and pointer datagrams with sequence numbers, heartbeat | session rules (it moves messages only) |
-| `telescreen-platform-macos` | event tap capture and suppress, safety exit counter, watchdog, `CGEventPost` injection, cursor freeze and edge release, portal window AppKit adjustments (level, input sources), prompt window, Secure Event Input detection | session rules |
-| `telescreen-platform-linux` | wlr virtual pointer and uinput keyboard injection, layer-shell prompt, portal pointer lock, relative pointer, shortcut inhibit | session rules |
+| `telescreen-platform-macos` | event tap capture and suppress, safety exit counter, watchdog, `CGEventPost` injection, portal window AppKit adjustments (level, input sources), prompt window, Secure Event Input detection | session rules |
+| `telescreen-platform-linux` | wlr virtual pointer and uinput keyboard injection, layer-shell prompt, portal window input, shortcut inhibit | session rules |
 | `telescreen-view` | view models (what each screen shows: portal, prompt, control window) and intents (what the user did). Plain data, no UI library | drawing, windows, OS APIs |
-| `telescreen-render-egui` | the egui renderer: it draws a view model on a winit window and returns intents | session rules, window placement, fullscreen, window level, pointer lock |
+| `telescreen-render-egui` | the egui renderer: it draws a view model on a winit window and returns intents | session rules, window placement, fullscreen, window level, shortcut inhibit |
 | `telescreen-app` | the `telescreen` binary: CLI (`run`, `trust`, `fingerprint`, `check-config`, `displays`), winit windows (placement, fullscreen, level through the platform crates), wiring of core + transport + platform + view + renderer; the macOS `.app` bundle script | domain logic |
 
 ### View boundary
@@ -22,7 +22,7 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 
 - Only `telescreen-render-egui` uses egui. No other crate imports egui, egui-winit, or egui-wgpu.
 - The app makes a view model from the session state and gives it to the renderer. The renderer returns intents. The app does not read the state of the renderer.
-- Window management (winit windows, fullscreen, window level, pointer lock, input sources) is not part of the renderer. A different renderer uses the same windows.
+- Window management (winit windows, fullscreen, window level, shortcut inhibit, input sources) is not part of the renderer. A different renderer uses the same windows.
 - The Linux layer-shell prompt draws the same prompt view model with its own small text renderer in `telescreen-platform-linux`.
 
 ## Who does what

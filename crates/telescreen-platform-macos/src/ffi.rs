@@ -54,8 +54,6 @@ pub const TAP_DISABLED_BY_USER: u32 = 0xFFFF_FFFF;
 // Event fields (CGEventField).
 pub const FIELD_CLICK_STATE: u32 = 1;
 pub const FIELD_BUTTON_NUMBER: u32 = 3;
-pub const FIELD_DELTA_X: u32 = 4;
-pub const FIELD_DELTA_Y: u32 = 5;
 pub const FIELD_KEYCODE: u32 = 9;
 pub const FIELD_SCROLL_POINT_DELTA_1: u32 = 96;
 pub const FIELD_SCROLL_POINT_DELTA_2: u32 = 97;
@@ -119,11 +117,6 @@ unsafe extern "C" {
         wheel3: i32,
     ) -> CGEventRef;
     pub fn CGEventPost(tap: u32, event: CGEventRef);
-    pub fn CGAssociateMouseAndMouseCursorPosition(connected: bool) -> i32;
-    pub fn CGWarpMouseCursorPosition(point: CGPoint) -> i32;
-    pub fn CGMainDisplayID() -> CGDirectDisplayID;
-    pub fn CGDisplayHideCursor(display: CGDirectDisplayID) -> i32;
-    pub fn CGDisplayShowCursor(display: CGDirectDisplayID) -> i32;
     pub fn CGGetActiveDisplayList(
         max: u32,
         displays: *mut CGDirectDisplayID,

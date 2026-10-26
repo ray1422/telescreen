@@ -53,13 +53,14 @@ Negative test (AC-21): before the trust step, start both apps (step 2). Each con
 | 3.2 | Move the control window to the LG: "Open portal on this display" | A fullscreen Space on the LG. No menu bar or title bar at the top edge. Input source is ABC while it has the focus. "LG" matched. Candidate "Linux" available after the connection | UI-1, UI-2, FLOW-2, FLOW-3 |
 | 3.3 | Click "Linux" (switches the display; Linux gets the prompt) | The LG shows Linux. The prompt with the hint shows on the LG. The Mac portal says "Press Return or click". The click did not go to Linux | AC-3, AC-4 |
 | 3.4 | Press Return with the portal not focused (click the built-in display first) | Return is a normal key; nothing starts | AC-6 |
-| 3.5 | Focus the portal, press Return | The prompt goes away. The Mac cursor hides. Pointer and keys control Linux. Video input "confirmed". Return did not go to Linux | AC-5 |
+| 3.5 | Focus the portal, press Return | The prompt goes away. The Mac cursor stays free. Pointer and keys control Linux. Video input "confirmed". Return did not go to Linux | AC-5 |
 | 3.6 | Type text, use Shift, Control, Super (Command), arrows | Keys work on Linux, not on the Mac | AC-13 |
 | 3.7 | Move the pointer to all four corners of the LG | The Linux pointer reaches each corner and stays on the LG output. The top-left corner opens the niri overview: test it last, or skip it | AC-12 |
 | 3.8 | Three-finger swipe, Mission Control, Command+Tab | Nothing happens on the Mac. Nothing goes to Linux | AC-14 |
-| 3.9 | Hold Shift, move the pointer out of the portal edge to the built-in display | The Mac cursor shows on the built-in display. Shift is not held on Linux. The LG still shows Linux | AC-11 |
+| 3.9 | Hold Shift, move the pointer out of the portal edge to the built-in display, release Shift | Input goes to the Mac. Shift is not held on Linux or on the Mac. The LG still shows Linux | AC-11, IN-3 |
+| 3.9a | Hold Shift on the built-in display, move the pointer into the portal, release Shift | Shift is not held on the Mac or on Linux | IN-3 |
 | 3.10 | Move the pointer back into the portal | Forwarding starts again with no prompt | AC-11 |
-| 3.11 | Control+Option+Command+Escape | The session ends. The Mac cursor and keys come back | AC-15 |
+| 3.11 | Control+Option+Command+Escape | The session ends. Local keys come back | AC-15 |
 | 3.12 | New session, then Escape 10 times in 5 s | The session ends; Escape went to Linux | AC-16 |
 | 3.13 | New session, then on Linux "Take control back" | The session ends on both sides | AC-23 |
 | 3.14 | New session, then stop the Linux app (or unplug the network) | In 5 s the Mac gets control back. Linux has no stuck key | AC-18 |
@@ -74,8 +75,8 @@ Repeat the table of part 3 with the roles reversed: the portal on Linux (a fulls
 
 - The release shortcut is Control+Alt+Shift+Escape.
 - While forwarding, niri shortcuts (Mod+…) go to the Mac, because the portal inhibits them. `Mod+Shift+Escape` always goes to niri.
-- A pause unlocks the pointer at the portal edge. Move it further to leave the portal; a new entry needs a leave first.
-- Not tested yet: pointer lock, relative motion, and the shortcut inhibit on niri (UI-6 is tentative).
+- Linux has only one output, the LG. The pointer cannot leave the portal, so the only way to pause is the release shortcut.
+- Not tested yet: the shortcut inhibit on niri.
 
 ## 5. Other criteria
 

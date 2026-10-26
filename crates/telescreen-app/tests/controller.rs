@@ -126,15 +126,9 @@ impl InputCapture for Capture {
             .push(format!("arm {}", portal.width));
         Ok(())
     }
-    fn forward(&mut self) -> Result<Point, PlatformError> {
+    fn forward(&mut self) -> Result<(), PlatformError> {
         self.0.borrow_mut().capture.push("forward".into());
-        Ok(Point {
-            x: 1000.0,
-            y: 500.0,
-        })
-    }
-    fn pause(&mut self, at: Option<Point>) {
-        self.0.borrow_mut().capture.push(format!("pause {at:?}"));
+        Ok(())
     }
     fn disarm(&mut self) {
         self.0.borrow_mut().capture.push("disarm".into());
@@ -372,15 +366,7 @@ impl World {
     }
 
     fn open_portal(&mut self) {
-        self.mac.controller.open_portal(
-            display("lg", 0.0, 3400.0),
-            vec![Rect {
-                x: -1500.0,
-                y: 0.0,
-                width: 1500.0,
-                height: 1000.0,
-            }],
-        );
+        self.mac.controller.open_portal(display("lg", 0.0, 3400.0));
         self.pump();
     }
 
@@ -455,7 +441,7 @@ fn flow2_ac9_no_match_on_other_display() {
     let mut w = World::new();
     w.mac
         .controller
-        .open_portal(display("builtin", -1500.0, 1500.0), vec![]);
+        .open_portal(display("builtin", -1500.0, 1500.0));
     w.pump();
     let screen = w.mac.controller.portal_screen().unwrap();
     assert_eq!(screen.matching, Matching::NoMatch);
@@ -526,9 +512,12 @@ fn flow10_ac5_forwarding_after_confirmation() {
     w.mac
         .controller
         .on_captured(CapturedEvent::Input(key(30, true)));
-    w.mac
-        .controller
-        .on_captured(CapturedEvent::Motion { dx: 699.0, dy: 0.0 });
+    w.mac.controller.on_captured(CapturedEvent::PointerMoved {
+        at: Point {
+            x: 1699.0,
+            y: 500.0,
+        },
+    });
     w.pump();
     let log = w.pc1.log.borrow();
     assert_eq!(log.injected, [key(30, true)]);
@@ -543,16 +532,27 @@ fn flow14_ac11_pause_and_resume() {
     w.mac
         .controller
         .on_captured(CapturedEvent::Input(key(42, true)));
-    // The virtual pointer starts at (1000, 500); move it out of the left edge.
-    w.mac.controller.on_captured(CapturedEvent::Motion {
-        dx: -1005.0,
-        dy: 0.0,
-    });
+    // The free cursor leaves the portal (FLOW-20).
+    w.mac.controller.on_captured(CapturedEvent::PointerLeft);
     w.pump();
     assert!(matches!(w.phase(), Some(SessionPhase::Paused { .. })));
     assert_eq!(
         w.mac.log.borrow().capture.last().unwrap(),
-        "pause Some(Point { x: -5.0, y: 500.0 })"
+        "forward",
+        "the capture keeps forwarding mode; it lets input through outside"
+    );
+    let pointers = w.pc1.log.borrow().pointer.len();
+    w.mac.controller.on_captured(CapturedEvent::PointerMoved {
+        at: Point {
+            x: -300.0,
+            y: 500.0,
+        },
+    });
+    w.pump();
+    assert_eq!(
+        w.pc1.log.borrow().pointer.len(),
+        pointers,
+        "no pointer position while paused"
     );
     assert_eq!(
         w.pc1.log.borrow().injected,
@@ -578,6 +578,12 @@ fn flow14_ac11_pause_and_resume() {
         w.phase(),
         Some(SessionPhase::Forwarding),
         "no new confirmation"
+    );
+    let last = *w.pc1.log.borrow().pointer.last().unwrap();
+    assert_eq!(
+        (last.x, (last.y - 300.0 / 999.0).abs() < 1e-4),
+        (0.0, true),
+        "the entry point goes to the target: {last:?}"
     );
 }
 
@@ -675,7 +681,7 @@ fn flow6_reverse_handoff_ends_the_old_session() {
     w.pump();
     w.pc1
         .controller
-        .open_portal(display("HDMI-A-2", 0.0, 2048.0), vec![]);
+        .open_portal(display("HDMI-A-2", 0.0, 2048.0));
     w.pump();
     w.pc1.controller.start_handoff(ComputerId::from("mac"));
     w.pump();
@@ -842,7 +848,7 @@ fn flow4_ac8_portal_moves_to_other_display() {
     w.advance_to_forwarding();
     w.mac
         .controller
-        .portal_display_changed(display("builtin", -1500.0, 1500.0), vec![]);
+        .portal_display_changed(display("builtin", -1500.0, 1500.0));
     w.pump();
     let screen = w.mac.controller.portal_screen().unwrap();
     assert_eq!(
