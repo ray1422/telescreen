@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""A driver helper for Telescreen (docs/config.md, "Driver I/O Contract (protocol 1)").
+
+Standard library only. It reads the request JSON on stdin and writes one result.
+
+  display-helper match KEY=VALUE...      portal-match and verify: true if the portal
+                                         display has all these metadata values
+  display-helper target KEY=VALUE...     input-target: the token of the one display
+                                         that has all these metadata values
+  display-helper run -- PROGRAM ARG...   handoff: run the program (no shell);
+                                         exit status 0 is {"ok": true}
+
+Metadata keys: macOS has vendor, model, serial, builtin, name. Linux (Wayland)
+has name (the output name, for example HDMI-A-2), description, make, model.
+Run `display-helper show` with a request on stdin to print the displays.
+"""
+import json
+import subprocess
+import sys
+
+
+def fail(message):
+    print(f'display-helper: {message}', file=sys.stderr)
+    sys.exit(1)
+
+
+def conditions(args):
+    result = {}
+    for arg in args:
+        key, sep, value = arg.partition('=')
+        if not sep or not key:
+            fail(f'expected KEY=VALUE, got {arg!r}')
+        result[key] = value
+    if not result:
+        fail('give at least one KEY=VALUE')
+    return result
+
+
+def matches(display, wanted):
+    metadata = display.get('metadata') or {}
+    for key, value in wanted.items():
+        have = metadata.get(key)
+        if isinstance(have, bool):
+            have = 'true' if have else 'false'
+        if have is None or str(have) != value:
+            return False
+    return True
+
+
+def main(argv):
+    if len(argv) < 2:
+        fail(__doc__)
+    command, args = argv[1], argv[2:]
+    if command == 'run':
+        if args[:1] == ['--']:
+            args = args[1:]
+        if not args or not args[0].startswith('/'):
+            fail('run needs an absolute program path')
+        sys.stdin.read()
+        status = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=sys.stderr).returncode
+        if status != 0:
+            fail(f'{args[0]} exited with {status}')
+        print(json.dumps({'ok': True}))
+        return
+    request = json.load(sys.stdin)
+    displays = request.get('displays') or []
+    if command == 'show':
+        json.dump(displays, sys.stderr, indent=2)
+        print(file=sys.stderr)
+        fail('show only prints the displays')
+    if command == 'match':
+        wanted = conditions(args)
+        token = (request.get('portal') or {}).get('display_token')
+        display = next((d for d in displays if d.get('token') == token), None)
+        print(json.dumps({'matched': display is not None and matches(display, wanted)}))
+    elif command == 'target':
+        wanted = conditions(args)
+        found = [d for d in displays if matches(d, wanted)]
+        if len(found) != 1:
+            fail(f'{len(found)} displays match {wanted}; need exactly 1')
+        print(json.dumps({'display_token': found[0]['token']}))
+    else:
+        fail(f'unknown command {command!r}')
+
+
+if __name__ == '__main__':
+    main(sys.argv)

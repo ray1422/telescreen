@@ -12,15 +12,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Claude's persistent memory is permitted only for facts specific to this project (user, 2026-10-27). Do not write cross-project or general user preferences. Prefer this file, `CLAUDE.local.md`, the skills, and the docs; use memory only for what does not belong there.
 - Claude owns the design, the acceptance tests, dependencies, review, and commits. Codex is only a feature implementer ("typist"); it can add unit tests for its own code when a task permits it, but it never changes existing tests. When an implementation problem or a rule conflict comes up, Codex reports it to Claude instead of working around it. See [Delegating to Codex](#delegating-to-codex).
 
+## Shell environment
+
+- Do not use `>` to replace an existing file: the shell can have `noclobber` on, and then the command fails with "file exists". Use the Write tool, or `>|` in a POSIX shell.
+- A session environment can have an old `CARGO_TARGET_DIR`. Start each cargo command with `env -u CARGO_TARGET_DIR` (or `unset CARGO_TARGET_DIR &&`), so that the build goes to `target/` in the checkout.
+
 ## Current state
 
-The repository has only the spec. There is no application code. Read these files in this sequence before you design:
+v0.1.0 is in development: the Cargo workspace in `crates/` builds, and the automated tests pass. The hardware acceptance tests did not run. Read these files in this sequence before you design:
 
 1. `docs/spec.md`: the normative product spec with requirement IDs (scope, versions, user flow, input, UI, network, platforms, acceptance criteria, open questions). Refer to its IDs in tests and Codex prompts.
-2. `docs/plan.md`: the work plan to v0.2.0 (crates, who does what, milestones and their status). Keep its status column current.
+2. `docs/plan.md`: the work plan to v0.2.0 (crates, the view boundary, who does what, milestones and their status). Keep its status column current.
 3. `docs/config.md`: the normative config and driver I/O contract (protocol 1). This file and `schema/config.schema.json` are the source of truth.
 4. `docs/architecture.md`: the recommended stack and the input/window limits of each platform, with sources.
-5. `examples/config.yaml`: the reference config. The helper paths are placeholders. `lab.http` is not an implemented driver.
+5. `examples/config.yaml`: the reference config. The helper paths are placeholders. `lab.http` is not an implemented driver. `contrib/` has a working helper and a config for one LG display.
+
+Cargo commands (prefix each with `env -u CARGO_TARGET_DIR`, see "Shell environment"):
+
+```sh
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets
+cargo fmt --all
+cargo test -p telescreen-core --test session_source -- flow14   # one test file, filtered by name
+scripts/make-macos-app.sh                                        # ad-hoc signed Telescreen.app
+```
+
+Acceptance tests are in `crates/*/tests/` and name the spec IDs. `crates/telescreen-app/tests/controller.rs` runs two peers with fake platforms and an in-memory network. The Linux crates build only on Linux: copy the tree to the Linux computer and build there (`CLAUDE.local.md` has the rules). The copy must give the changed files new modification times; else cargo uses stale build results.
 
 Spec tools (Python, validation only; they do not execute commands from the config):
 
@@ -41,7 +59,8 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 - `docs/adr/0002`: after a handoff, the receiving computer shows a prompt, and the user confirms with a key in the focused portal on the source computer. Forwarding starts only after this confirmation. It is a manual `verify`.
 - `docs/adr/0003`: the macOS portal is a native fullscreen Space with the menu bar and Dock hidden. While forwarding, it suppresses Space/app switching. Exits: pointer out of the portal edge, release shortcut, or the safety exit (Escape 10 times in 5 seconds, counted in the event tap callback).
 - `docs/adr/0004`: v0.1.0 pairing is manual fingerprint trust (`telescreen trust <computer-id> <fingerprint>`).
-- `docs/adr/0005`: on macOS, `Telescreen.app` (UI, event tap, injection) starts `telescreen-net` (all QUIC I/O) as a disclaimed responsible process, because of Local Network privacy. They talk over a Unix domain socket.
+- `docs/adr/0005`: on macOS, `Telescreen.app` (UI, event tap, injection) starts the network helper (`telescreen net-helper`, all QUIC I/O) as a disclaimed responsible process, because of Local Network privacy. They talk over a Unix domain socket.
+- `docs/adr/0007` (tentative, not confirmed by the user): session protocol, leases, heartbeat.
 - `docs/adr/0006`: all computers are symmetric peers. Each listens on its own endpoint, and the source dials the target. v0.1.0 has both directions (Mac to Linux first, then Linux to Mac).
 - `docs/spikes.md`: measured results of the throwaway spikes in `spikes/` (portal window, input tap, Linux injection, QUIC).
 - `docs/hardware.md`: measured facts about the user's display and the Linux receiving computer (niri: no portal injection; uinput is available).
@@ -57,7 +76,7 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 
 ## Implementation plan
 
-See `docs/plan.md`: crates and their responsibilities, the split between Claude, Codex, and the user, and the milestones M0 to M9. When the Cargo workspace exists, record the build and test commands here. At this time there are no cargo commands. The throwaway code in `spikes/` is not part of the workspace; build a spike with `env -u CARGO_TARGET_DIR cargo build --release` in its directory.
+See `docs/plan.md`: crates and their responsibilities, the view boundary, the split between Claude, Codex, and the user, and the milestones M0 to M9. The throwaway code in `spikes/` is not part of the workspace; build a spike with `env -u CARGO_TARGET_DIR cargo build --release` in its directory.
 
 ## Delegating to Codex
 

@@ -1,0 +1,37 @@
+[package]
+name = "telescreen-app"
+description = "The telescreen binary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "telescreen"
+path = "src/main.rs"
+
+[dependencies]
+telescreen-core.workspace = true
+telescreen-transport.workspace = true
+telescreen-view.workspace = true
+telescreen-render-egui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+clap.workspace = true
+crossbeam-channel.workspace = true
+directories.workspace = true
+winit.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+telescreen-platform-macos.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+telescreen-platform-linux.workspace = true

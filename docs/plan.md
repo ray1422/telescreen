@@ -12,7 +12,18 @@ One Cargo workspace under `crates/`. Dependencies point downward only. No crate 
 | `telescreen-transport` | QUIC (quinn) peer endpoint: dialer and listener, mutual pinning (ADR 0004), the trust store and the key pair files, reliable stream and pointer datagrams with sequence numbers, heartbeat | session rules (it moves messages only) |
 | `telescreen-platform-macos` | event tap capture and suppress, safety exit counter, watchdog, `CGEventPost` injection, cursor freeze and edge release, portal window AppKit adjustments (level, input sources), prompt window, Secure Event Input detection, the disclaim spawn of the network helper (ADR 0005) | session rules |
 | `telescreen-platform-linux` | wlr virtual pointer and uinput keyboard injection, layer-shell prompt, portal pointer lock, relative pointer, shortcut inhibit | session rules |
-| `telescreen-app` | the `telescreen` binary: CLI (`run`, `trust`, `fingerprint`, `check-config`), winit + egui portal UI, wiring of core + transport + platform; on macOS also the `telescreen-net` binary and the `.app` bundle script | domain logic |
+| `telescreen-view` | view models (what each screen shows: portal, prompt, control window) and intents (what the user did). Plain data, no UI library | drawing, windows, OS APIs |
+| `telescreen-render-egui` | the egui renderer: it draws a view model on a winit window and returns intents | session rules, window placement, fullscreen, window level, pointer lock |
+| `telescreen-app` | the `telescreen` binary: CLI (`run`, `trust`, `fingerprint`, `check-config`, `displays`), winit windows (placement, fullscreen, level through the platform crates), wiring of core + transport + platform + view + renderer; on macOS also the network helper subcommand `net-helper` (ADR 0005) and the `.app` bundle script | domain logic |
+
+### View boundary
+
+The user plans to replace the UI library later (user, 2026-10-27). Thus:
+
+- Only `telescreen-render-egui` uses egui. No other crate imports egui, egui-winit, or egui-wgpu.
+- The app makes a view model from the session state and gives it to the renderer. The renderer returns intents. The app does not read the state of the renderer.
+- Window management (winit windows, fullscreen, window level, pointer lock, input sources) is not part of the renderer. A different renderer uses the same windows.
+- The Linux layer-shell prompt draws the same prompt view model with its own small text renderer in `telescreen-platform-linux`.
 
 ## Who does what
 
@@ -24,14 +35,14 @@ One Cargo workspace under `crates/`. Dependencies point downward only. No crate 
 
 | ID | Milestone | Done when | Status |
 | --- | --- | --- | --- |
-| M0 | Workspace skeleton, traits, error types, CI-like local check script | `cargo check --all-targets` passes on macOS; `cargo check` for Linux crates passes on the Linux computer | not started |
-| M1 | Config in Rust (`telescreen-core`) | Rust tests mirror `tools/test_config.py` and pass; `telescreen check-config examples/config.yaml` works | not started |
-| M2 | Core session model: state machine, wire messages, key table, pointer mapping | Unit and acceptance tests for FLOW-5..FLOW-19, IN-3..IN-5, IN-11, NET-2, NET-6 pass with fake platforms and a fake transport | not started |
-| M3 | Transport | Two peers on one machine connect with mutual pinning; an unknown key is refused on both sides (AC-21); pointer datagrams drop old sequence numbers | not started |
-| M4 | Linux target | With a test source over the LAN: pointer and keys inject on niri, the prompt shows with the hint (user watches; no keys or clicks without supervision) | not started |
-| M5 | macOS source | Portal Space, confirmation, capture, pause and resume at the built-in display edge, focus lock, release shortcut, safety exit, watchdog | not started |
-| M6 | Mac to Linux end to end | AC-1..AC-21, AC-23..AC-25 pass on the hardware for this direction | not started |
-| M7 | Linux source and macOS target | AC-22 passes; the reverse session works (AC-23) | not started |
+| M0 | Workspace skeleton, traits, error types, CI-like local check script | `cargo check --all-targets` passes on macOS; `cargo check` for Linux crates passes on the Linux computer | done (2026-10-27): `cargo check` passes on macOS and on the Linux computer |
+| M1 | Config in Rust (`telescreen-core`) | Rust tests mirror `tools/test_config.py` and pass; `telescreen check-config examples/config.yaml` works | done (2026-10-27): `tests/config.rs` passes; YAML 1.1/1.2 ambiguity rule added to `docs/config.md` |
+| M2 | Core session model: state machine, wire messages, key table, pointer mapping | Unit and acceptance tests for FLOW-5..FLOW-19, IN-3..IN-5, IN-11, NET-2, NET-6 pass with fake platforms and a fake transport | done (2026-10-27): with fake platforms; tentative protocol in ADR 0007 |
+| M3 | Transport | Two peers on one machine connect with mutual pinning; an unknown key is refused on both sides (AC-21); pointer datagrams drop old sequence numbers | done (2026-10-27): loopback tests, including the heartbeat timeout of a hung peer |
+| M4 | Linux target | With a test source over the LAN: pointer and keys inject on niri, the prompt shows with the hint (user watches; no keys or clicks without supervision) | code done; hardware test not run (the Linux computer was busy) |
+| M5 | macOS source | Portal Space, confirmation, capture, pause and resume at the built-in display edge, focus lock, release shortcut, safety exit, watchdog | code done; hardware test not run |
+| M6 | Mac to Linux end to end | AC-1..AC-21, AC-23..AC-25 pass on the hardware for this direction | not started (needs the user) |
+| M7 | Linux source and macOS target | AC-22 passes; the reverse session works (AC-23) | code done (Linux portal capture, macOS injection and prompt); hardware test not run |
 | M8 | v0.1.0 | Support matrix in the spec updated; README build instructions; tag `v0.1.0` (ask the user first) | not started |
 | M9 | v0.2.0 text clipboard | The v0.2.0 conditions in spec section 2.1 pass on both directions; tag `v0.2.0` (ask the user first) | not started |
 

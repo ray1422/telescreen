@@ -1,0 +1,22 @@
+[package]
+name = "telescreen-platform-macos"
+description = "macOS backends of Telescreen: event tap, injection, displays, portal window adjustments"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+telescreen-core.workspace = true
+crossbeam-channel.workspace = true
+core-foundation-sys.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["NSString", "NSArray", "NSGeometry", "NSValue", "NSDictionary", "NSObject", "NSThread"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSWindow", "NSView", "NSResponder", "NSScreen", "NSTextInputContext", "NSGraphics", "NSRunningApplication"] }
+raw-window-handle.workspace = true

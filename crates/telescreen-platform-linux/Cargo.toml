@@ -1,0 +1,25 @@
+[package]
+name = "telescreen-platform-linux"
+description = "Linux (Wayland) backends of Telescreen: virtual pointer and uinput injection, outputs, layer-shell prompt, shortcut inhibit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+telescreen-core.workspace = true
+telescreen-view.workspace = true
+serde_json.workspace = true
+libc.workspace = true
+wayland-client.workspace = true
+wayland-backend.workspace = true
+wayland-protocols.workspace = true
+wayland-protocols-wlr.workspace = true
+evdev.workspace = true
+ab_glyph.workspace = true
+epaint_default_fonts.workspace = true
+raw-window-handle.workspace = true

@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+# A Mac and a Linux computer that share one LG display. Change the IDs, the host
+# names, the helper path, the metadata values, and the input values for your setup.
+# Find the metadata values with `display-helper show` (contrib/README.md).
+version: 1
+computers:
+  mac:
+    label: MacBook
+    hint: "Copy/paste: Command+C / Command+V."
+    endpoint: {host: mac.local, port: 24800}
+    devices:
+      LG:
+        id: shared-lg
+        portal-match:
+          driver: command
+          options:
+            argv: [/usr/local/bin/telescreen-display-helper, match, vendor=7789, model=30457]
+        input-target:
+          driver: command
+          options:
+            argv: [/usr/local/bin/telescreen-display-helper, target, vendor=7789, model=30457]
+        handoff:
+          linux:
+            steps:
+              - driver: command
+                timeout-ms: 15000
+                options:
+                  # An explicit shell: exit status 0 of BetterDisplay prints the result.
+                  argv:
+                    - /bin/sh
+                    - -c
+                    - /Applications/BetterDisplay.app/Contents/MacOS/BetterDisplay set -namelike=Desktop -ddcAlt=0x90 -vcp=inputSelectAlt >&2 && echo '{"ok":true}'
+  linux:
+    label: Linux
+    hint: "Copy/paste: Ctrl+C / Ctrl+V. Terminal: Ctrl+Shift+C / Ctrl+Shift+V."
+    endpoint: {host: linux.local, port: 24800}
+    devices:
+      LG:
+        id: shared-lg
+        portal-match:
+          driver: command
+          options:
+            argv: [/usr/local/bin/telescreen-display-helper, match, name=HDMI-A-2]
+        input-target:
+          driver: command
+          options:
+            argv: [/usr/local/bin/telescreen-display-helper, target, name=HDMI-A-2]
+        handoff:
+          mac:
+            steps:
+              # Not tested. LG alternate DDC addressing (BetterDisplay calls it ddcAlt).
+              - driver: command
+                timeout-ms: 15000
+                options:
+                  argv:
+                    - /bin/sh
+                    - -c
+                    - /usr/bin/ddcutil --mfg GSM --model 'LG ULTRAWIDE' setvcp xF4 x0091 --i2c-source-addr=x50 --noverify >&2 && echo '{"ok":true}'

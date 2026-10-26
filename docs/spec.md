@@ -115,7 +115,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 | Pointer injection | `CGEventPost` | wlroots virtual pointer, absolute motion on the input-target output |
 | Key injection | `CGEventPost` | uinput keyboard (the compositor keymap applies) |
 | Prompt overlay | AppKit window above the fullscreen level | layer-shell overlay |
-| Network | `telescreen-net` helper (ADR 0005) | in process |
+| Network | `telescreen net-helper` process (ADR 0005) | in process |
 
 ### 8.2 Support matrix
 
@@ -169,7 +169,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 ## 10. Open questions
 
 - Whether a pause should also switch the video input back automatically. Current decision: no.
-- The lease arbitration and the recovery protocol (NET-6): message design and timeouts.
+- The lease arbitration and the recovery protocol (NET-6): message design and timeouts. Tentative proposal for v0.1.0: `docs/adr/0007-session-protocol.md` (not confirmed by the user).
 - Which special shortcuts to support beyond IN-5, and the per-platform list of shortcuts that cannot be captured.
 - The effect of Wi-Fi delay spikes (spike 4: p99 about 85 ms) on the pointer in real use. Measure it in the product.
-- Minimum OS versions for each package.
+- Minimum OS versions for each package. macOS: 27.0 for v0.1.0, the only tested version (user, 2026-10-27). Linux: open.
