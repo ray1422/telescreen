@@ -158,43 +158,6 @@ impl Hooks {
     }
 }
 
-/// Starts the network helper as its own responsible process (ADR 0005).
-pub(crate) fn start_net_helper(
-    proxy: &EventLoopProxy<UserEvent>,
-    local: &telescreen_core::ids::ComputerId,
-    port: u16,
-) -> Result<Box<dyn crate::controller::NetPort>, String> {
-    use telescreen_platform_macos::spawn::{Disclaim, spawn_disclaimed};
-    let socket = crate::net_helper::HelperSocket::bind()?;
-    let program = std::env::current_exe().map_err(|e| e.to_string())?;
-    let args = vec![
-        "net-helper".to_owned(),
-        "--socket".to_owned(),
-        socket.path.to_string_lossy().into_owned(),
-        "--computer".to_owned(),
-        local.0.clone(),
-        "--port".to_owned(),
-        port.to_string(),
-    ];
-    let (_pid, disclaim) = spawn_disclaimed(&program, &args)?;
-    if disclaim == Disclaim::NotAvailable {
-        eprintln!(
-            "telescreen: the network helper is not disclaimed; Local Network privacy applies to the app"
-        );
-    }
-    let (events, stop) = (proxy.clone(), proxy.clone());
-    let net = socket.accept(
-        std::time::Duration::from_secs(5),
-        move |event| {
-            let _ = events.send_event(UserEvent::Net(event));
-        },
-        move || {
-            let _ = stop.send_event(UserEvent::NetworkDown("the network helper stopped".into()));
-        },
-    )?;
-    Ok(Box::new(net))
-}
-
 /// The displays and the capabilities, with no prompt.
 pub(crate) fn describe() -> (
     Result<Vec<telescreen_core::platform::DisplayInfo>, telescreen_core::platform::PlatformError>,

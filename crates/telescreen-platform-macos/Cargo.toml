@@ -14,7 +14,6 @@ workspace = true
 telescreen-core.workspace = true
 crossbeam-channel.workspace = true
 core-foundation-sys.workspace = true
-libc.workspace = true
 serde_json.workspace = true
 objc2.workspace = true
 objc2-foundation = { workspace = true, features = ["NSString", "NSArray", "NSGeometry", "NSValue", "NSDictionary", "NSObject", "NSThread"] }

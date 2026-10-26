@@ -42,16 +42,6 @@ enum Command {
     /// Show the displays, their metadata for driver helpers, and the input
     /// capabilities, as JSON. It opens no window.
     Displays,
-    /// Internal: the network helper process (ADR 0005). The app starts it.
-    #[command(hide = true)]
-    NetHelper {
-        #[arg(long)]
-        socket: PathBuf,
-        #[arg(long)]
-        computer: String,
-        #[arg(long)]
-        port: u16,
-    },
 }
 
 fn main() -> ExitCode {
@@ -96,11 +86,6 @@ fn run(command: Command) -> Result<(), String> {
             }
             Ok(())
         }
-        Command::NetHelper {
-            socket,
-            computer,
-            port,
-        } => telescreen_app::net_helper::serve(&socket, ComputerId(computer), port),
         Command::Displays => {
             println!("{}", telescreen_app::ui::describe_displays()?);
             Ok(())

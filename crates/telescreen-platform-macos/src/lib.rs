@@ -12,7 +12,6 @@ pub mod capture;
 pub mod displays;
 mod ffi;
 pub mod inject;
-pub mod spawn;
 pub mod window;
 
 use telescreen_core::platform::{Capability, InputCapabilities};

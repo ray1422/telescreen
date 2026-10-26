@@ -4,7 +4,7 @@ status: tentative
 
 # Session protocol, leases, and heartbeat (tentative)
 
-Status: tentative. Claude proposed this protocol for v0.1.0 (2026-10-27). The user did not confirm it. It answers the open question "lease arbitration and the recovery protocol (NET-6)" of `docs/spec.md` only for v0.1.0.
+Status: tentative. Claude proposed this protocol for v0.1.0 (2026-10-27). The user decided (2026-10-27) to keep it tentative until the hardware tests measure it (AC-18). Then change the status to accepted, or change the values. It answers the open question "lease arbitration and the recovery protocol (NET-6)" of `docs/spec.md` only for v0.1.0.
 
 ## Decision
 

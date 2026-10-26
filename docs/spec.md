@@ -99,10 +99,10 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **NET-1** The transport is an abstraction with a reliable ordered channel (control messages, key and button events) and an unreliable channel for the latest pointer position (ADR 0001). Key and button events must use the reliable channel.
 - **NET-2** v0.1.0 uses QUIC: reliable streams for the reliable channel, datagrams for the pointer. Each pointer datagram has a sequence number. The target drops a datagram that is older than the last one that it used.
 - **NET-3** Each peer has its own key pair. Both peers present a certificate, and each peer accepts the other only if its fingerprint is in the local trust list for that computer ID (ADR 0004). The user adds a fingerprint with `telescreen trust <computer-id> <fingerprint>`. No trust on first use.
-- **NET-4** A peer must not accept an injection request only because the sender is on the LAN.
+- **NET-4** A peer must not accept an injection request only because the sender is on the LAN. A trusted fingerprint identifies a peer; it does not authorize it. The target refuses a session request with `NoRoute` if its config has no handoff route from that source to the device (user, 2026-10-27).
 - **NET-5** The config does not hold keys, the trust list, or runtime state.
 - **NET-6** Sessions have a generation number and a heartbeat. A lease is held by one session only. The local state of one peer alone must not decide the lease owner.
-- **NET-7** On macOS, a separate helper process does all network I/O, as its own responsible process, because of Local Network privacy (ADR 0005). The app keeps `NSLocalNetworkUsageDescription` in `Info.plist`.
+- **NET-7** On macOS, the network runs in the app process (ADR 0008). The app keeps `NSLocalNetworkUsageDescription` in `Info.plist`. The Local Network permission of the installed app is open (AC-25).
 
 ## 8. Platforms
 
@@ -115,7 +115,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 | Pointer injection | `CGEventPost` | wlroots virtual pointer, absolute motion on the input-target output |
 | Key injection | `CGEventPost` | uinput keyboard (the compositor keymap applies) |
 | Prompt overlay | AppKit window above the fullscreen level | layer-shell overlay |
-| Network | `telescreen net-helper` process (ADR 0005) | in process |
+| Network | in process (ADR 0008) | in process |
 
 ### 8.2 Support matrix
 
@@ -169,7 +169,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 ## 10. Open questions
 
 - Whether a pause should also switch the video input back automatically. Current decision: no.
-- The lease arbitration and the recovery protocol (NET-6): message design and timeouts. Tentative proposal for v0.1.0: `docs/adr/0007-session-protocol.md` (not confirmed by the user).
+- The lease arbitration and the recovery protocol (NET-6): message design and timeouts. Tentative proposal for v0.1.0: `docs/adr/0007-session-protocol.md`. The user decided to keep it tentative until the hardware tests (AC-18) run.
 - Which special shortcuts to support beyond IN-5, and the per-platform list of shortcuts that cannot be captured.
 - The effect of Wi-Fi delay spikes (spike 4: p99 about 85 ms) on the pointer in real use. Measure it in the product.
 - Minimum OS versions for each package. macOS: 27.0 for v0.1.0, the only tested version (user, 2026-10-27). Linux: open.

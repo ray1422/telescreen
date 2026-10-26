@@ -59,8 +59,8 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 - `docs/adr/0002`: after a handoff, the receiving computer shows a prompt, and the user confirms with a key in the focused portal on the source computer. Forwarding starts only after this confirmation. It is a manual `verify`.
 - `docs/adr/0003`: the macOS portal is a native fullscreen Space with the menu bar and Dock hidden. While forwarding, it suppresses Space/app switching. Exits: pointer out of the portal edge, release shortcut, or the safety exit (Escape 10 times in 5 seconds, counted in the event tap callback).
 - `docs/adr/0004`: v0.1.0 pairing is manual fingerprint trust (`telescreen trust <computer-id> <fingerprint>`).
-- `docs/adr/0005`: on macOS, `Telescreen.app` (UI, event tap, injection) starts the network helper (`telescreen net-helper`, all QUIC I/O) as a disclaimed responsible process, because of Local Network privacy. They talk over a Unix domain socket.
-- `docs/adr/0007` (tentative, not confirmed by the user): session protocol, leases, heartbeat.
+- `docs/adr/0005` (superseded by `0008`): a disclaimed network helper process on macOS. Its premise was wrong. `docs/adr/0008`: the network runs in the app process on macOS too. Do not use `responsibility_spawnattrs_setdisclaim` as a workaround; the Local Network permission of the installed app is open (AC-25).
+- `docs/adr/0007` (tentative until the hardware tests run; user, 2026-10-27): session protocol, leases, heartbeat.
 - `docs/adr/0006`: all computers are symmetric peers. Each listens on its own endpoint, and the source dials the target. v0.1.0 has both directions (Mac to Linux first, then Linux to Mac).
 - `docs/spikes.md`: measured results of the throwaway spikes in `spikes/` (portal window, input tap, Linux injection, QUIC).
 - `docs/hardware.md`: measured facts about the user's display and the Linux receiving computer (niri: no portal injection; uinput is available).

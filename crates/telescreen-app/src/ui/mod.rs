@@ -51,8 +51,6 @@ pub enum UserEvent {
     Job(JobId, JobOutput),
     /// The input capture has events in its queue.
     Captured,
-    /// The network helper stopped (ADR 0005).
-    NetworkDown(String),
 }
 
 /// Runs the app until the control window closes.
@@ -68,8 +66,7 @@ pub fn run(config: Config, local: ComputerId, config_path: PathBuf) -> Result<()
         .computer(&local)
         .map(|c| c.endpoint.port)
         .ok_or("no local computer")?;
-    let mut notices = Vec::new();
-    let net = start_network(&proxy, &local, port, identity, &mut notices)?;
+    let net = start_network(&proxy, &local, port, identity)?;
 
     let config_dir = config_path
         .canonicalize()
@@ -102,7 +99,7 @@ pub fn run(config: Config, local: ComputerId, config_path: PathBuf) -> Result<()
         first_generation,
         ports,
     );
-    for notice in notices.into_iter().chain(parts.notices) {
+    for notice in parts.notices {
         controller.add_notice(notice);
     }
     let mut app = App {
@@ -119,24 +116,12 @@ pub fn run(config: Config, local: ComputerId, config_path: PathBuf) -> Result<()
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
 
-/// ADR 0005: on macOS the network runs in a helper process. Elsewhere, and if the
-/// helper cannot start, it runs in this process.
 fn start_network(
     proxy: &EventLoopProxy<UserEvent>,
     local: &ComputerId,
     port: u16,
     identity: Identity,
-    notices: &mut Vec<String>,
 ) -> Result<Box<dyn crate::controller::NetPort>, String> {
-    #[cfg(target_os = "macos")]
-    match platform::start_net_helper(proxy, local, port) {
-        Ok(net) => return Ok(net),
-        Err(e) => notices.push(format!(
-            "The network helper did not start ({e}). The network runs in the app; macOS Local Network privacy applies to the app."
-        )),
-    }
-    #[cfg(not(target_os = "macos"))]
-    let _ = &notices;
     let net_proxy = proxy.clone();
     let network = Network::start(
         NetConfig {
@@ -499,7 +484,6 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Net(event) => self.controller.on_net(event, Instant::now()),
             UserEvent::Job(id, output) => self.controller.on_job_done(id, output),
             UserEvent::Captured => {}
-            UserEvent::NetworkDown(reason) => self.controller.network_down(&reason, Instant::now()),
         }
         self.sync(event_loop);
     }

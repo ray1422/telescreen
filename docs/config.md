@@ -95,7 +95,7 @@ You can manually switch devices without portal-match, such as USB, from the devi
 
 ## Validation Layers
 
-1. Parsing: accept only the JSON-compatible subset of YAML. These items are prohibited: duplicate keys, custom tags, merge keys, aliases, non-string keys, non-finite numbers, and non-JSON types. Also prohibited: more than one document, anchors, and explicit tags (also `!!str`). Plain scalars resolve by the YAML 1.2 core schema. A plain (unquoted) scalar that YAML 1.1 resolves to a different type is ambiguous, and the parser rejects it. Quote it to get a string. The ambiguous forms:
+1. Parsing: accept only the JSON-compatible subset of YAML. These items are prohibited: duplicate keys, custom tags, merge keys, aliases, non-string keys, non-finite numbers, and non-JSON types. Also prohibited: more than one document, anchors, and explicit tags (also `!!str`). Plain scalars resolve by the YAML 1.2 core schema. A plain (unquoted) scalar that YAML 1.1 resolves to a different type is ambiguous, and the parser rejects it (user, 2026-10-27). Quote it to get a string. The ambiguous forms:
    - YAML 1.1 booleans: `y`, `Y`, `n`, `N`, and `yes`, `no`, `on`, `off` in lower case, title case (`Yes`), or upper case (`YES`).
    - Timestamps: a scalar that starts with `YYYY-M-D` (four digits, a hyphen, one or two digits, a hyphen, one or two digits).
    - Integers with a leading zero (`010`), with an optional sign.

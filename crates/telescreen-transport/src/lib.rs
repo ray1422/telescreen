@@ -1,8 +1,7 @@
 //! QUIC peer endpoint of Telescreen (ADR 0001, ADR 0004, NET-1..NET-3).
 //!
 //! The transport moves [`Message`]s and [`PointerDatagram`]s between peers. It has
-//! no session rules. The API is message-level ([`NetCommand`], [`NetEvent`]), so
-//! that the macOS network helper (ADR 0005) can carry it over a local socket.
+//! no session rules. The API is message-level ([`NetCommand`], [`NetEvent`]).
 
 pub mod fingerprint;
 pub mod identity;
@@ -10,7 +9,6 @@ pub mod network;
 mod tls;
 pub mod trust;
 
-use serde::{Deserialize, Serialize};
 use telescreen_core::config::Endpoint;
 use telescreen_core::ids::ComputerId;
 use telescreen_core::wire::{Message, PointerDatagram};
@@ -21,7 +19,7 @@ pub use network::{NetConfig, Network};
 pub use trust::TrustStore;
 
 /// A request to the transport.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NetCommand {
     /// Connect to a peer. On success the transport sends [`NetEvent::Connected`].
     Dial {
@@ -40,7 +38,7 @@ pub enum NetCommand {
 }
 
 /// A report from the transport.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NetEvent {
     /// An authenticated connection to the peer is open (both sides pinned, Hello done).
     Connected {

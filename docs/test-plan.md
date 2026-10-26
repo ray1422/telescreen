@@ -79,5 +79,5 @@ Repeat the table of part 3 with the roles reversed: the portal on Linux (a fulls
 - AC-19: unplug the LG (or turn it off) while forwarding. Expected: forwarding stops and the portal closes.
 - AC-20: needs a third computer. Not possible with this hardware.
 - AC-24: needs a USB switch. Not possible with this hardware.
-- AC-25: the Mac connects through the network helper. Expected: no "network helper did not start" notice, and the connection works from the app started with `open`.
+- AC-25: install the app from a downloaded dmg (with `com.apple.quarantine`), drag it to Applications, and start it. Expected: macOS shows the Local Network prompt, and after the user allows it, the connection works. A local build does not test this path (ADR 0008).
 - Performance (spec section 9): not measured in v0.1.0 yet.

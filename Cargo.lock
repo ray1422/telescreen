@@ -2872,7 +2872,6 @@ dependencies = [
  "clap",
  "crossbeam-channel",
  "directories",
- "serde",
  "serde_json",
  "telescreen-core",
  "telescreen-platform-linux",
@@ -2921,7 +2920,6 @@ version = "0.1.0"
 dependencies = [
  "core-foundation-sys",
  "crossbeam-channel",
- "libc",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",

@@ -774,21 +774,6 @@ impl Controller {
         }
     }
 
-    /// The network stopped (for example, the network helper process stopped). All
-    /// connections are gone.
-    pub fn network_down(&mut self, reason: &str, now: Instant) {
-        for peer in self.connected.clone() {
-            self.on_net(
-                NetEvent::Disconnected {
-                    peer,
-                    reason: reason.to_owned(),
-                },
-                now,
-            );
-        }
-        self.notice(format!("The network stopped: {reason}"));
-    }
-
     fn peer_lost(&mut self, peer: &ComputerId) {
         let source_actions = self
             .portal

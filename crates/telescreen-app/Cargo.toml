@@ -22,7 +22,6 @@ telescreen-core.workspace = true
 telescreen-transport.workspace = true
 telescreen-view.workspace = true
 telescreen-render-egui.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 clap.workspace = true

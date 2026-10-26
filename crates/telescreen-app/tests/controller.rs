@@ -717,19 +717,3 @@ fn adr0007_controller_sends_the_heartbeat() {
         .tick(t0 + std::time::Duration::from_millis(1000));
     assert_eq!(sent(&w), 2);
 }
-
-#[test]
-fn ac18_network_down_ends_the_session() {
-    let mut w = World::new();
-    w.advance_to_forwarding();
-    w.mac
-        .controller
-        .network_down("the network helper stopped", w.now);
-    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "connection lost".into()
-        })
-    );
-}

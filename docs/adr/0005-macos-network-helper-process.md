@@ -1,8 +1,11 @@
 ---
-status: accepted
+status: superseded
+superseded-by: 0008
 ---
 
 # On macOS, a disclaimed helper process does the network I/O
+
+Superseded by ADR 0008 (2026-10-27): the helper was removed. The premise of this ADR was wrong; ADR 0008 gives the reasons.
 
 macOS Local Network privacy blames a connection on its responsible process. An ad-hoc signed app installed from a dmg did not get the Local Network prompt and failed with "No route to host" (`docs/spikes.md`, spike 4). Command-line tools are not subject to this check. Thus `Telescreen.app` does the UI, the event tap, and the injection, and it holds the Accessibility and Input Monitoring permissions. It starts `telescreen-net` with `posix_spawn`, `POSIX_SPAWN_SETEXEC`, and the private `responsibility_spawnattrs_setdisclaim` (weak-linked), so that `telescreen-net` is its own responsible process. `telescreen-net` does all QUIC I/O. The two processes talk over a Unix domain socket in the user's runtime directory. A local socket is not subject to Local Network privacy.
 
