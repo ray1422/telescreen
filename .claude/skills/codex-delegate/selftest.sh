@@ -94,6 +94,8 @@ expect 1 "a commit by Codex is rejected" "$tool" gate t1 "$allow"
 git -C "$wt" reset -q --hard "$(cat "$main-wt/.meta/t1.base")"; reset
 
 printf '\nintegrate + cleanup\n'
+expect 1 "cleanup refuses to drop changes that were not integrated" "$tool" cleanup t1
+[ -d "$wt" ] && pass "the worktree is still there" || fail "cleanup removed the worktree"
 expect 0 "gate passes before integrate" "$tool" gate t1 "$allow"
 head_before=$(git rev-parse HEAD)
 expect 0 "integrate stages the task without a commit" "$tool" integrate t1
@@ -104,6 +106,11 @@ grep -q 'let _ = 1' crates/core/src/lib.rs && pass "change is in the main checko
 git reset -q --hard
 expect 0 "cleanup removes the task" "$tool" cleanup t1
 [ ! -d "$wt" ] && ! git rev-parse -q --verify codex/t1 >/dev/null && pass "worktree and branch are gone" || fail "worktree or branch remains"
+
+expect 0 "prepare a second task" "$tool" prepare t2
+echo '// change' >> "$main-wt/t2/crates/core/src/lib.rs"
+expect 0 "cleanup --discard drops changes that were not integrated" "$tool" cleanup t2 --discard
+[ ! -d "$main-wt/t2" ] && pass "the discarded worktree is gone" || fail "the discarded worktree remains"
 
 echo
 [ $failures = 0 ] && echo "selftest: all checks passed" || { echo "selftest: $failures failure(s)"; exit 1; }

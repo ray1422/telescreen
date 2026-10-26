@@ -44,7 +44,7 @@ The gate rejects all of these items. Some items are on a fixed deny list, so the
 7. **Review.** Read the full diff: `git -C <main>-wt/<task> diff`. Check the code against the spec and the tests. Check the new tests of Codex too: they must test behavior, not repeat the implementation. Check the code quality: abstractions, responsibility boundaries, no platform code in the core, explicit error types, no `unwrap` on fallible input. Do not trust the report from Codex. If Codex reported a problem, decide it, then run a new task with the answer (`--resume` is not used; write a new prompt).
 8. **Integrate.** Run `codex-wt integrate <task>` on the branch where the work goes (main, or a milestone branch). The script stages the changes of the task as one change. It makes no commit and no merge, so the history does not get the task branch.
 9. **Verify on main.** Run the full build and the full tests in the main checkout, with the main `target/`. Do not use the artifacts from the worktree. If the result is good, write one clean, self-contained commit. If it is not good, run `git reset --hard` to drop the staged changes.
-10. **Clean up.** Run `codex-wt cleanup <task>`.
+10. **Clean up.** Run `codex-wt cleanup <task>` as its own command, after the commit. Do not chain it after `integrate` with `;`: if `integrate` fails, the worktree is the only copy of the work. `cleanup` refuses to remove changes that were not integrated; `--discard` removes them on purpose.
 
 ## Verification
 
