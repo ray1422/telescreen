@@ -221,7 +221,8 @@ impl App {
                 .add_notice("Cannot find the display of the control window.".into());
             return;
         };
-        let mut attributes = Window::default_attributes().with_title("Telescreen portal");
+        let mut attributes = platform::window_attributes(Window::default_attributes())
+            .with_title("Telescreen portal");
         // Make the window on the display first. The fullscreen request then uses
         // the display of the window.
         if let Some(bounds) = self.controller.display(&token).and_then(|d| d.bounds) {
@@ -355,7 +356,7 @@ impl App {
                     self.controller.prompt_failed(session);
                     return;
                 };
-                let attributes = Window::default_attributes()
+                let attributes = platform::window_attributes(Window::default_attributes())
                     .with_title("Telescreen")
                     .with_decorations(false)
                     .with_active(false)
@@ -478,7 +479,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.control.is_some() {
             return;
         }
-        let attributes = Window::default_attributes()
+        let attributes = platform::window_attributes(Window::default_attributes())
             .with_title("Telescreen")
             .with_inner_size(LogicalSize::new(560.0, 520.0));
         match event_loop.create_window(attributes) {

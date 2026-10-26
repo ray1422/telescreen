@@ -27,6 +27,7 @@ use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::monitor::MonitorHandle;
 use winit::platform::scancode::PhysicalKeyExtScancode;
+use winit::platform::wayland::WindowAttributesExtWayland;
 use winit::window::{Window, WindowAttributes};
 
 use super::prompt_queue::{PromptQueue, PromptRequest};
@@ -240,6 +241,12 @@ pub(crate) fn monitor_token(monitor: &MonitorHandle) -> Option<DisplayToken> {
 
 pub(crate) fn portal_attributes(attributes: WindowAttributes) -> WindowAttributes {
     attributes
+}
+
+/// The Wayland app ID of each window, so that the compositor and a test tool can
+/// find the windows of Telescreen.
+pub(crate) fn window_attributes(attributes: WindowAttributes) -> WindowAttributes {
+    attributes.with_name("dev.telescreen.Telescreen", "telescreen")
 }
 
 pub(crate) fn prompt_created(_: &Window) {}

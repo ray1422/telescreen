@@ -99,6 +99,10 @@ pub(crate) fn portal_attributes(attributes: WindowAttributes) -> WindowAttribute
     attributes.with_borderless_game(true)
 }
 
+pub(crate) fn window_attributes(attributes: WindowAttributes) -> WindowAttributes {
+    attributes
+}
+
 pub(crate) fn prompt_created(prompt: &Window) {
     window::make_overlay(prompt);
 }
