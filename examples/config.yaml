@@ -1,0 +1,129 @@
+# yaml-language-server: $schema=../schema/config.schema.json
+# Design example. You cannot run it directly. You must supply the helper paths and drivers.
+# The computer that a command belongs to runs that command. The JSON context comes through stdin.
+version: 1
+computers:
+  mac:
+    label: MacBook
+    endpoint: {host: mac.local, port: 24800}
+    devices:
+      Desktop:                         # Only a local alias. It is not for matching OS names.
+        id: shared-lg                  # The shared ID of the same physical device
+        portal-match:
+          driver: command
+          options:
+            argv: [/Users/me/bin/lg-helper, portal-match]
+        input-target:
+          driver: command
+          options:
+            argv: [/Users/me/bin/lg-helper, input-target]
+        handoff:
+          pc1:
+            steps:
+              - driver: command
+                timeout-ms: 3000
+                options:
+                  argv: [/Users/me/bin/lg-helper, select, dp]
+            verify:
+              driver: command
+              options:
+                argv: [/Users/me/bin/lg-helper, is-input, dp]
+          pc2:
+            steps:
+              - driver: command
+                options:
+                  argv: [/Users/me/bin/lg-helper, select, hdmi]
+      BuiltIn:
+        id: mac-internal               # Connects only to the Mac. It has no switchable targets.
+        portal-match:
+          driver: command
+          options:
+            argv: [/Users/me/bin/internal-helper, portal-match]
+      USB:
+        id: shared-usb                 # Generic device. It needs no display-identification fields.
+        handoff:
+          pc1:
+            steps:
+              - driver: lab.http       # Example extension driver. It is not built in.
+                options:
+                  method: POST
+                  url: http://usb-controller.local/select
+                  json: {port: 2}
+  pc1:
+    label: Linux Workstation
+    endpoint: {host: pc1.local, port: 24800}
+    devices:
+      Monitor1:
+        id: shared-lg
+        portal-match:
+          driver: command
+          options:
+            argv: [/home/me/bin/lg-helper, portal-match]
+        input-target:
+          driver: command
+          options:
+            argv: [/home/me/bin/lg-helper, input-target]
+        handoff:
+          mac:
+            steps:
+              - driver: command
+                options:
+                  argv: [/home/me/bin/lg-helper, select, usb-c]
+          pc2:
+            steps:
+              - driver: command
+                options:
+                  argv: [/home/me/bin/lg-helper, select, hdmi]
+      SideScreen:
+        id: side-screen                # Connects only to PC1 and PC2
+        portal-match:
+          driver: command
+          options:
+            argv: [/home/me/bin/side-helper, portal-match]
+        input-target:
+          driver: command
+          options:
+            argv: [/home/me/bin/side-helper, input-target]
+        handoff:
+          pc2:
+            steps:
+              - driver: command
+                options:
+                  argv: [/home/me/bin/side-helper, select, pc2]
+      Hub:
+        id: shared-usb
+        handoff:
+          mac:
+            steps:
+              - driver: lab.http
+                options:
+                  method: POST
+                  url: http://usb-controller.local/select
+                  json: {port: 1}
+  pc2:
+    endpoint: {host: pc2.local, port: 24800}
+    devices:
+      MyScreen:
+        id: shared-lg
+        input-target:
+          driver: command
+          options:
+            argv: [/opt/bin/lg-helper, input-target]
+        handoff:
+          mac:
+            steps:
+              - driver: command
+                options:
+                  argv: [/opt/bin/lg-helper, select, usb-c]
+      OtherScreen:
+        id: side-screen
+        input-target:
+          driver: command
+          options:
+            argv: [/opt/bin/side-helper, input-target]
+        handoff:
+          pc1:
+            steps:
+              - driver: command
+                options:
+                  argv: [/opt/bin/side-helper, select, pc1]

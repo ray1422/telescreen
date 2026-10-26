@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+/target/
+.claude/settings.local.json
+CLAUDE.local.md

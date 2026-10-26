@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Telescreen configuration v1 (design draft)",
+  "description": "Structural validation only; docs/config.md specifies semantic checks and driver contracts.",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "computers": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/computer"
+      }
+    }
+  },
+  "required": [
+    "version",
+    "computers"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "driver": {
+              "const": "command"
+            },
+            "timeout-ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 300000,
+              "default": 5000
+            },
+            "options": {
+              "type": "object",
+              "properties": {
+                "argv": {
+                  "type": "array",
+                  "minItems": 1,
+                  "prefixItems": [
+                    {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  ],
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "cwd": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "env": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "argv"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "driver",
+            "options"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "driver": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*\\.[a-z][a-z0-9.-]*$"
+            },
+            "timeout-ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 300000,
+              "default": 5000
+            },
+            "options": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "driver",
+            "options"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "handoff": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/operation"
+          }
+        },
+        "verify": {
+          "$ref": "#/$defs/operation"
+        }
+      },
+      "required": [
+        "steps"
+      ],
+      "additionalProperties": false
+    },
+    "device": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "portal-match": {
+          "$ref": "#/$defs/operation"
+        },
+        "input-target": {
+          "$ref": "#/$defs/operation"
+        },
+        "handoff": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/handoff"
+          }
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "computer": {
+      "type": "object",
+      "properties": {
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "endpoint": {
+          "type": "object",
+          "properties": {
+            "host": {
+              "type": "string",
+              "minLength": 1
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            }
+          },
+          "required": [
+            "host",
+            "port"
+          ],
+          "additionalProperties": false
+        },
+        "devices": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/device"
+          }
+        }
+      },
+      "required": [
+        "endpoint",
+        "devices"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

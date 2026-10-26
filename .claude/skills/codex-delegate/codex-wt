@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# codex-wt — run one Codex implementation task in an isolated git worktree.
+#
+#   codex-wt prepare   <task>                  make worktree + branch, clone target/
+#   codex-wt run       <task> <prompt-file> [--background]
+#   codex-wt gate      <task> <allowlist-file> [--allow-unsafe] [--allow-lint-allow]
+#   codex-wt integrate <task> <commit-message> commit on the branch, merge --no-commit into main
+#   codex-wt cleanup   <task>                  remove worktree, branch, metadata
+#
+# Run every subcommand from the main checkout. Layout:
+#   <main>/                       main checkout (never inside a Codex writable root)
+#   <main>-wt/<task>/             task worktree = Codex writable root
+#   <main>-wt/<task>/target/      APFS clone of <main>/target (own CARGO_TARGET_DIR)
+#   <main>-wt/.meta/<task>.base   base commit; outside the worktree so Codex cannot edit it
+
+set -euo pipefail
+
+die() { printf 'codex-wt: %s\n' "$*" >&2; exit 1; }
+
+main=$(git rev-parse --show-toplevel 2>/dev/null) || die "not in a git repository"
+[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] ||
+    die "run from the main checkout, not from a worktree"
+wt_root="$main-wt"
+meta="$wt_root/.meta"
+
+task_paths() {
+    [ -n "${1:-}" ] || die "missing <task>"
+    case $1 in *[!a-z0-9-]*) die "task name must match [a-z0-9-]+";; esac
+    task=$1
+    wt="$wt_root/$task"
+    branch="codex/$task"
+    base_file="$meta/$task.base"
+}
+
+# Paths Codex must never change, even when an allowlist names them.
+denied() {
+    case $1 in
+        Cargo.toml|*/Cargo.toml|Cargo.lock|*/Cargo.lock) return 0;;
+        build.rs|*/build.rs) return 0;;
+        tests/*|*/tests/*|benches/*|*/benches/*|fixtures/*|*/fixtures/*) return 0;;
+        .cargo/*|*/.cargo/*|rust-toolchain*|rustfmt.toml|.rustfmt.toml|clippy.toml|.clippy.toml) return 0;;
+        docs/*|schema/*|examples/*|tools/*) return 0;;
+        .claude/*|.agents/*|.codex/*|.github/*|.git/*|.gitignore|.gitattributes|.gitmodules) return 0;;
+        CLAUDE.md|AGENTS.md|HANDOFF.md|README.md|GLOSSARY.md|LICENSE*) return 0;;
+        *.sh|Makefile|justfile|*.toml) return 0;;
+    esac
+    return 1
+}
+
+cmd_prepare() {
+    task_paths "${1:-}"
+    git rev-parse -q --verify HEAD >/dev/null || die "no commit yet; git worktree needs HEAD"
+    [ -z "$(git status --porcelain --untracked-files=all)" ] ||
+        die "main checkout is not clean; commit the tests and dependencies first"
+    [ ! -e "$wt" ] || die "$wt already exists"
+    mkdir -p "$meta"
+    git worktree add -q "$wt" -b "$branch"
+    git rev-parse HEAD >"$base_file"
+    if [ -d "$main/target" ]; then
+        # APFS clone: copy-on-write, near-zero disk. -p keeps the old mtimes, so the
+        # freshly checked-out sources are newer and cargo rebuilds the local crates.
+        cp -cRp "$main/target" "$wt/target"
+        echo "cloned target/ into the worktree"
+    else
+        echo "no $main/target yet; Codex will build from the cargo cache (offline)"
+    fi
+    echo "worktree: $wt"
+    echo "branch:   $branch"
+    echo "base:     $(cat "$base_file")"
+}
+
+cmd_run() {
+    task_paths "${1:-}"
+    prompt=${2:-}
+    [ -f "$prompt" ] || die "missing <prompt-file>"
+    [ -d "$wt" ] || die "no worktree; run prepare first"
+    companion=$(ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null |
+        sort -V | tail -n 1)
+    [ -n "$companion" ] || die "codex plugin companion not found"
+    bg=()
+    [ "${3:-}" = --background ] && bg=(--background)
+    # The Codex CLI ships inside ChatGPT.app and is not on PATH. CODEX_BIN_DIR overrides it.
+    codex_bin=${CODEX_BIN_DIR:-/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin}
+    command -v codex >/dev/null 2>&1 || [ -x "$codex_bin/codex" ] ||
+        die "codex CLI not found on PATH or in $codex_bin"
+    PATH="$codex_bin:$PATH" CARGO_TARGET_DIR="$wt/target" exec node "$companion" task --write ${bg[@]+"${bg[@]}"} \
+        --cwd "$wt" --prompt-file "$prompt"
+}
+
+cmd_gate() {
+    task_paths "${1:-}"
+    allowlist=${2:-}
+    [ -f "$allowlist" ] || die "missing <allowlist-file>"
+    shift 2
+    allow_unsafe=0 allow_lint=0
+    for f in "$@"; do
+        case $f in
+            --allow-unsafe) allow_unsafe=1;;
+            --allow-lint-allow) allow_lint=1;;
+            *) die "unknown option $f";;
+        esac
+    done
+    [ -d "$wt" ] && [ -f "$base_file" ] || die "no worktree or base record for $task"
+    base=$(cat "$base_file")
+    fail=0
+    bad() { printf '  REJECT  %s\n' "$*"; fail=1; }
+
+    # 1. Codex must not commit, branch, or move HEAD.
+    [ "$(git -C "$wt" rev-parse HEAD)" = "$base" ] || bad "HEAD moved from base $base (Codex made a commit or reset)"
+    [ "$(git -C "$wt" rev-parse --abbrev-ref HEAD)" = "$branch" ] || bad "worktree is not on $branch"
+    [ -z "$(git -C "$wt" stash list)" ] || bad "stash entries exist"
+
+    # 2. Every changed, new, deleted, or ignored path, except target/.
+    allowed=$(grep -v '^[[:space:]]*\(#\|$\)' "$allowlist" | sed 's/[[:space:]]*$//')
+    changed=()
+    while IFS= read -r -d '' entry; do
+        st=${entry:0:2} path=${entry:3}
+        case $st in R*|C*) IFS= read -r -d '' _orig || true;; esac
+        case $path in target|target/*) continue;; esac
+        changed+=("$path")
+        if denied "$path"; then
+            bad "$path: on the deny list"
+        elif ! grep -qxF -- "$path" <<<"$allowed"; then
+            bad "$path: not in the allowlist ($st)"
+        elif [ "$st" = "!!" ]; then
+            bad "$path: ignored file created"
+        fi
+    done < <(git -C "$wt" status --porcelain=v1 -z --untracked-files=all --ignored=matching)
+
+    # 3. Content checks on the added lines of the allowed files.
+    for path in ${changed[@]+"${changed[@]}"}; do
+        [ -f "$wt/$path" ] || continue
+        if git -C "$wt" cat-file -e "$base:$path" 2>/dev/null; then
+            added=$(git -C "$wt" diff "$base" -- "$path" | sed -n 's/^+//p' | grep -v '^++ ' || true)
+        else
+            added=$(cat "$wt/$path")
+        fi
+        grep -nE '#\[cfg\(test\)\]|#\[test\]|#\[tokio::test' <<<"$added" >/dev/null && bad "$path: adds a test (tests belong to Claude)"
+        [ $allow_unsafe = 1 ] || { grep -nE '\bunsafe\b|extern "C"' <<<"$added" >/dev/null && bad "$path: adds unsafe or FFI"; }
+        [ $allow_lint = 1 ] || { grep -nE '#!?\[(allow|expect)\(' <<<"$added" >/dev/null && bad "$path: adds a lint allow/expect"; }
+        grep -nE '\b(include!|include_str!|include_bytes!|env!|option_env!)\(' <<<"$added" >/dev/null && bad "$path: adds a compile-time include/env macro (review by hand)"
+    done
+
+    if [ $fail = 0 ]; then
+        printf 'gate: PASS (%d paths)\n' "${#changed[@]}"
+        git -C "$wt" status --short --untracked-files=all
+    else
+        printf 'gate: FAIL — revert the rejected paths or redo the task; do not accept it\n'
+        exit 1
+    fi
+}
+
+cmd_integrate() {
+    task_paths "${1:-}"
+    msg=${2:-}
+    [ -n "$msg" ] || die "missing <commit-message>"
+    [ -z "$(git status --porcelain --untracked-files=all)" ] || die "main checkout is not clean"
+    git -C "$wt" add -A
+    git -C "$wt" commit -q -m "$msg"
+    git merge --no-ff --no-commit "$branch" || die "merge conflict; resolve or run: git merge --abort"
+    echo "merged $branch into $(git rev-parse --abbrev-ref HEAD) without a commit."
+    echo "next: run the full build and tests here, then 'git commit' or 'git merge --abort'."
+}
+
+cmd_cleanup() {
+    task_paths "${1:-}"
+    [ ! -d "$wt" ] || git worktree remove --force "$wt"
+    git branch -D "$branch" 2>/dev/null || true
+    rm -f "$base_file"
+    git worktree prune
+    echo "removed $task"
+}
+
+sub=${1:-}
+shift || true
+case $sub in
+    prepare|run|gate|integrate|cleanup) "cmd_$sub" "$@";;
+    *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2;;
+esac
