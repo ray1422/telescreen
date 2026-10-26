@@ -8,16 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Write English text to ASD-STE100 (Simplified Technical English): one instruction or one statement in each sentence, active voice, imperative for procedures, short sentences, one word for one meaning. Do not use Codex/ChatGPT output as a model for style or grammar.
 - The project is at the start and the spec has open questions. If the docs do not specify a behavior, ask the user. Do not make the decision silently. Do not show a tentative default as a confirmed user preference.
 - The repository is public (open source from the start). Do not commit personal data: email addresses, IP addresses, host names, home-directory paths, user names, device serial numbers, or UUIDs. Local facts go in `CLAUDE.local.md` (gitignored). Read it if it exists. Before each commit, scan the staged diff for personal data.
-- Claude owns the design, tests, dependencies, review, and commits. Codex is only a feature implementer ("typist"). See [Delegating to Codex](#delegating-to-codex).
+- Claude owns the design, the acceptance tests, dependencies, review, and commits. Codex is only a feature implementer ("typist"); it can add unit tests for its own code when a task permits it, but it never changes existing tests. When an implementation problem or a rule conflict comes up, Codex reports it to Claude instead of working around it. See [Delegating to Codex](#delegating-to-codex).
 
 ## Current state
 
 The repository has only the spec. There is no application code. Read these files in this sequence before you design:
 
-1. `HANDOFF.md`: requirements, confirmed decisions, runtime flow, MVP sequence, acceptance table, open questions.
-2. `docs/config.md`: the normative config and driver I/O contract (protocol 1). This file and `schema/config.schema.json` are the source of truth.
-3. `docs/architecture.md`: the recommended stack and the input/window limits of each platform, with sources.
-4. `examples/config.yaml`: the reference config. The helper paths are placeholders. `lab.http` is not an implemented driver.
+1. `docs/spec.md`: the normative product spec with requirement IDs (scope, versions, user flow, input, UI, network, platforms, acceptance criteria, open questions). Refer to its IDs in tests and Codex prompts.
+2. `docs/plan.md`: the work plan to v0.2.0 (crates, who does what, milestones and their status). Keep its status column current.
+3. `docs/config.md`: the normative config and driver I/O contract (protocol 1). This file and `schema/config.schema.json` are the source of truth.
+4. `docs/architecture.md`: the recommended stack and the input/window limits of each platform, with sources.
+5. `examples/config.yaml`: the reference config. The helper paths are placeholders. `lab.http` is not an implemented driver.
 
 Spec tools (Python, validation only; they do not execute commands from the config):
 
@@ -52,16 +53,9 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 - Input has four different capabilities: capture, suppress, forward, inject. A hook callback only captures, decides, and pushes to a bounded queue. It does not call helpers, does not use the network, and does not block. Key/button down and up events must stay in pairs. On disconnect, lease expiry, display removal, or queue overflow, both ends must release all held keys and buttons. Always keep a local release shortcut. Never forward it.
 - Do not claim support for a platform that you did not test (X11 is not all of Linux; Wayland depends on the compositor and portal). Do not invent benchmark numbers.
 
-## Implementation plan (Claude's decision; revise it with the user)
+## Implementation plan
 
-Use a Rust Cargo workspace under `crates/`. Add each crate when an MVP step needs it:
-
-- `telescreen-core`: config parsing and semantic validation (same results as `tools/validate_config.py` and its tests), shared-id resolution, driver registry, the `command` driver runner, the session/lease state machine. No platform code.
-- `telescreen-transport`: paired, encrypted, long-lived connection, heartbeat, session generation.
-- `telescreen-platform-macos`, `telescreen-platform-linux` (later `-windows`): capture/suppress/inject, cursor, display topology, clipboard, capability reports.
-- `telescreen-app`: winit + egui binary: portal windows, target list, status, release UI.
-
-The first step is `telescreen-core` config parsing/validation and driver I/O (HANDOFF MVP step 1). When the workspace exists, record the build and test commands here. At this time there are no cargo commands.
+See `docs/plan.md`: crates and their responsibilities, the split between Claude, Codex, and the user, and the milestones M0 to M9. When the Cargo workspace exists, record the build and test commands here. At this time there are no cargo commands. The throwaway code in `spikes/` is not part of the workspace; build a spike with `env -u CARGO_TARGET_DIR cargo build --release` in its directory.
 
 ## Delegating to Codex
 

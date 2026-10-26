@@ -42,7 +42,7 @@ BetterDisplay get -namelike=Desktop -ddcAlt -vcp=inputSelectAlt
 BetterDisplay get -namelike=Desktop -ddc -vcp=inputSelect
 ```
 
-Decision (user, 2026-10-27): the handoff of this display has no `verify`. A handoff is complete when the switch command exits with 0. A DDC write does not report if the display really changed the video input. Thus the app does not know the video input of the display after a handoff. HANDOFF runtime step 7 says: if the video input is not confirmed, mark it as unknown. `docs/config.md` runtime step 5 says: the UI must show "confirmed" and "unverified" as different states.
+Decision (user, 2026-10-27): the handoff of this display has no `verify`. A handoff is complete when the switch command exits with 0. A DDC write does not report if the display really changed the video input. Thus the app does not know the video input of the display after a handoff. `docs/spec.md` FLOW-16 says: if the video input is not confirmed, show it as unknown. `docs/config.md` runtime step 5 says: the UI must show "confirmed" and "unverified" as different states.
 
 ### BetterDisplay CLI exit codes
 

@@ -15,15 +15,18 @@ Codex can only:
 
 - Edit, make, or delete the files in the allowlist of the task.
 - Run `cargo build`, `cargo check`, `cargo test`, `cargo clippy`, and `cargo fmt` with `--offline`.
+- Add new unit tests for its own code (new `#[cfg(test)]` modules or new files under `tests/`), only when the task permits it and the gate runs with `--allow-new-tests`. This lets Codex test its internals, so that it does not write code that only passes the acceptance tests.
+
+Claude decides each task: permit new tests when the task has internal logic that the acceptance tests do not reach. Do not permit them for a small or purely mechanical task.
 
 Codex must never:
 
 - Change a `Cargo.toml`, `Cargo.lock`, any `*.toml`, `build.rs`, `.cargo/`, or `rust-toolchain*`.
-- Add or change tests (`tests/`, `benches/`, fixtures, `#[cfg(test)]`, `#[test]`).
+- Change, delete, weaken, or disable an existing test. The test files that exist at the base commit are Claude's acceptance tests, and they are frozen. Do not remove an existing `#[test]`, `#[cfg(test)]`, `#[should_panic]`, or `assert!`, and do not add `#[ignore]`. Do not touch `benches/` or fixtures.
 - Change `docs/`, `schema/`, `examples/`, `tools/`, `.claude/`, `.agents/`, `.codex/`, `.github/`, `.gitignore`, scripts, or the top-level `*.md` files.
 - Add `unsafe`, FFI, or `#[allow]`/`#[expect]`, unless the task permits it.
 - Use git (commit, branch, stash, reset, checkout), install tools, or use the network.
-- Work around a blocker. If Codex is blocked, it must stop and report.
+- Work around a blocker or a rule. If a test looks wrong, if the spec is not clear, if a dependency is missing, or if two rules conflict, Codex must stop and report the problem to Claude. Then Claude decides.
 
 The gate rejects all of these items. Some items are on a fixed deny list, so the gate rejects them also when the allowlist names them.
 
@@ -36,9 +39,9 @@ The gate rejects all of these items. Some items are on a fixed deny list, so the
    - records the base commit in `<main>-wt/.meta/<task>.base`, outside the Codex writable root.
 3. **Write the allowlist.** Write one repository-relative path on each line, in a file outside the worktree (for example the scratchpad). Lines that start with `#` are comments. Do not use globs.
 4. **Write the prompt.** Copy `PROMPT-TEMPLATE.md` to a file outside the worktree. Fill in all the fields. Write it in ASD-STE100 English.
-5. **Run Codex.** Run `codex-wt run <task> <prompt-file>`. Add `--background` for a long task. The script sets `CARGO_TARGET_DIR=<worktree>/target` and runs the companion with `--write --cwd <worktree>` (sandbox `workspace-write`, approval `never`).
-6. **Gate.** Run `codex-wt gate <task> <allowlist-file>`. Add `--allow-unsafe` or `--allow-lint-allow` only if the task permits it. If the gate fails, do not accept the result "because it works". Revert the rejected paths, or run `codex-wt cleanup <task>` and redo the task with a better prompt.
-7. **Review.** Read the full diff: `git -C <main>-wt/<task> diff`. Check the code against the spec and the tests. Do not trust the report from Codex.
+5. **Run Codex.** Run `codex-wt run <task> <prompt-file>`. Add `--background` for a long task. The script sets `CARGO_TARGET_DIR=<worktree>/target` and runs the companion with `--write --cwd <worktree>` (sandbox `workspace-write`, approval `never`), model `gpt-6.1-sol`, effort `high` (user, 2026-10-27; override with `CODEX_MODEL`, `CODEX_EFFORT`).
+6. **Gate.** Run `codex-wt gate <task> <allowlist-file>`. Add `--allow-new-tests`, `--allow-unsafe`, or `--allow-lint-allow` only if the task permits it. If the gate fails, do not accept the result "because it works". Revert the rejected paths, or run `codex-wt cleanup <task>` and redo the task with a better prompt.
+7. **Review.** Read the full diff: `git -C <main>-wt/<task> diff`. Check the code against the spec and the tests. Check the new tests of Codex too: they must test behavior, not repeat the implementation. Check the code quality: abstractions, responsibility boundaries, no platform code in the core, explicit error types, no `unwrap` on fallible input. Do not trust the report from Codex. If Codex reported a problem, decide it, then run a new task with the answer (`--resume` is not used; write a new prompt).
 8. **Integrate.** Get the user's approval. Then run `codex-wt integrate <task> "<commit message>"`. The script commits on the task branch and merges into main with `--no-commit`.
 9. **Verify on main.** Run the full build and the full tests in the main checkout, with the main `target/`. Do not use the artifacts from the worktree. If the result is good, run `git commit`. If it is not good, run `git merge --abort`.
 10. **Clean up.** Run `codex-wt cleanup <task>`.

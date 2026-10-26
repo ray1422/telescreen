@@ -2,9 +2,12 @@
 
 Telescreen coordinates device switching and keyboard/mouse forwarding through a portal window. It is for environments that have more than one computer and physical connections.
 
-The current deliverable is a design specification. The application is not implemented yet.
+Status: the specification and the technology spikes are done. The application is not implemented yet. The first release will be v0.1.0.
 
-- [Implementation handoff and acceptance](HANDOFF.md)
+- [Specification and acceptance criteria](docs/spec.md)
+- [Glossary](GLOSSARY.md)
+- [Decisions](docs/adr/)
+- [Spike results](docs/spikes.md)
 - [Configuration and driver contract](docs/config.md)
 - [Technology choices and platform limitations](docs/architecture.md)
 - [YAML example](examples/config.yaml)

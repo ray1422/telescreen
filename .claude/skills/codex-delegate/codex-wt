@@ -3,7 +3,7 @@
 #
 #   codex-wt prepare   <task>                  make worktree + branch, clone target/
 #   codex-wt run       <task> <prompt-file> [--background]
-#   codex-wt gate      <task> <allowlist-file> [--allow-unsafe] [--allow-lint-allow]
+#   codex-wt gate      <task> <allowlist-file> [--allow-new-tests] [--allow-unsafe] [--allow-lint-allow]
 #   codex-wt integrate <task> <commit-message> commit on the branch, merge --no-commit into main
 #   codex-wt cleanup   <task>                  remove worktree, branch, metadata
 #
@@ -37,11 +37,11 @@ denied() {
     case $1 in
         Cargo.toml|*/Cargo.toml|Cargo.lock|*/Cargo.lock) return 0;;
         build.rs|*/build.rs) return 0;;
-        tests/*|*/tests/*|benches/*|*/benches/*|fixtures/*|*/fixtures/*) return 0;;
+        benches/*|*/benches/*|fixtures/*|*/fixtures/*) return 0;;
         .cargo/*|*/.cargo/*|rust-toolchain*|rustfmt.toml|.rustfmt.toml|clippy.toml|.clippy.toml) return 0;;
         docs/*|schema/*|examples/*|tools/*) return 0;;
         .claude/*|.agents/*|.codex/*|.github/*|.git/*|.gitignore|.gitattributes|.gitmodules) return 0;;
-        CLAUDE.md|AGENTS.md|HANDOFF.md|README.md|GLOSSARY.md|LICENSE*) return 0;;
+        CLAUDE.md|AGENTS.md|README.md|GLOSSARY.md|LICENSE*) return 0;;
         *.sh|Makefile|justfile|*.toml) return 0;;
     esac
     return 1
@@ -83,8 +83,11 @@ cmd_run() {
     codex_bin=${CODEX_BIN_DIR:-/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin}
     command -v codex >/dev/null 2>&1 || [ -x "$codex_bin/codex" ] ||
         die "codex CLI not found on PATH or in $codex_bin"
+    # Model and reasoning effort (user, 2026-10-27). Override with CODEX_MODEL / CODEX_EFFORT.
+    model=${CODEX_MODEL:-gpt-6.1-sol}
+    effort=${CODEX_EFFORT:-high}
     PATH="$codex_bin:$PATH" CARGO_TARGET_DIR="$wt/target" exec node "$companion" task --write ${bg[@]+"${bg[@]}"} \
-        --cwd "$wt" --prompt-file "$prompt"
+        --model "$model" --effort "$effort" --cwd "$wt" --prompt-file "$prompt"
 }
 
 cmd_gate() {
@@ -92,9 +95,10 @@ cmd_gate() {
     allowlist=${2:-}
     [ -f "$allowlist" ] || die "missing <allowlist-file>"
     shift 2
-    allow_unsafe=0 allow_lint=0
+    allow_unsafe=0 allow_lint=0 allow_new_tests=0
     for f in "$@"; do
         case $f in
+            --allow-new-tests) allow_new_tests=1;;
             --allow-unsafe) allow_unsafe=1;;
             --allow-lint-allow) allow_lint=1;;
             *) die "unknown option $f";;
@@ -118,6 +122,19 @@ cmd_gate() {
         case $st in R*|C*) IFS= read -r -d '' _orig || true;; esac
         case $path in target|target/*) continue;; esac
         changed+=("$path")
+        in_base=0
+        git -C "$wt" cat-file -e "$base:$path" 2>/dev/null && in_base=1
+        case $path in
+            tests/*|*/tests/*)
+                # Test files that exist at the base are Claude's acceptance tests: frozen.
+                if [ $in_base = 1 ]; then
+                    bad "$path: changes or deletes an acceptance test (frozen)"
+                    continue
+                elif [ $allow_new_tests = 0 ]; then
+                    bad "$path: adds a test file (this task does not permit new tests)"
+                    continue
+                fi;;
+        esac
         if denied "$path"; then
             bad "$path: on the deny list"
         elif ! grep -qxF -- "$path" <<<"$allowed"; then
@@ -128,14 +145,21 @@ cmd_gate() {
     done < <(git -C "$wt" status --porcelain=v1 -z --untracked-files=all --ignored=matching)
 
     # 3. Content checks on the added lines of the allowed files.
+    test_marker='#\[cfg\(test\)\]|#\[(tokio::)?test\]|#\[should_panic'
+    removed_marker="$test_marker"'|\bassert(_eq|_ne)?!'
     for path in ${changed[@]+"${changed[@]}"}; do
-        [ -f "$wt/$path" ] || continue
         if git -C "$wt" cat-file -e "$base:$path" 2>/dev/null; then
+            # Existing tests must not be removed or changed, also in src files.
+            removed=$(git -C "$wt" diff "$base" -- "$path" | sed -n 's/^-//p' | grep -v '^-- ' || true)
+            grep -nE "$removed_marker" <<<"$removed" >/dev/null && bad "$path: removes or changes an existing test"
+            [ -f "$wt/$path" ] || continue
             added=$(git -C "$wt" diff "$base" -- "$path" | sed -n 's/^+//p' | grep -v '^++ ' || true)
         else
+            [ -f "$wt/$path" ] || continue
             added=$(cat "$wt/$path")
         fi
-        grep -nE '#\[cfg\(test\)\]|#\[test\]|#\[tokio::test' <<<"$added" >/dev/null && bad "$path: adds a test (tests belong to Claude)"
+        grep -nE '#\[ignore' <<<"$added" >/dev/null && bad "$path: adds #[ignore] (disables a test)"
+        [ $allow_new_tests = 1 ] || { grep -nE "$test_marker" <<<"$added" >/dev/null && bad "$path: adds a test (this task does not permit new tests)"; }
         [ $allow_unsafe = 1 ] || { grep -nE '\bunsafe\b|extern "C"' <<<"$added" >/dev/null && bad "$path: adds unsafe or FFI"; }
         [ $allow_lint = 1 ] || { grep -nE '#!?\[(allow|expect)\(' <<<"$added" >/dev/null && bad "$path: adds a lint allow/expect"; }
         grep -nE '\b(include!|include_str!|include_bytes!|env!|option_env!)\(' <<<"$added" >/dev/null && bad "$path: adds a compile-time include/env macro (review by hand)"

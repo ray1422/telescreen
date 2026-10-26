@@ -23,8 +23,10 @@ cd "$main"
 git init -q
 git config user.email selftest@example.invalid
 git config user.name selftest
+mkdir -p crates/core/tests
 printf '[package]\nname = "core"\n' >crates/core/Cargo.toml
-printf 'pub fn a() {}\n' >crates/core/src/lib.rs
+printf 'pub fn a() {}\n\n#[cfg(test)]\nmod t {\n    #[test]\n    fn base() { assert_eq!(1, 1); }\n}\n' >crates/core/src/lib.rs
+printf '#[test]\nfn acceptance() { assert!(true); }\n' >crates/core/tests/acceptance.rs
 printf '/target/\n' >.gitignore
 echo artifact >target/debug/libcore.rlib
 touch -t 202001010000 target/debug/libcore.rlib
@@ -40,16 +42,16 @@ expect 1 "prepare refuses an existing task" "$tool" prepare t1
 expect 1 "prepare refuses a bad task name" "$tool" prepare 'Bad/Name'
 
 allow=$root/allow.txt
-printf '# allowed\ncrates/core/src/lib.rs\ncrates/core/src/new.rs\n' >"$allow"
+printf '# allowed\ncrates/core/src/lib.rs\ncrates/core/src/new.rs\ncrates/core/tests/acceptance.rs\ncrates/core/tests/extra.rs\n' >"$allow"
 
 printf '\ngate\n'
 expect 0 "no change passes" "$tool" gate t1 "$allow"
-printf 'pub fn a() { let _ = 1; }\n' >"$wt/crates/core/src/lib.rs"
+sed -i '' 's/pub fn a() {}/pub fn a() { let _ = 1; }/' "$wt/crates/core/src/lib.rs"
 printf 'pub fn b() {}\n' >"$wt/crates/core/src/new.rs"
 echo more >"$wt/target/debug/extra"
 expect 0 "allowed edits pass; target/ is ignored" "$tool" gate t1 "$allow"
 
-reset() { git -C "$wt" checkout -q -- . && git -C "$wt" clean -qfdx -e target; printf 'pub fn a() { let _ = 1; }\n' >"$wt/crates/core/src/lib.rs"; }
+reset() { git -C "$wt" checkout -q -- . && git -C "$wt" clean -qfdx -e target; sed -i '' 's/pub fn a() {}/pub fn a() { let _ = 1; }/' "$wt/crates/core/src/lib.rs"; }
 
 printf '[dependencies]\nserde = "1"\n' >>"$wt/crates/core/Cargo.toml"
 expect 1 "Cargo.toml edit is rejected" "$tool" gate t1 "$allow"; reset
@@ -61,15 +63,32 @@ mkdir -p "$wt/.cargo" && echo '[build]' >"$wt/.cargo/config.toml"
 expect 1 ".cargo/config.toml is rejected" "$tool" gate t1 "$allow"; reset
 echo junk >"$wt/crates/core/target-cache.log"; printf 'crates/core/target-cache.log\n' >>"$allow"; printf '*.log\n' >>"$wt/.gitignore"
 expect 1 ".gitignore edit is rejected" "$tool" gate t1 "$allow"; reset
-printf '#[cfg(test)]\nmod t { #[test] fn x() {} }\n' >>"$wt/crates/core/src/lib.rs"
-expect 1 "added test module is rejected" "$tool" gate t1 "$allow"; reset
+printf '#[cfg(test)]\nmod t2 { #[test] fn x() {} }\n' >>"$wt/crates/core/src/lib.rs"
+expect 1 "added test module is rejected by default" "$tool" gate t1 "$allow"
+expect 0 "added test module passes with --allow-new-tests" "$tool" gate t1 "$allow" --allow-new-tests; reset
+printf '#[test]\nfn extra() {}\n' >"$wt/crates/core/tests/extra.rs"
+expect 1 "new test file is rejected by default" "$tool" gate t1 "$allow"
+expect 0 "new test file passes with --allow-new-tests" "$tool" gate t1 "$allow" --allow-new-tests; reset
+echo '// tweak' >>"$wt/crates/core/tests/acceptance.rs"
+expect 1 "acceptance test edit is rejected even with --allow-new-tests" "$tool" gate t1 "$allow" --allow-new-tests; reset
+rm "$wt/crates/core/tests/acceptance.rs"
+expect 1 "acceptance test deletion is rejected" "$tool" gate t1 "$allow" --allow-new-tests; reset
+sed -i '' 's/ assert_eq!(1, 1); / /' "$wt/crates/core/src/lib.rs"
+expect 1 "removing an assert from an existing src test is rejected" "$tool" gate t1 "$allow" --allow-new-tests; reset
+sed -i '' 's/    #\[test\]/    #[test]\
+    #[ignore]/' "$wt/crates/core/src/lib.rs"
+expect 1 "adding #[ignore] is rejected" "$tool" gate t1 "$allow" --allow-new-tests; reset
+printf 'pub fn checked(x: u8) { assert!(x > 0); }\n' >>"$wt/crates/core/src/lib.rs"
+expect 0 "a runtime assert! in normal code passes" "$tool" gate t1 "$allow"; reset
 printf 'pub fn u() { unsafe {} }\n' >>"$wt/crates/core/src/lib.rs"
 expect 1 "unsafe is rejected by default" "$tool" gate t1 "$allow"
 expect 0 "unsafe passes with --allow-unsafe" "$tool" gate t1 "$allow" --allow-unsafe; reset
 printf '#[allow(dead_code)]\nfn z() {}\n' >>"$wt/crates/core/src/lib.rs"
 expect 1 "lint allow is rejected by default" "$tool" gate t1 "$allow"; reset
-rm "$wt/crates/core/src/lib.rs"; [ ! -e "$wt/crates/core/src/lib.rs" ] || fail "could not delete"
-expect 0 "deleting an allowlisted file passes" "$tool" gate t1 "$allow"; reset
+rm "$wt/crates/core/src/new.rs" 2>/dev/null; printf 'pub fn b() {}\n' >"$wt/crates/core/src/new.rs"
+expect 0 "a new allowlisted file passes" "$tool" gate t1 "$allow"; reset
+rm "$wt/crates/core/src/lib.rs"
+expect 1 "deleting a file that has tests is rejected" "$tool" gate t1 "$allow"; reset
 git -C "$wt" -c user.email=a@b.invalid -c user.name=x commit -qam sneaky
 expect 1 "a commit by Codex is rejected" "$tool" gate t1 "$allow"
 git -C "$wt" reset -q --hard "$(cat "$main-wt/.meta/t1.base")"; reset
