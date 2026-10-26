@@ -11,11 +11,17 @@ use winit::event_loop::EventLoopProxy;
 use super::UserEvent;
 use crate::controller::{Job, JobId, JobPort, NetPort, run_job};
 
-pub struct NetHandle(pub Rc<Network>);
+pub struct NetHandle(pub Option<Rc<Network>>);
 
 impl NetPort for NetHandle {
     fn send(&mut self, command: NetCommand) {
-        self.0.send(command);
+        if let Some(network) = &self.0 {
+            network.send(command);
+        }
+    }
+
+    fn shutdown(&mut self) {
+        drop(self.0.take());
     }
 }
 

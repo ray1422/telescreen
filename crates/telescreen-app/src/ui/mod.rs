@@ -140,7 +140,7 @@ fn start_network(
         },
     )
     .map_err(|e| e.to_string())?;
-    Ok(Box::new(ports::NetHandle(Rc::new(network))))
+    Ok(Box::new(ports::NetHandle(Some(Rc::new(network)))))
 }
 
 struct Surface {
@@ -523,6 +523,7 @@ impl ApplicationHandler<UserEvent> for App {
         let is_control = self.control.as_ref().is_some_and(|c| c.window.id() == id);
         let used = is_portal && self.portal_event(&event);
         if is_control && matches!(event, WindowEvent::CloseRequested) {
+            self.controller.shutdown();
             self.close_portal_window();
             event_loop.exit();
             return;
@@ -562,6 +563,10 @@ impl ApplicationHandler<UserEvent> for App {
             self.sync(event_loop);
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(now + TICK));
+    }
+
+    fn exiting(&mut self, _: &ActiveEventLoop) {
+        self.controller.shutdown();
     }
 }
 

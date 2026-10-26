@@ -29,6 +29,11 @@ use telescreen_view::{
 /// Sends commands to the transport.
 pub trait NetPort {
     fn send(&mut self, command: NetCommand);
+
+    /// Sends the queued commands and stops the transport. It blocks until the
+    /// transport sent the close of each connection. The app calls it once, at
+    /// exit.
+    fn shutdown(&mut self) {}
 }
 
 /// A driver job. The runner runs it on a worker and reports the result with
@@ -189,6 +194,7 @@ pub struct Controller {
     /// The last display list, for the view. `displays()` refreshes it.
     display_cache: Vec<DisplayInfo>,
     last_heartbeat: Option<Instant>,
+    is_shutdown: bool,
 }
 
 const MAX_NOTICES: usize = 8;
@@ -223,6 +229,7 @@ impl Controller {
             notices: Vec::new(),
             display_cache: Vec::new(),
             last_heartbeat: None,
+            is_shutdown: false,
         };
         controller.displays();
         let caps = controller.ports.capabilities.clone();
@@ -244,6 +251,27 @@ impl Controller {
 
     pub fn config_dir(&self) -> &std::path::Path {
         &self.config_dir
+    }
+
+    /// The app exits: end each session with its held state released, close each
+    /// connection, and shut down the transport, so that no peer waits for the
+    /// heartbeat timeout (AC-18). The portal session ends with `SourceClosed`.
+    /// Each session where this computer is the target ends with
+    /// `TargetDisconnected`. A second call does nothing.
+    pub fn shutdown(&mut self) {
+        if self.is_shutdown {
+            return;
+        }
+        self.is_shutdown = true;
+        self.close_portal(EndReason::SourceClosed);
+        let sessions: Vec<_> = self.incoming.keys().copied().collect();
+        for session in sessions {
+            self.end_incoming(session, EndReason::TargetDisconnected);
+        }
+        for peer in std::mem::take(&mut self.connected) {
+            self.ports.net.send(NetCommand::Close { peer });
+        }
+        self.ports.net.shutdown();
     }
 
     /// Adds a notice for the user (IN-12).

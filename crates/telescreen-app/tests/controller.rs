@@ -85,6 +85,10 @@ struct Log {
     pointer: Vec<Normalized>,
     prompts: Vec<String>,
     prompt_visible: bool,
+    /// Peers of each `NetCommand::Close`.
+    closed: Vec<ComputerId>,
+    /// The number of `NetPort::shutdown` calls.
+    net_shutdowns: usize,
 }
 
 type Shared = Rc<RefCell<Log>>;
@@ -93,6 +97,9 @@ struct Net(Shared);
 impl NetPort for Net {
     fn send(&mut self, command: NetCommand) {
         self.0.borrow_mut().net.push_back(command);
+    }
+    fn shutdown(&mut self) {
+        self.0.borrow_mut().net_shutdowns += 1;
     }
 }
 
@@ -293,7 +300,26 @@ impl World {
                                 self.now,
                             );
                         }
-                        NetCommand::Close { .. } => {}
+                        NetCommand::Close { peer } => {
+                            assert_eq!(peer, b.id);
+                            a.log.borrow_mut().closed.push(peer);
+                            let reason = || "closed".to_string();
+                            let (a_id, b_id) = (a.id.clone(), b.id.clone());
+                            a.controller.on_net(
+                                NetEvent::Disconnected {
+                                    peer: b_id,
+                                    reason: reason(),
+                                },
+                                self.now,
+                            );
+                            b.controller.on_net(
+                                NetEvent::Disconnected {
+                                    peer: a_id,
+                                    reason: reason(),
+                                },
+                                self.now,
+                            );
+                        }
                     }
                 }
                 loop {
@@ -695,6 +721,50 @@ fn ac20_second_source_gets_busy() {
         Some(SessionPhase::Forwarding),
         "the Mac keeps its session"
     );
+}
+
+#[test]
+fn ac18_source_exit_ends_the_session_and_closes() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::Input(key(56, true)));
+    w.pump();
+    w.mac.controller.shutdown();
+    w.mac.controller.shutdown();
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    assert_eq!(w.mac.log.borrow().closed, vec![ComputerId::from("pc1")]);
+    assert_eq!(
+        w.mac.log.borrow().net_shutdowns,
+        1,
+        "one transport shutdown"
+    );
+}
+
+#[test]
+fn ac18_target_exit_ends_the_session_and_closes() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::Input(key(56, true)));
+    w.pump();
+    w.pc1.controller.shutdown();
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
+    assert_eq!(
+        w.phase(),
+        Some(SessionPhase::Ended {
+            reason: "disconnected on the target".into()
+        })
+    );
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    assert_eq!(w.pc1.log.borrow().closed, vec![ComputerId::from("mac")]);
+    assert_eq!(w.pc1.log.borrow().net_shutdowns, 1);
 }
 
 #[test]
