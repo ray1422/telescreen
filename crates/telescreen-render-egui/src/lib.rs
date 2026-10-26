@@ -7,4 +7,4 @@
 mod screens;
 mod window;
 
-pub use window::{RenderError, WindowRenderer};
+pub use window::{RenderError, SharedGpu, WindowRenderer};

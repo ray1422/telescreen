@@ -25,7 +25,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use telescreen_core::config::Config;
 use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
 use telescreen_core::wire::{EndReason, Message};
-use telescreen_render_egui::WindowRenderer;
+use telescreen_render_egui::{SharedGpu, WindowRenderer};
 use telescreen_transport::network::{Timing, TrustSource};
 use telescreen_transport::{Identity, NetConfig, NetEvent, Network};
 use telescreen_view::{Intent, PromptScreen};
@@ -104,6 +104,7 @@ pub fn run(config: Config, local: ComputerId, config_path: PathBuf) -> Result<()
     }
     let mut app = App {
         controller,
+        gpu: SharedGpu::default(),
         hooks: parts.hooks,
         control: None,
         portal: None,
@@ -149,9 +150,9 @@ struct Surface {
 }
 
 impl Surface {
-    fn new(window: Window) -> (Self, Option<String>) {
+    fn new(window: Window, gpu: &mut SharedGpu) -> (Self, Option<String>) {
         let window = Arc::new(window);
-        match WindowRenderer::new(window.clone()) {
+        match WindowRenderer::new(window.clone(), gpu) {
             Ok(renderer) => (
                 Self {
                     window,
@@ -192,6 +193,7 @@ struct PromptSurface {
 
 struct App {
     controller: Controller,
+    gpu: SharedGpu,
     hooks: platform::Hooks,
     control: Option<Surface>,
     portal: Option<PortalSurface>,
@@ -238,7 +240,7 @@ impl App {
                         .as_ref()
                         .and_then(platform::monitor_token)
                 );
-                let (surface, error) = Surface::new(window);
+                let (surface, error) = Surface::new(window, &mut self.gpu);
                 if let Some(error) = error {
                     self.controller.add_notice(error);
                 }
@@ -363,7 +365,7 @@ impl App {
                 match event_loop.create_window(attributes) {
                     Ok(window) => {
                         platform::prompt_created(&window);
-                        let (surface, error) = Surface::new(window);
+                        let (surface, error) = Surface::new(window, &mut self.gpu);
                         if let Some(error) = error {
                             self.controller.add_notice(error);
                         }
@@ -481,7 +483,7 @@ impl ApplicationHandler<UserEvent> for App {
             .with_inner_size(LogicalSize::new(560.0, 520.0));
         match event_loop.create_window(attributes) {
             Ok(window) => {
-                let (surface, error) = Surface::new(window);
+                let (surface, error) = Surface::new(window, &mut self.gpu);
                 if let Some(error) = error {
                     eprintln!("telescreen: {error}");
                 }

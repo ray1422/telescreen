@@ -29,13 +29,32 @@ impl std::fmt::Debug for WindowRenderer {
     }
 }
 
+/// The wgpu instance, adapter, device, and queue that all windows share. The
+/// first window makes them. With one device for each window, NVIDIA on Wayland
+/// crashed when one window closed (hardware test 2026-10-27).
+#[derive(Default)]
+pub struct SharedGpu(Option<egui_wgpu::WgpuSetupExisting>);
+
+impl std::fmt::Debug for SharedGpu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedGpu")
+            .field("ready", &self.0.is_some())
+            .finish()
+    }
+}
+
 impl WindowRenderer {
     /// Makes the egui context, the egui-winit state, and the egui-wgpu painter for
-    /// the window. Blocks until the GPU device is ready.
-    pub fn new(window: Arc<Window>) -> Result<Self, RenderError> {
+    /// the window. Blocks until the GPU device is ready. The first window makes
+    /// the shared GPU objects in `gpu`; the other windows use them.
+    pub fn new(window: Arc<Window>, gpu: &mut SharedGpu) -> Result<Self, RenderError> {
         let context = egui::Context::default();
+        let wgpu_setup = match &gpu.0 {
+            Some(existing) => egui_wgpu::WgpuSetup::Existing(existing.clone()),
+            None => egui_wgpu::WgpuSetup::from_display_handle(Arc::clone(&window)),
+        };
         let config = egui_wgpu::WgpuConfiguration {
-            wgpu_setup: egui_wgpu::WgpuSetup::from_display_handle(Arc::clone(&window)),
+            wgpu_setup,
             ..Default::default()
         };
         let painter_context = context.clone();
@@ -54,6 +73,16 @@ impl WindowRenderer {
             Ok::<_, egui_wgpu::WgpuError>(painter)
         })
         .map_err(|error| RenderError::Setup(error.to_string()))?;
+        if gpu.0.is_none()
+            && let Some(render_state) = painter.render_state()
+        {
+            gpu.0 = Some(egui_wgpu::WgpuSetupExisting {
+                instance: render_state.instance,
+                adapter: render_state.adapter,
+                device: render_state.device,
+                queue: render_state.queue,
+            });
+        }
         let state = egui_winit::State::new(
             context.clone(),
             egui::ViewportId::ROOT,
