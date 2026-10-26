@@ -95,10 +95,13 @@ git -C "$wt" reset -q --hard "$(cat "$main-wt/.meta/t1.base")"; reset
 
 printf '\nintegrate + cleanup\n'
 expect 0 "gate passes before integrate" "$tool" gate t1 "$allow"
-expect 0 "integrate merges without a commit" "$tool" integrate t1 "feat: test change"
-[ -f "$main/.git/MERGE_HEAD" ] && pass "merge is pending (no commit on main)" || fail "merge is not pending"
+head_before=$(git rev-parse HEAD)
+expect 0 "integrate stages the task without a commit" "$tool" integrate t1
+[ "$(git rev-parse HEAD)" = "$head_before" ] && [ ! -f "$main/.git/MERGE_HEAD" ] && pass "no commit and no merge on main" || fail "integrate made a commit or a merge"
+[ -z "$(git -C "$wt" log --format=%H "$head_before"..HEAD)" ] && pass "the task branch has no commit" || fail "integrate committed on the task branch"
+git diff --cached --quiet && fail "nothing is staged" || pass "the changes are staged"
 grep -q 'let _ = 1' crates/core/src/lib.rs && pass "change is in the main checkout" || fail "change is missing"
-git merge --abort
+git reset -q --hard
 expect 0 "cleanup removes the task" "$tool" cleanup t1
 [ ! -d "$wt" ] && ! git rev-parse -q --verify codex/t1 >/dev/null && pass "worktree and branch are gone" || fail "worktree or branch remains"
 

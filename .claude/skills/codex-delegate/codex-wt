@@ -4,7 +4,7 @@
 #   codex-wt prepare   <task>                  make worktree + branch, clone target/
 #   codex-wt run       <task> <prompt-file> [--background]
 #   codex-wt gate      <task> <allowlist-file> [--allow-new-tests] [--allow-unsafe] [--allow-lint-allow]
-#   codex-wt integrate <task> <commit-message> commit on the branch, merge --no-commit into main
+#   codex-wt integrate <task>                  squash the task into the current branch (staged, no commit)
 #   codex-wt cleanup   <task>                  remove worktree, branch, metadata
 #
 # Run every subcommand from the main checkout. Layout:
@@ -176,14 +176,19 @@ cmd_gate() {
 
 cmd_integrate() {
     task_paths "${1:-}"
-    msg=${2:-}
-    [ -n "$msg" ] || die "missing <commit-message>"
     [ -z "$(git status --porcelain --untracked-files=all)" ] || die "main checkout is not clean"
+    # Codex does not commit. Bring its uncommitted worktree changes over as one staged
+    # change, so that Claude writes one clean, self-contained commit.
     git -C "$wt" add -A
-    git -C "$wt" commit -q -m "$msg"
-    git merge --no-ff --no-commit "$branch" || die "merge conflict; resolve or run: git merge --abort"
-    echo "merged $branch into $(git rev-parse --abbrev-ref HEAD) without a commit."
-    echo "next: run the full build and tests here, then 'git commit' or 'git merge --abort'."
+    git -C "$wt" diff --cached --binary "$(cat "$base_file")" >"$meta/$task.patch"
+    if [ ! -s "$meta/$task.patch" ]; then
+        rm -f "$meta/$task.patch"
+        die "the task has no changes"
+    fi
+    git apply --index --3way "$meta/$task.patch" || die "the patch does not apply; resolve it, or run cleanup and redo the task"
+    rm -f "$meta/$task.patch"
+    echo "staged the changes of $task on $(git rev-parse --abbrev-ref HEAD) (no commit)."
+    echo "next: run the full build and tests here, then 'git commit', or 'git reset --hard' to drop them."
 }
 
 cmd_cleanup() {

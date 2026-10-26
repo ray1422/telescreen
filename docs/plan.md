@@ -32,12 +32,12 @@ One Cargo workspace under `crates/`. Dependencies point downward only. No crate 
 | M5 | macOS source | Portal Space, confirmation, capture, pause and resume at the built-in display edge, focus lock, release shortcut, safety exit, watchdog | not started |
 | M6 | Mac to Linux end to end | AC-1..AC-21, AC-23..AC-25 pass on the hardware for this direction | not started |
 | M7 | Linux source and macOS target | AC-22 passes; the reverse session works (AC-23) | not started |
-| M8 | v0.1.0 | Support matrix in the spec updated; README build instructions; tag `v0.1.0` (with the user's approval) | not started |
-| M9 | v0.2.0 text clipboard | The v0.2.0 conditions in spec section 2.1 pass on both directions; tag `v0.2.0` (with the user's approval) | not started |
+| M8 | v0.1.0 | Support matrix in the spec updated; README build instructions; tag `v0.1.0` (ask the user first) | not started |
+| M9 | v0.2.0 text clipboard | The v0.2.0 conditions in spec section 2.1 pass on both directions; tag `v0.2.0` (ask the user first) | not started |
 
 ## Rules for each milestone
 
 - Write the acceptance tests first, with spec IDs in the test names or comments.
 - One Codex task changes one responsibility. Give it the exact file allowlist.
-- After each milestone: run all tests, update this table, and ask the user before the commit.
+- After each milestone: run all tests, update this table, and commit (clean, self-contained commits; see CLAUDE.md). Ask the user before a tag or a push.
 - Do not claim a platform result that the user did not observe or that a test did not measure.
