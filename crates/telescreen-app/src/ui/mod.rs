@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telescreen_core::config::Config;
 use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
-use telescreen_core::wire::EndReason;
+use telescreen_core::wire::{EndReason, Message};
 use telescreen_render_egui::WindowRenderer;
 use telescreen_transport::network::{Timing, TrustSource};
 use telescreen_transport::{Identity, NetConfig, NetEvent, Network};
@@ -481,8 +481,14 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::Net(event) => self.controller.on_net(event, Instant::now()),
-            UserEvent::Job(id, output) => self.controller.on_job_done(id, output),
+            UserEvent::Net(event) => {
+                log_net_event(&event);
+                self.controller.on_net(event, Instant::now());
+            }
+            UserEvent::Job(id, output) => {
+                log_job(&output);
+                self.controller.on_job_done(id, output);
+            }
             UserEvent::Captured => {}
         }
         self.sync(event_loop);
@@ -596,4 +602,37 @@ pub(crate) struct Parts {
     pub labels: crate::controller::Labels,
     pub hooks: platform::Hooks,
     pub notices: Vec<String>,
+}
+
+/// Writes a network event to stderr for diagnostics. It does not write input
+/// events or pointer datagrams: they can contain typed text.
+fn log_net_event(event: &NetEvent) {
+    match event {
+        NetEvent::Pointer { .. } => {}
+        NetEvent::Message {
+            message: Message::Heartbeat | Message::Input { .. },
+            ..
+        } => {}
+        NetEvent::Message { peer, message } => eprintln!("telescreen: from {peer}: {message:?}"),
+        NetEvent::Connected { peer } => eprintln!("telescreen: connected to {peer}"),
+        NetEvent::Disconnected { peer, reason } => {
+            eprintln!("telescreen: disconnected from {peer}: {reason}")
+        }
+        NetEvent::DialFailed { peer, reason } => {
+            eprintln!("telescreen: dial to {peer} failed: {reason}")
+        }
+        NetEvent::Refused { remote, reason } => {
+            eprintln!("telescreen: refused {remote}: {reason}")
+        }
+    }
+}
+
+/// Writes the result of a driver job to stderr for diagnostics.
+fn log_job(output: &JobOutput) {
+    match output {
+        JobOutput::Operation(result) => eprintln!("telescreen: operation: {result:?}"),
+        JobOutput::Handoff { result, error } => {
+            eprintln!("telescreen: handoff: {result:?} {error:?}")
+        }
+    }
 }

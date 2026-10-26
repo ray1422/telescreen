@@ -252,6 +252,7 @@ impl Controller {
     }
 
     fn notice(&mut self, text: String) {
+        eprintln!("telescreen: notice: {text}");
         self.notices.push(text);
         if self.notices.len() > MAX_NOTICES {
             self.notices.remove(0);
