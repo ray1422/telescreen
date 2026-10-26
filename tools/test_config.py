@@ -61,10 +61,40 @@ class ConfigContract(unittest.TestCase):
             'x: !custom value',
             'x: .nan',
             'x: 2026-10-27',
+            'x: &a 1',
+            'x: !!str value',
+            'x: yes',
+            'x: OFF',
+            'x: y',
+            'x: 010',
+            'x: 1_000',
+            'x: 0o17',
+            '0o10: value',
+            'x: 1:30',
+            'x: 1e3',
+            'x: 1.5e3',
+            'x: 1.5e+3',
+            '1.5e3: value',
+            'x: =',
+            'x: .inf',
+            'a: 1\n---\nb: 2',
         ):
             with self.subTest(source=source):
                 with self.assertRaises((ValueError, yaml.YAMLError)):
                     json_compatible(yaml.load(source, Loader=StrictLoader))
+
+    def test_accept_json_compatible_yaml(self):
+        for source, expected in (
+            ("x: 'yes'", {'x': 'yes'}),
+            ('x: 1.5', {'x': 1.5}),
+            ('x: 0', {'x': 0}),
+            ('x: -12', {'x': -12}),
+            ('x: true', {'x': True}),
+            ('x: ~', {'x': None}),
+            ('x: hello world', {'x': 'hello world'}),
+        ):
+            with self.subTest(source=source):
+                self.assertEqual(yaml.load(source, Loader=StrictLoader), expected)
 
 
 if __name__ == '__main__':

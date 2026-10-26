@@ -5,16 +5,46 @@ import json
 import math
 import ntpath
 import posixpath
+import re
 from pathlib import Path
 
 import jsonschema
 import yaml
 
 
+# Plain scalars that YAML 1.1 and YAML 1.2 resolve differently (docs/config.md).
+AMBIGUOUS_PLAIN = re.compile(r'''(?x)^(?:
+    [yYnN] | yes|Yes|YES|no|No|NO|on|On|ON|off|Off|OFF
+  | [0-9]{4}-[0-9]{1,2}-[0-9]{1,2}.*
+  | [-+]?0[0-9]+ | [-+]?0b[01_]+ | [-+]?0o[0-7_]+ | [-+]?(?=[0-9._]*_)[0-9][0-9._]*
+  | [-+]?[0-9][0-9_]*(?::[0-9_]+)+(?:\.[0-9_]*)?
+  | [-+]?(?:[0-9][0-9_]*(?:\.[0-9_]*)?|\.[0-9][0-9_]*)[eE][-+]?[0-9]+
+  | =
+  | [-+]?\.(?:inf|Inf|INF) | \.(?:nan|NaN|NAN)
+)$''')
+
+
 class StrictLoader(yaml.SafeLoader):
+    def compose_document(self):
+        node = super().compose_document()
+        if not self.check_event(yaml.StreamEndEvent):
+            raise ValueError('only one YAML document is supported')
+        return node
+
     def compose_node(self, parent, index):
         if self.check_event(yaml.AliasEvent):
             raise ValueError('YAML aliases are not supported')
+        event = self.peek_event()
+        if getattr(event, 'anchor', None) is not None:
+            raise ValueError('YAML anchors are not supported')
+        if isinstance(event, yaml.ScalarEvent):
+            if event.tag is not None and not any(event.implicit):
+                raise ValueError(f'YAML tags are not supported: {event.tag}')
+            if event.style is None and AMBIGUOUS_PLAIN.match(event.value):
+                raise ValueError(f'ambiguous plain scalar, quote it: {event.value}')
+        elif isinstance(event, (yaml.MappingStartEvent, yaml.SequenceStartEvent)):
+            if event.tag is not None and not event.implicit:
+                raise ValueError(f'YAML tags are not supported: {event.tag}')
         return super().compose_node(parent, index)
 
 

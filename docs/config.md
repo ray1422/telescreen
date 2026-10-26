@@ -95,7 +95,16 @@ You can manually switch devices without portal-match, such as USB, from the devi
 
 ## Validation Layers
 
-1. Parsing: accept only the JSON-compatible subset of YAML. These items are prohibited: duplicate keys, custom tags, merge keys, aliases, non-string keys, non-finite numbers, and non-JSON types.
+1. Parsing: accept only the JSON-compatible subset of YAML. These items are prohibited: duplicate keys, custom tags, merge keys, aliases, non-string keys, non-finite numbers, and non-JSON types. Also prohibited: more than one document, anchors, and explicit tags (also `!!str`). Plain scalars resolve by the YAML 1.2 core schema. A plain (unquoted) scalar that YAML 1.1 resolves to a different type is ambiguous, and the parser rejects it. Quote it to get a string. The ambiguous forms:
+   - YAML 1.1 booleans: `y`, `Y`, `n`, `N`, and `yes`, `no`, `on`, `off` in lower case, title case (`Yes`), or upper case (`YES`).
+   - Timestamps: a scalar that starts with `YYYY-M-D` (four digits, a hyphen, one or two digits, a hyphen, one or two digits).
+   - Integers with a leading zero (`010`), with an optional sign.
+   - Binary integers (`0b101`) and `0o` octal integers (`0o17`), with an optional sign. YAML 1.1 has no `0o` form, so PyYAML reads `0o17` as a string.
+   - Numbers with `_`: an optional sign, then a digit, then digits, `.`, and `_`, with one `_` or more (`1_000`).
+   - Sexagesimal numbers: an optional sign, a digit, digits or `_`, one or more groups of `:` and digits or `_`, then an optional `.` and digits or `_` (`1:30`, `190:20:30.5`).
+   - Numbers with an exponent: an optional sign, digits with an optional `.` (or a `.` and digits), `e` or `E`, an optional sign, digits (`1e3`, `1.5e3`, `1.5e+3`, `.5e3`). PyYAML reads an exponent with no sign as a string.
+   - `=` alone. PyYAML reads it as a special value type.
+   - `.inf`, `.nan`, and their case forms. They are also not finite.
 2. JSON Schema: types, required fields, unknown fields, the operation envelope, timeouts. Reject unrecognized fields, except in extension options, to find typos.
 3. Semantic: ids are unique in the same computer. The target computer exists and is not the computer itself. The target has the same id. command paths are absolute for each platform.
 4. Capability check: whether the driver is available, whether options are valid, whether helpers exist, whether permissions/remote are ready. If the config passes the schema, this does not mean that the hardware is usable.
