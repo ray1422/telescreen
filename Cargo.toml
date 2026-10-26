@@ -34,9 +34,12 @@ crossbeam-channel = "0.5"
 directories = "6"
 winit = "0.30.13"
 raw-window-handle = "0.6"
-egui = "0.37"
+egui = { version = "0.37", features = ["default_fonts"] }
 egui-winit = { version = "0.37", default-features = false }
 egui-wgpu = { version = "0.37", default-features = false, features = ["winit"] }
+# egui-wgpu without its default features enables no graphics backend. Each
+# renderer platform enables its backend.
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "wgsl"] }
 pollster = "1"
 objc2 = "0.6"
 objc2-foundation = "0.3"

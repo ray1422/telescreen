@@ -19,3 +19,10 @@ egui-winit.workspace = true
 pollster.workspace = true
 egui-wgpu.workspace = true
 winit.workspace = true
+wgpu.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+wgpu = { workspace = true, features = ["metal"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wgpu = { workspace = true, features = ["vulkan", "gles"] }
