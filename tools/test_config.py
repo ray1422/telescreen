@@ -25,6 +25,9 @@ class ConfigContract(unittest.TestCase):
             return config['computers']['mac']['devices']['Desktop']
 
         mutations = {
+            'empty hint': lambda c: c['computers']['pc1'].update(hint=''),
+            'non-string hint': lambda c: c['computers']['pc1'].update(hint=['x']),
+            'long hint': lambda c: c['computers']['pc1'].update(hint='x' * 501),
             'version': lambda c: c.update(version=2),
             'unknown field': lambda c: device(c).update(portal_match={}),
             'duplicate device id': lambda c: c['computers']['mac']['devices'].update(

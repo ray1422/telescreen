@@ -15,16 +15,16 @@ C++/Qt is also a possible option. But it adds C++ memory management and an evalu
 - Core: config, shared ID resolution, state machine, leases, driver registry. The core does not identify specific displays.
 - UI: dynamic portal windows, fullscreen, candidate computers, status, and the release-control entry point.
 - Platform: input capture/suppress, inject, cursor, display topology, clipboard, permission/capability reporting.
-- Transport: long-lived connections with pairing authentication and encryption. Session generation, sequence numbers, heartbeat, disconnect cleanup. An endpoint is not the same as an authenticated peer. The initial version can start with TLS/TCP. QUIC is not assumed to be a requirement.
+- Transport: long-lived connections with pairing authentication and encryption. Session generation, sequence numbers, heartbeat, disconnect cleanup. An endpoint is not the same as an authenticated peer. v0.1.0 uses QUIC (ADR 0001). Pairing is manual fingerprint trust (ADR 0004).
 - Driver: conditions, target area resolution, device handoff. Drivers must not be in the hot path of each input event.
 
 OS event tap/hook callbacks do only the necessary capture and the decision whether to suppress the event. Then they send the event to a bounded queue. In the callback, do no network I/O, do not wait for helpers, and do not block the UI. You can coalesce mouse motion. You must not drop key/button down/up events arbitrarily. On queue overflow, you should stop the session and clean up the pressed state.
 
 ## Windows and Fullscreen
 
-The goal is a portal that is borderless, has no title bar, and covers the target display. On macOS, test borderless/simple fullscreen first. Do not rely on native fullscreen, because it creates a new Space.
+The goal is a portal that is borderless, has no title bar, and covers the target display. Decision (user, 2026-10-27, ADR 0003): on macOS the portal is a native fullscreen Space, so that the user can move to it with trackpad gestures. The portal hides the menu bar and the Dock completely with `hideMenuBar | hideDock` presentation options. While forwarding, the portal suppresses Space and application switching.
 
-The winit macOS extension supplies `set_simple_fullscreen` and `set_borderless_game`. `set_borderless_game` can control the Menu Bar/Dock behavior for simple/borderless fullscreen. This API path is worth a prototype. It is not guaranteed that the system UI stays hidden on all macOS versions and multi-display configurations. [winit macOS extension](https://docs.rs/winit/latest/winit/platform/macos/trait.WindowExtMacOS.html)
+The winit macOS extension supplies `set_simple_fullscreen` and `set_borderless_game`. `set_borderless_game` can control the Menu Bar/Dock behavior in fullscreen. A window delegate can also return the options from `window:willUseFullScreenPresentationOptions:`. It is not guaranteed that the system UI stays hidden on all macOS versions and multi-display configurations. Spike 1 verifies it. [winit macOS extension](https://docs.rs/winit/latest/winit/platform/macos/trait.WindowExtMacOS.html)
 
 Use AppKit presentation options when necessary. `hideMenuBar`/`hideDock` are different from auto-hide. With auto-hide, the Menu Bar/Dock can still show when the cursor comes near the edge. AppKit sets constraints on the combinations. You must save/restore the app presentation state on entry, on exit, on loss of focus, and on abnormal conditions. This prevents an effect on the work of the user on another display. [Apple PresentationOptions](https://developer.apple.com/documentation/appkit/nsapplication/presentationoptions-swift.struct)
 

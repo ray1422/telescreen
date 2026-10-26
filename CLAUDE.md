@@ -30,10 +30,17 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 
 ## Design records
 
+- Versions: Semantic Versioning, 0.x until a stable release. v0.1.0 = handoff + input forwarding in both directions. v0.2.0 = text clipboard. Do not say "v1" for the first release.
+
 - When a spec question is open, use the `grilling` skill to ask the user. Use `domain-modeling` to record the result. Both are in `.claude/skills/` (MIT, from mattpocock/skills).
-- Terms go in `GLOSSARY.md` at the repository root. Make it when the first term is settled. Hard-to-reverse decisions go in `docs/adr/NNNN-slug.md`.
-- `docs/adr/0001`: transport is an abstraction (reliable channel + unreliable pointer channel). v1 is a direct LAN connection with keys pinned at pairing. WebRTC/NAT traversal is not part of v1.
+- Terms are in `GLOSSARY.md` at the repository root. Use its terms in code, docs, and Codex prompts (peer, source, target, dialer, listener; never server/client). Hard-to-reverse decisions go in `docs/adr/NNNN-slug.md`.
+- `docs/adr/0001`: transport is an abstraction (reliable channel + unreliable pointer channel). v0.1.0 is a direct LAN connection with keys pinned at pairing. WebRTC/NAT traversal is not part of v1.
 - `docs/adr/0002`: after a handoff, the receiving computer shows a prompt, and the user confirms with a key in the focused portal on the source computer. Forwarding starts only after this confirmation. It is a manual `verify`.
+- `docs/adr/0003`: the macOS portal is a native fullscreen Space with the menu bar and Dock hidden. While forwarding, it suppresses Space/app switching. Exits: pointer out of the portal edge, release shortcut, or the safety exit (Escape 10 times in 5 seconds, counted in the event tap callback).
+- `docs/adr/0004`: v0.1.0 pairing is manual fingerprint trust (`telescreen trust <computer-id> <fingerprint>`).
+- `docs/adr/0005`: on macOS, `Telescreen.app` (UI, event tap, injection) starts `telescreen-net` (all QUIC I/O) as a disclaimed responsible process, because of Local Network privacy. They talk over a Unix domain socket.
+- `docs/adr/0006`: all computers are symmetric peers. Each listens on its own endpoint, and the source dials the target. v0.1.0 has both directions (Mac to Linux first, then Linux to Mac).
+- `docs/spikes.md`: measured results of the throwaway spikes in `spikes/` (portal window, input tap, Linux injection, QUIC).
 - `docs/hardware.md`: measured facts about the user's display and the Linux receiving computer (niri: no portal injection; uinput is available).
 
 ## Key concepts (spread across the docs)
@@ -41,7 +48,7 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 - The config is YAML, nested computer → devices. A device map key is a local alias. It has no OS meaning. The shared `id` links the same physical device across computers. Only the listed connections exist. Handoff has a direction.
 - The config has no portals. The app makes portal windows at runtime. Runtime state (owner, focus, target, pairing keys) is never in the config.
 - `portal-match`, `input-target`, `handoff.<target>.steps`, and `verify` are abstract operations. Drivers implement them. The core does not hard-code display identification (name/EDID/serial). `command` is the only baseline driver: argv only, no shell, JSON on stdin/stdout. Each non-zero exit is an error. JSON gives the value false.
-- The physical display owner and the input focus are two different states. The source machine (Mac) stays the capture host. The input focus follows the portal region.
+- The physical display owner and the input focus are two different states. The source stays the capture computer, also while the display shows the target. The input focus follows the portal region. Leaving the portal pauses forwarding; it does not end the session.
 - Input has four different capabilities: capture, suppress, forward, inject. A hook callback only captures, decides, and pushes to a bounded queue. It does not call helpers, does not use the network, and does not block. Key/button down and up events must stay in pairs. On disconnect, lease expiry, display removal, or queue overflow, both ends must release all held keys and buttons. Always keep a local release shortcut. Never forward it.
 - Do not claim support for a platform that you did not test (X11 is not all of Linux; Wayland depends on the compositor and portal). Do not invent benchmark numbers.
 

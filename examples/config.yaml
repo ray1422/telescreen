@@ -51,6 +51,7 @@ computers:
                   json: {port: 2}
   pc1:
     label: Linux Workstation
+    hint: "Copy/paste: Ctrl+C / Ctrl+V. Terminal: Ctrl+Shift+C / Ctrl+Shift+V."
     endpoint: {host: pc1.local, port: 24800}
     devices:
       Monitor1:

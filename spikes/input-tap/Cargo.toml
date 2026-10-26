@@ -1,0 +1,11 @@
+[package]
+name = "spike-input-tap"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+
+[workspace]

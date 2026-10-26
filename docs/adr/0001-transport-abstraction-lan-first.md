@@ -2,9 +2,9 @@
 status: accepted
 ---
 
-# Transport is an abstraction; v1 is a direct LAN connection
+# Transport is an abstraction; v0.1.0 is a direct LAN connection
 
-The computers connect to the same physical display with video cables. Thus they are usually at one location and on one LAN. We do not make NAT traversal a v1 requirement. The core uses a transport abstraction with two channel types. The reliable, ordered channel sends control messages, key and button events, and clipboard data. The unreliable channel sends only the latest pointer position, and a lost or old position is not sent again. The v1 backend is a direct connection on the LAN. Keys pinned at pairing authenticate the peer. Encryption is necessary.
+The computers connect to the same physical display with video cables. Thus they are usually at one location and on one LAN. We do not make NAT traversal a v0.1.0 requirement. The core uses a transport abstraction with two channel types. The reliable, ordered channel sends control messages, key and button events, and clipboard data. The unreliable channel sends only the latest pointer position, and a lost or old position is not sent again. The v0.1.0 backend is a direct connection on the LAN. Keys pinned at pairing authenticate the peer. Encryption is necessary.
 
 ## Considered Options
 
@@ -13,6 +13,6 @@ The computers connect to the same physical display with video cables. Thus they 
 
 ## Consequences
 
-- The v1 config keeps `endpoint: {host, port}`. A different backend needs a change to the config contract (`docs/config.md`, the schema, the validator, and the tests).
-- The choice between QUIC and TLS over TCP is not decided. Decide it in the transport prototype.
+- The v0.1.0 config keeps `endpoint: {host, port}`. A different backend needs a change to the config contract (`docs/config.md`, the schema, the validator, and the tests).
+- Decision (user, 2026-10-27): v0.1.0 uses QUIC (quinn). Reliable streams carry the reliable channel. QUIC datagrams carry the pointer channel. The transport spike measures the latency.
 - Key and button down/up events must use the reliable channel. Do not send them on the unreliable channel.

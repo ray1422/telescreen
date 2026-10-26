@@ -4,7 +4,7 @@ Status: 2026-10-27. The requirements and the schema design are delivered. The ap
 
 ## What the user wants to do
 
-Share a keyboard and a mouse in an environment that has physical display connections. The typical environment is a MacBook with a built-in display and an external display. PC1 and PC2 also connect to this external display. The keyboard and the mouse stay on the Mac. The target computer sends the picture through a physical video cable. Thus, v1 does not need to send remote desktop video.
+Share a keyboard and a mouse in an environment that has physical display connections. The typical environment is a MacBook with a built-in display and an external display. PC1 and PC2 also connect to this external display. The keyboard and the mouse stay on the Mac. The target computer sends the picture through a physical video cable. Thus, v0.1.0 does not need to send remote desktop video.
 
 The user opens a portal window on the Mac. The user moves the window to the external display and makes it fullscreen. The window shows a list of the applicable computers. The user clicks "Switch to PC1". Then a custom action runs and switches the device, so that the physical display shows PC1. The Mac captures and suppresses the keyboard and mouse events for the corresponding region. The Mac forwards these events to PC1. PC1 injects them as local events and controls the cursor. While the cursor is in the region of the portal, input focus follows the cursor. The user does not have to click before the user can type.
 
@@ -59,18 +59,24 @@ The display owner and the input focus are separate. Confirmed by the user (2026-
 
 ## MVP and later work
 
+Versions follow Semantic Versioning. There is no stable release yet, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version (user, 2026-10-27):
+
+- v0.1.0: display handoff plus keyboard and mouse forwarding, in both directions (Mac to Linux, then Linux to Mac; ADR 0006). The prompt shows the `hint` of the target. No shortcut remapping.
+- v0.2.0: opt-in text clipboard sync.
+- v0.3.0 (candidate): image clipboard (PNG, sent only when the other peer pastes). While a paste waits for the data, the pasting peer shows a small overlay "Pasting from <label of the other computer>…" with progress and a cancel button, like the Universal Clipboard window of macOS. Show it only when the transfer takes more than about 300 ms. Linux: a layer-shell overlay on the output of the pointer. macOS: an `NSPanel` while `NSPasteboardItemDataProvider` waits.
+
 First, build a complete vertical slice. In this slice, the Mac is the source computer and Linux is the receiving computer. The architecture keeps space for bidirectional operation and for Windows. You must record the verified environments for Linux X11 and Linux Wayland separately. You must not use success on X11 to claim full Linux support.
 
 Recommended order:
 
 1. Validate parser/schema/semantics and driver I/O. Supply a diagnostics command. Test helpers that return false, errors, timeouts, and invalid JSON.
-2. macOS window prototype: borderless and fullscreen. No control buttons show at the top. It is possible to exit/release it safely on a configuration with two displays.
+2. macOS window prototype: a native fullscreen Space (ADR 0003). No menu bar or control buttons show at the top. It is possible to exit/release it safely on a configuration with two displays.
 3. Input prototype: capture and suppress ordinary keys, modifier keys, and the mouse. Do Linux injection. Include the release of control and a watchdog from day one.
 4. Switch the video input of a real display, and add the input-target on the receiving computer. Confirm whether the Mac keeps the display after the switch. Handle the case where the display is lost.
 5. Integrate portal candidates, handoff, focus, and the session state machine. Scope: multiple computers, multiple displays, competing leases.
 6. Add opt-in sync of the text clipboard. After that, add the other platforms and the packaging CI.
 
-Not part of the v1 commitment: video streaming, file/image clipboard, atomic switching of device groups, arbitrary shell RPC, all system keys on every OS, login screen/secure desktop control, emulated displays, game relative-mouse mode, cross-platform IME translation.
+Not part of v0.1.0: video streaming, clipboard (v0.2.0 text, v0.3.0 image), file clipboard, atomic switching of device groups, arbitrary shell RPC, all system keys on every OS, login screen/secure desktop control, emulated displays, game relative-mouse mode, cross-platform IME translation.
 
 ## Acceptance criteria
 
@@ -103,7 +109,7 @@ You must measure performance: p50/p95/p99 for capture→receive→inject, event 
 
 - The physical display model and the wiring. Whether the video input connections stay connected. Whether the switch control channel is still usable while the display is on an inactive video input.
 - The target Linux compositor, its version, and its input capture/injection/clipboard support.
-- The final combination for the release shortcut. Which special shortcuts to support or map.
+- Decided (2026-10-27): release shortcut Control+Option+Command+Escape, confirmation key Return, safety exit Escape 10 times in 5 seconds (ADR 0003). Modifier keys go by physical key: Command to Super, Option to Alt. Not decided: which other special shortcuts to support or map.
 - Whether an exit from the portal should automatically switch the video input back. The current tentative decision: do not switch.
 - Pairing UX, lease arbitration and the recovery protocol, and the minimum versions for packages on each OS. You must define these items during implementation. The config schema does not already solve them.
 

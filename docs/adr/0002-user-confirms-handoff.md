@@ -8,6 +8,7 @@ A handoff runs an external command that switches the video input. Often the comp
 
 Decisions (user, 2026-10-27):
 
+- The prompt also shows the optional `hint` of the receiving computer from the config, as plain text (for example its copy/paste shortcuts). Telescreen does not remap shortcuts such as Command+C (user, 2026-10-27).
 - The confirmation is one fixed key. The key is configurable. A click in the portal also confirms. The source computer suppresses the confirmation key and the confirmation click. It does not forward them.
 - The source computer accepts the confirmation only while the receiving computer reports that the prompt is visible and the portal has the window focus. At other times the key is a normal key.
 - If there is no confirmation in 60 seconds (configurable), the source computer cancels the wait. The receiving computer removes the prompt. The UI shows the video input as unknown. The video input does not automatically switch back.

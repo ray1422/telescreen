@@ -55,5 +55,11 @@ BetterDisplay output is not the JSON of driver protocol 1. A `command` driver ne
 
 ## Open questions
 
-- After the display switches to a different video input, does the Mac still list the display? (HANDOFF acceptance: "A switch of the video input causes the Mac display to disappear".)
-- When the display shows a different video input, can the Mac still send DDC to switch the input back?
+- Answered: the Mac keeps the display after a switch (see "Mac display list after a switch").
+- When the display shows a different video input, can the Mac still send DDC to switch the input back? The switch back to `0x91` exited with 0 (2026-10-27). The user must confirm that the display really changed.
+
+## Mac display list after a switch
+
+Measured on 2026-10-27. The command switched the display to `0x90` (the Linux computer), then back to `0x91`. Both commands exited with 0. The Mac display list (`system_profiler SPDisplaysDataType`) and BetterDisplay showed `Desktop` as online, at 3412x1440, at 4 s and at 10 s after the switch to `0x90`. Thus the Mac keeps the display when the display shows a different video input. The portal window stays on that display.
+
+Not measured by the computer: whether the display really showed the Linux computer. A DDC write does not report it.
