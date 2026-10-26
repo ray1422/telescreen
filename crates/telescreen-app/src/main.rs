@@ -29,6 +29,11 @@ enum Command {
         /// The ID of this computer in the config. Telescreen does not guess it.
         #[arg(long)]
         computer: String,
+        /// The Unix socket of the debug protocol (dev builds only,
+        /// docs/debug-protocol.md).
+        #[cfg(feature = "debug-protocol")]
+        #[arg(long)]
+        debug_socket: Option<PathBuf>,
     },
     /// Show the fingerprint of this computer, for `telescreen trust` on the other peers.
     Fingerprint,
@@ -56,13 +61,20 @@ fn main() -> ExitCode {
 
 fn run(command: Command) -> Result<(), String> {
     match command {
-        Command::Run { config, computer } => {
+        Command::Run {
+            config,
+            computer,
+            #[cfg(feature = "debug-protocol")]
+            debug_socket,
+        } => {
             let parsed = Config::load(&config).map_err(|e| e.to_string())?;
             let computer = ComputerId(computer);
             if parsed.computer(&computer).is_none() {
                 return Err(format!("the config has no computer {computer}"));
             }
-            telescreen_app::ui::run(parsed, computer, config)
+            #[cfg(not(feature = "debug-protocol"))]
+            let debug_socket = None;
+            telescreen_app::ui::run(parsed, computer, config, debug_socket)
         }
         Command::Fingerprint => {
             let identity =

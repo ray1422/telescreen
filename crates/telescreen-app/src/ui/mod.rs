@@ -51,14 +51,30 @@ pub enum UserEvent {
     Job(JobId, JobOutput),
     /// The input capture has events in its queue.
     Captured,
+    /// A request of the debug protocol and the channel for its response line.
+    #[cfg(feature = "debug-protocol")]
+    Debug(crate::debug::Request, crossbeam_channel::Sender<String>),
 }
 
-/// Runs the app until the control window closes.
-pub fn run(config: Config, local: ComputerId, config_path: PathBuf) -> Result<(), String> {
+/// Runs the app until the control window closes. `debug_socket` starts the debug
+/// protocol (feature `debug-protocol`, docs/debug-protocol.md).
+pub fn run(
+    config: Config,
+    local: ComputerId,
+    config_path: PathBuf,
+    debug_socket: Option<PathBuf>,
+) -> Result<(), String> {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
+    #[cfg(feature = "debug-protocol")]
+    let _debug_server = match debug_socket {
+        Some(path) => Some(debug_server(&path, proxy.clone())?),
+        None => None,
+    };
+    #[cfg(not(feature = "debug-protocol"))]
+    let _ = debug_socket;
 
     let identity = Identity::load_or_create(&paths::identity_dir()?).map_err(|e| e.to_string())?;
     let fingerprint = identity.fingerprint().to_string();
@@ -474,6 +490,101 @@ impl App {
     }
 }
 
+#[cfg(feature = "debug-protocol")]
+impl App {
+    /// Answers one debug request on the main thread (docs/debug-protocol.md).
+    fn debug_request(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        request: crate::debug::Request,
+    ) -> String {
+        use crate::debug::{self, Request, StateReport, WindowRole};
+        match request {
+            Request::State => {
+                let mut windows = Vec::new();
+                if let Some(control) = &self.control {
+                    windows.push(window_facts(WindowRole::Control, &control.window));
+                }
+                if let Some(portal) = &self.portal {
+                    windows.push(window_facts(WindowRole::Portal, &portal.surface.window));
+                }
+                for prompt in self.prompts.values() {
+                    windows.push(window_facts(WindowRole::Prompt, &prompt.surface.window));
+                }
+                debug::state_response(&StateReport {
+                    control: self.controller.control_screen(),
+                    portal: self.controller.portal_screen(),
+                    windows,
+                })
+            }
+            Request::Intent(intent) => {
+                self.handle_intents(event_loop, vec![intent]);
+                debug::ok_response()
+            }
+            Request::Confirm => {
+                if !self.controller.awaiting_confirmation() {
+                    debug::error_response("the portal does not wait for a confirmation")
+                } else if self.controller.confirm() {
+                    debug::ok_response()
+                } else {
+                    debug::error_response("not confirmed: the portal must have the focus")
+                }
+            }
+            Request::Quit => {
+                self.controller.shutdown();
+                self.close_portal_window();
+                event_loop.exit();
+                debug::ok_response()
+            }
+        }
+    }
+}
+
+/// What the window system reports for one window (docs/debug-protocol.md).
+#[cfg(feature = "debug-protocol")]
+fn window_facts(role: crate::debug::WindowRole, window: &Window) -> crate::debug::WindowFacts {
+    let scale = window.scale_factor();
+    let size = window.inner_size().to_logical::<f64>(scale);
+    crate::debug::WindowFacts {
+        role,
+        monitor: window
+            .current_monitor()
+            .as_ref()
+            .and_then(platform::monitor_token),
+        fullscreen: window.fullscreen().is_some(),
+        focused: window.has_focus(),
+        position: window.outer_position().ok().map(|p| {
+            let p = p.to_logical::<f64>(scale);
+            (p.x, p.y)
+        }),
+        size: (size.width, size.height),
+    }
+}
+
+/// Starts the debug server. Each request goes to the event loop, and the
+/// response comes back through a channel.
+#[cfg(feature = "debug-protocol")]
+fn debug_server(
+    path: &std::path::Path,
+    proxy: EventLoopProxy<UserEvent>,
+) -> Result<crate::debug::Server, String> {
+    let proxy = std::sync::Mutex::new(proxy);
+    crate::debug::serve(path, move |request| {
+        let (reply, response) = crossbeam_channel::bounded(1);
+        let sent = proxy
+            .lock()
+            .map(|proxy| proxy.send_event(UserEvent::Debug(request, reply)).is_ok())
+            .unwrap_or(false);
+        if !sent {
+            return crate::debug::error_response("the app is not running");
+        }
+        response
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| crate::debug::error_response("no response in 5 s"))
+    })
+    .map_err(|e| e.to_string())
+}
+
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.control.is_some() {
@@ -508,6 +619,11 @@ impl ApplicationHandler<UserEvent> for App {
                 self.controller.on_job_done(id, output);
             }
             UserEvent::Captured => {}
+            #[cfg(feature = "debug-protocol")]
+            UserEvent::Debug(request, reply) => {
+                let response = self.debug_request(event_loop, request);
+                let _ = reply.send(response);
+            }
         }
         self.sync(event_loop);
     }

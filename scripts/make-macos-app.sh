@@ -21,7 +21,14 @@ out=${1:-"$root/target/release"}
 app="$out/Telescreen.app"
 
 cd "$root"
-env -u CARGO_TARGET_DIR cargo build --release -p telescreen-app
+# TELESCREEN_DEBUG=1 adds the debug protocol (docs/debug-protocol.md). Never
+# for a release.
+features=
+if [ "${TELESCREEN_DEBUG:-}" = 1 ]; then
+  features="--features debug-protocol"
+fi
+# shellcheck disable=SC2086
+env -u CARGO_TARGET_DIR cargo build --release -p telescreen-app $features
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
 rm -rf "$app"

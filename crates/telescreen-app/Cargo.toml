@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+# The debug protocol for dev builds (docs/debug-protocol.md). Never in a release.
+debug-protocol = []
+
 [lints]
 workspace = true
 

@@ -36,6 +36,7 @@ cargo clippy --workspace --all-targets
 cargo fmt --all
 cargo test -p telescreen-core --test session_source -- flow14   # one test file, filtered by name
 scripts/make-macos-app.sh                                        # ad-hoc signed Telescreen.app
+TELESCREEN_DEBUG=1 scripts/make-macos-app.sh                     # with the debug protocol (docs/debug-protocol.md)
 ```
 
 Acceptance tests are in `crates/*/tests/` and name the spec IDs. `crates/telescreen-app/tests/controller.rs` runs two peers with fake platforms and an in-memory network. The Linux crates build only on Linux: copy the tree to the Linux computer and build there (`CLAUDE.local.md` has the rules). The copy must give the changed files new modification times; else cargo uses stale build results.
