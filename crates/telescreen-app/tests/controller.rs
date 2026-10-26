@@ -178,6 +178,15 @@ struct Peer {
 }
 
 fn peer(id: &str, displays: Vec<DisplayInfo>) -> Peer {
+    let capabilities = InputCapabilities {
+        capture: Capability::Available,
+        suppress: Capability::Available,
+        inject: Capability::Available,
+    };
+    peer_with(id, displays, capabilities)
+}
+
+fn peer_with(id: &str, displays: Vec<DisplayInfo>, capabilities: InputCapabilities) -> Peer {
     let log: Shared = Rc::default();
     let ports = Ports {
         net: Box::new(Net(log.clone())),
@@ -186,11 +195,7 @@ fn peer(id: &str, displays: Vec<DisplayInfo>) -> Peer {
         capture: Box::new(Capture(log.clone())),
         injector: Some(Box::new(Inject(log.clone()))),
         prompt: Box::new(Prompt(log.clone())),
-        capabilities: InputCapabilities {
-            capture: Capability::Available,
-            suppress: Capability::Available,
-            inject: Capability::Available,
-        },
+        capabilities,
     };
     let labels = Labels {
         confirm_key: "Return".into(),
@@ -372,6 +377,32 @@ fn flow2_flow3_portal_match_and_candidates() {
         screen.candidates[0].unavailable, None,
         "connected after the dial"
     );
+}
+
+#[test]
+fn flow3_no_handoff_without_suppress() {
+    // Hardware test 2026-10-27: Input Monitoring without Accessibility gives
+    // capture but no suppress. The handoff must not switch the display.
+    let mut w = World::new();
+    w.mac = peer_with(
+        "mac",
+        vec![
+            display("builtin", -1500.0, 1500.0),
+            display("lg", 0.0, 3400.0),
+        ],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Missing("grant Accessibility".into()),
+            inject: Capability::Available,
+        },
+    );
+    w.open_portal();
+    let screen = w.mac.controller.portal_screen().unwrap();
+    let reason = screen.candidates[0].unavailable.clone().unwrap_or_default();
+    assert!(reason.contains("suppress"), "unavailable: {reason:?}");
+    w.mac.controller.start_handoff(ComputerId::from("pc1"));
+    w.pump();
+    assert_eq!(w.phase(), None, "no session starts");
 }
 
 #[test]

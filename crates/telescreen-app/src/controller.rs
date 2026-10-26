@@ -547,6 +547,10 @@ impl Controller {
         if let Capability::Missing(reason) = &self.ports.capabilities.capture {
             return Some(format!("input capture: {reason}"));
         }
+        // A session needs capture and suppress (IN-1, FLOW-3).
+        if let Capability::Missing(reason) = &self.ports.capabilities.suppress {
+            return Some(format!("input suppress: {reason}"));
+        }
         if !self.connected.contains(target) {
             return Some("offline".into());
         }
