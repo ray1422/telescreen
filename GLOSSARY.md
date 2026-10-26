@@ -80,9 +80,9 @@ _Avoid_: active computer, owner
 The state in which the source captures, suppresses, and sends its input to the target.
 _Avoid_: streaming, sharing
 
-**Pause**:
-The state of a session while the pointer is out of the portal. Input is local, and the session stays.
-_Avoid_: exit, release
+**Connected**:
+The state of a session while the pointer is out of the portal. Input is local, and the session stays. Moving the pointer into the portal switches the input to the target at once.
+_Avoid_: pause, exit, release
 
 **Release shortcut**:
 The key combination that ends the session from the source. It is never forwarded.

@@ -40,7 +40,7 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M2 | Core session model: state machine, wire messages, key table, pointer mapping | Unit and acceptance tests for FLOW-5..FLOW-19, IN-3..IN-5, IN-11, NET-2, NET-6 pass with fake platforms and a fake transport | done (2026-10-27): with fake platforms; tentative protocol in ADR 0007 |
 | M3 | Transport | Two peers on one machine connect with mutual pinning; an unknown key is refused on both sides (AC-21); pointer datagrams drop old sequence numbers | done (2026-10-27): loopback tests, including the heartbeat timeout of a hung peer |
 | M4 | Linux target | With a test source over the LAN: pointer and keys inject on niri, the prompt shows with the hint (user watches; no keys or clicks without supervision) | code done; hardware test not run (the Linux computer was busy) |
-| M5 | macOS source | Portal Space, confirmation, capture, pause and resume at the built-in display edge, focus lock, release shortcut, safety exit, watchdog | code done; hardware test not run |
+| M5 | macOS source | Portal Space, confirmation, capture, switch of the controlled computer at the built-in display edge, focus lock, release shortcut, safety exit, watchdog | code done; hardware test not run |
 | M6 | Mac to Linux end to end | AC-1..AC-21, AC-23..AC-25 pass on the hardware for this direction | not started (needs the user) |
 | M7 | Linux source and macOS target | AC-22 passes; the reverse session works (AC-23) | code done (Linux portal capture, macOS injection and prompt); hardware test not run |
 | M8 | v0.1.0 | Support matrix in the spec updated; README build instructions; tag `v0.1.0` (ask the user first) | not started |
