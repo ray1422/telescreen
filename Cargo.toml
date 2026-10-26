@@ -1,0 +1,62 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "BSD-3-Clause"
+publish = false
+
+[workspace.dependencies]
+telescreen-core = { path = "crates/telescreen-core" }
+telescreen-transport = { path = "crates/telescreen-transport" }
+telescreen-view = { path = "crates/telescreen-view" }
+telescreen-render-egui = { path = "crates/telescreen-render-egui" }
+telescreen-platform-macos = { path = "crates/telescreen-platform-macos" }
+telescreen-platform-linux = { path = "crates/telescreen-platform-linux" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+saphyr-parser = "0.3"
+jsonschema = { version = "0.60", default-features = false }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+libc = "0.2"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = "0.14"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "io-util", "net", "sync"] }
+clap = { version = "4", features = ["derive"] }
+crossbeam-channel = "0.5"
+directories = "6"
+winit = "0.30.13"
+raw-window-handle = "0.6"
+egui = "0.37"
+egui-winit = { version = "0.37", default-features = false }
+egui-wgpu = { version = "0.37", default-features = false, features = ["winit"] }
+pollster = "1"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-app-kit = "0.3"
+core-foundation-sys = "0.8"
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+evdev = "0.13"
+ab_glyph = "0.2"
+epaint_default_fonts = "0.37"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+debug = 1

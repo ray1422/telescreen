@@ -1,0 +1,23 @@
+[package]
+name = "telescreen-transport"
+description = "QUIC peer endpoint of Telescreen: mutual pinning, trust store, reliable and pointer channels"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+telescreen-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+quinn.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+postcard.workspace = true
