@@ -39,6 +39,10 @@ Negative test (AC-21): before the trust step, start both apps (step 2). Each con
 ## 2. Start
 
 - Mac: `open -a target/release/Telescreen.app --args run --config "$PWD/config.yaml" --computer mac`. macOS asks for Accessibility and Input Monitoring for Telescreen. Grant them, quit, and start again. macOS can also ask if `telescreen` can accept incoming network connections (the application firewall). Allow it, else Linux cannot dial the Mac (part 4). Expected: the control window shows the displays, and no "not available" notice for capture or injection.
+  - Sign the app with a stable identity, else each build needs new grants: make a self-signed code signing certificate with the name "Telescreen Dev" in the login keychain (`openssl req -x509` with `extendedKeyUsage = critical, codeSigning`, then `security import ... -T /usr/bin/codesign`). `scripts/make-macos-app.sh` uses it if it is present. Use `/usr/bin/openssl` (LibreSSL): macOS cannot import a `.p12` file from OpenSSL 3 or later with the default options.
+  - An old grant for a different signature blocks the new grant. The TCC log then says "Failed to match existing code requirement". Run `tccutil reset Accessibility dev.telescreen.Telescreen` (and `ListenEvent`), then grant again.
+  - On macOS 27 in zh-TW, the Accessibility list is "隱私權與安全性 › 裝置控制和資料取用" (the English name is not checked).
+  - `open` on a running app does not start it again. Quit the app first, then check that the process stopped.
 - Linux (opens a window; move to a free workspace first): `target/release/telescreen run --config config.yaml --computer linux`. Expected: the control window, no notice about injection. A notice that `/dev/uinput` cannot be opened means a permission problem.
 
 ## 3. Mac to Linux (M4, M5, M6)

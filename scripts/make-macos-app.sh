@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build an ad-hoc signed Telescreen.app (docs/spec.md DIST-1).
+# Build a signed Telescreen.app (docs/spec.md DIST-1).
 #
 #   scripts/make-macos-app.sh [output-dir]      default: target/release
 #
@@ -10,6 +10,10 @@
 #
 # macOS keys Accessibility and Input Monitoring to the code signature. An ad-hoc
 # signature changes at each build, so macOS can ask for the permissions again.
+# A signing identity keeps the permissions across builds. The script uses the
+# identity in TELESCREEN_SIGN_IDENTITY (default "Telescreen Dev") if the keychain
+# has it, else an ad-hoc signature. A self-signed code signing certificate is
+# sufficient (docs/test-plan.md).
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -41,5 +45,11 @@ cat >"$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
-codesign --force --sign - "$app"
+identity=${TELESCREEN_SIGN_IDENTITY:-Telescreen Dev}
+if security find-identity -p codesigning | grep -qF "\"$identity\""; then
+  codesign --force --sign "$identity" "$app"
+else
+  echo "no signing identity \"$identity\": ad-hoc signature" >&2
+  codesign --force --sign - "$app"
+fi
 echo "built $app"
