@@ -63,3 +63,11 @@ BetterDisplay output is not the JSON of driver protocol 1. A `command` driver ne
 Measured on 2026-10-27. The command switched the display to `0x90` (the Linux computer), then back to `0x91`. Both commands exited with 0. The Mac display list (`system_profiler SPDisplaysDataType`) and BetterDisplay showed `Desktop` as online, at 3412x1440, at 4 s and at 10 s after the switch to `0x90`. Thus the Mac keeps the display when the display shows a different video input. The portal window stays on that display.
 
 Not measured by the computer: whether the display really showed the Linux computer. A DDC write does not report it.
+
+## Linux computer: shortcuts and DDC tools
+
+Measured on 2026-10-27 over SSH, read-only:
+
+- The niri config has no bind for Control+Alt+Shift+Escape. Thus the portal can receive it as the Linux release shortcut (IN-7). The config binds `Mod+Shift+Escape` with `allow-inhibiting=false` to `toggle-keyboard-shortcuts-inhibit`. This bind always goes to niri, also while the portal inhibits shortcuts. It is an exit path when the portal does not respond.
+- `ddcutil` is installed. A local script of the user sets the brightness with `ddcutil --mfg GSM --model "LG ULTRAWIDE" setvcp 10 <value>`. The `/dev/i2c-*` devices have an ACL.
+- Not tested: a video input switch with `ddcutil`. The LG alternate addressing that BetterDisplay calls `ddcAlt` is possibly `setvcp xF4 <value> --i2c-source-addr=x50`. Do not run it while the user works on the display: it switches the shared display.

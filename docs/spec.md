@@ -54,10 +54,10 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **FLOW-5** After the user selects a target, the target resolves its local `input-target` by the shared device `id`, confirms that it can inject input, and gives an exclusive lease for that device to this session.
 - **FLOW-6** The source stops any old input stream and releases all held keys and buttons. Then it runs the handoff `steps`, and `verify` if it is present, on the source computer.
 - **FLOW-7** After the handoff, the target shows the prompt on its input-target display (ADR 0002). The prompt shows the `hint` of the target computer, if it is present, as plain text.
-- **FLOW-8** The user confirms with the confirmation key (default Return, configurable), or with a click in the portal. The source accepts the confirmation only while the target reports that the prompt is visible, and the portal has the window focus. At other times the key is a normal key.
+- **FLOW-8** The user confirms with the confirmation key (Return. In v0.1.0 the key is fixed; a later version makes it configurable, user, 2026-10-27), or with a click in the portal. The source accepts the confirmation only while the target reports that the prompt is visible, and the portal has the window focus. At other times the key is a normal key.
 - **FLOW-9** The source suppresses the confirmation key and the confirmation click. It does not forward them. The click on the switch button must not go to the target.
 - **FLOW-10** Forwarding starts only after the confirmation, and only if the display token of the target is still valid. After the confirmation, the UI shows the video input as confirmed.
-- **FLOW-11** If there is no confirmation in 60 seconds (configurable), cancel the wait. The target removes the prompt. The UI shows the video input as unknown. Do not switch the video input back.
+- **FLOW-11** If there is no confirmation in 60 seconds (fixed in v0.1.0; configurable in a later version, user, 2026-10-27), cancel the wait. The target removes the prompt. The UI shows the video input as unknown. Do not switch the video input back.
 - **FLOW-12** If a handoff step fails, or `verify` is false: do not start forwarding, do not retry automatically, and do not claim a rollback. After a partial success, show the video input as unknown.
 
 ### 4.3 Forwarding, pause, and end
@@ -78,7 +78,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **IN-4** Both peers release all held keys and buttons on a session end. The target must release them on a heartbeat timeout by itself; it must not wait for key-up events from the source.
 - **IN-5** Keys go by physical key identity, not by the character. The input method of the source must not change the key (spike 1). Modifier keys go by physical key: Command to Super, Option to Alt, Control to Control.
 - **IN-6** Do not remap shortcuts. The `hint` tells the user the shortcuts of the target.
-- **IN-7** The release shortcut (default Control+Option+Command+Escape on macOS, configurable) ends the session. It is never forwarded.
+- **IN-7** The release shortcut (macOS: Control+Option+Command+Escape. Linux: Control+Alt+Shift+Escape, user, 2026-10-27. Fixed in v0.1.0; configurable in a later version) ends the session. It is never forwarded.
 - **IN-8** The safety exit (Escape 10 times in 5 seconds) ends suppression and the session. The input callback counts the presses itself, with no dependency on the main thread, the UI, or the network. Escape is still forwarded.
 - **IN-9** A watchdog that is independent of input events must stop suppression when the main loop does not respond for a few seconds, and when a suppression deadline passes (spike 2).
 - **IN-10** While forwarding on macOS, suppress all gestures and shortcuts that switch Spaces or applications, or that open Mission Control. Do not forward them (ADR 0003). When the pointer is out of the portal, they go to macOS.
@@ -173,4 +173,3 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Which special shortcuts to support beyond IN-5, and the per-platform list of shortcuts that cannot be captured.
 - The effect of Wi-Fi delay spikes (spike 4: p99 about 85 ms) on the pointer in real use. Measure it in the product.
 - Minimum OS versions for each package.
-- The default release shortcut on Linux (IN-7 gives only the macOS default).

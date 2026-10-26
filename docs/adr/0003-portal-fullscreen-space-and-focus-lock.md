@@ -12,7 +12,7 @@ Pausing forwarding and ending the session are different (user, 2026-10-27):
 
 - **Pause (the session stays).** Move the pointer out of a portal edge that touches a different local display. Input goes back to the source computer, and the user can use the other displays. The target display does not change. When the pointer comes back into the portal, forwarding starts again with no new confirmation (ADR 0002). On macOS, the source computer tracks a virtual pointer while the cursor is frozen. When the virtual pointer crosses such an edge, it releases the cursor and puts it at the matching point of the adjacent display. Portal edges with no adjacent display stop the pointer. The event tap is global, so while the pointer is in the portal, keys go to the target also when a different local application has the focus.
 - **End the session.** One of these:
-  - Press the release shortcut (default Control+Option+Command+Escape, configurable).
+  - Press the release shortcut (macOS: Control+Option+Command+Escape; Linux: Control+Alt+Shift+Escape, user, 2026-10-27; fixed in v0.1.0).
   - The source computer detects that the target computer is disconnected (heartbeat timeout or a closed connection).
   - On the target computer, the user selects "disconnect". The target computer ends the session.
   - The target computer requests control back: it ends the session, and then it can be the source computer in the reverse direction (ADR 0006).
