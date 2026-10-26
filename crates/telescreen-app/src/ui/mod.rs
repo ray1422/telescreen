@@ -204,24 +204,40 @@ struct App {
 }
 
 impl App {
-    fn open_portal_window(&mut self, event_loop: &ActiveEventLoop, token: DisplayToken) {
+    /// Opens the portal on the display of the control window (user, 2026-10-27).
+    /// FLOW-2 then uses the display where the window really is.
+    fn open_portal_window(&mut self, event_loop: &ActiveEventLoop) {
         self.close_portal_window();
-        let monitor = event_loop
-            .available_monitors()
-            .find(|m| platform::monitor_token(m) == Some(token.clone()));
-        let Some(monitor) = monitor else {
+        let monitor = self
+            .control
+            .as_ref()
+            .and_then(|control| control.window.current_monitor());
+        let Some((monitor, token)) =
+            monitor.and_then(|m| platform::monitor_token(&m).map(|token| (m, token)))
+        else {
             self.controller
-                .add_notice(format!("No window system monitor for display {token}."));
+                .add_notice("Cannot find the display of the control window.".into());
             return;
         };
-        let attributes = platform::portal_attributes(
-            Window::default_attributes()
-                .with_title("Telescreen portal")
-                .with_position(monitor.position())
-                .with_fullscreen(Some(Fullscreen::Borderless(Some(monitor)))),
-        );
+        let mut attributes = Window::default_attributes().with_title("Telescreen portal");
+        // Make the window on the display first. The fullscreen request then uses
+        // the display of the window.
+        if let Some(bounds) = self.controller.display(&token).and_then(|d| d.bounds) {
+            attributes = attributes
+                .with_position(LogicalPosition::new(bounds.x, bounds.y))
+                .with_inner_size(LogicalSize::new(bounds.width, bounds.height));
+        }
+        let attributes = platform::portal_attributes(attributes);
         match event_loop.create_window(attributes) {
             Ok(window) => {
+                window.set_fullscreen(Some(Fullscreen::Borderless(Some(monitor))));
+                eprintln!(
+                    "telescreen: portal for {token}: window on {:?}",
+                    window
+                        .current_monitor()
+                        .as_ref()
+                        .and_then(platform::monitor_token)
+                );
                 let (surface, error) = Surface::new(window);
                 if let Some(error) = error {
                     self.controller.add_notice(error);
@@ -268,6 +284,7 @@ impl App {
         let Some(token) = token.filter(|t| *t != portal.token) else {
             return;
         };
+        eprintln!("telescreen: portal window moved to {token}");
         portal.token = token.clone();
         if !portal.opened {
             return;
@@ -291,7 +308,7 @@ impl App {
     fn handle_intents(&mut self, event_loop: &ActiveEventLoop, intents: Vec<Intent>) {
         for intent in intents {
             match intent {
-                Intent::OpenPortal { display } => self.open_portal_window(event_loop, display),
+                Intent::OpenPortal => self.open_portal_window(event_loop),
                 Intent::ClosePortal => self.close_portal_window(),
                 other => self.controller.on_intent(other),
             }

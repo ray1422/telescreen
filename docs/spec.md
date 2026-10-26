@@ -45,7 +45,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 ### 4.1 Portal and candidates
 
 - **FLOW-1** Read and validate the config. Detect the local capabilities (input capture, injection, permissions).
-- **FLOW-2** The user opens a portal. The portal is not in the config. On the display of the portal, evaluate `portal-match` of the local devices. No match: tell the user. More than one match: the user selects one. Do not use the first match silently.
+- **FLOW-2** The user opens a portal. The portal is not in the config. The portal opens on the display of the control window (user, 2026-10-27). To use a different display, move the control window to it first. On the display of the portal, evaluate `portal-match` of the local devices. No match: tell the user. More than one match: the user selects one. Do not use the first match silently.
 - **FLOW-3** Make the candidate targets: the local `handoff` keys that are also computers with the same device `id`. Show a candidate that is offline, that has no permission, or that has no `input-target` as unavailable, with the reason.
 - **FLOW-4** When the portal moves to a different display, or the display topology changes, evaluate `portal-match` again. The previous device binding and its coordinates must not continue to apply.
 

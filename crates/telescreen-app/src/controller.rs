@@ -1092,7 +1092,7 @@ impl Controller {
 
     pub fn on_intent(&mut self, intent: Intent) {
         match intent {
-            Intent::OpenPortal { .. } | Intent::ClosePortal => {
+            Intent::OpenPortal | Intent::ClosePortal => {
                 // The window layer opens and closes the portal window, then calls
                 // `open_portal` or `close_portal`.
             }

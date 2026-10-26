@@ -11,20 +11,18 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
         ui.heading(&screen.computer);
         ui.add(egui::Label::new(&screen.fingerprint).selectable(true));
         for display in &screen.displays {
-            ui.push_id(&display.token, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(&display.name);
-                    if display.has_portal {
-                        if ui.button("Close portal").clicked() {
-                            intents.push(Intent::ClosePortal);
-                        }
-                    } else if ui.button("Open portal").clicked() {
-                        intents.push(Intent::OpenPortal {
-                            display: display.token.clone(),
-                        });
-                    }
-                });
-            });
+            if display.has_portal {
+                ui.label(format!("{} (portal)", display.name));
+            } else {
+                ui.label(&display.name);
+            }
+        }
+        if screen.displays.iter().any(|d| d.has_portal) {
+            if ui.button("Close portal").clicked() {
+                intents.push(Intent::ClosePortal);
+            }
+        } else if ui.button("Open portal on this display").clicked() {
+            intents.push(Intent::OpenPortal);
         }
         for incoming in &screen.incoming {
             ui.push_id(incoming.session, |ui| {

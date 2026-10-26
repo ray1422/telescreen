@@ -123,9 +123,8 @@ impl PromptScreen {
 /// What the user did in a window.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Intent {
-    OpenPortal {
-        display: DisplayToken,
-    },
+    /// Open the portal on the display of the control window (user, 2026-10-27).
+    OpenPortal,
     ClosePortal,
     SelectDevice {
         alias: String,
