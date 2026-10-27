@@ -21,7 +21,7 @@ Versions follow Semantic Versioning. There is no stable release, so all versions
 | v0.1.0 | Display handoff, confirmation prompt with the hint, and keyboard and mouse forwarding, in both directions: macOS to Linux, and Linux to macOS. |
 | v0.2.0 | Opt-in text clipboard sync. It syncs only in an active, authenticated session, with no loops between the peers, and it sends nothing after the user disables it or after a disconnect. |
 | v0.3.0 | Hand back (spec section 10) and FLOW-24. |
-| v0.4.0 (candidate) | Image clipboard (PNG), sent only when the other peer pastes, with a "Pasting from <label>…" overlay. |
+| v0.4.0 (candidate) | Separate clipboard stream: image clipboard (PNG) and texts larger than 256 KiB (CLIP-6). An image is sent only when the other peer pastes, with a "Pasting from <label>…" overlay. |
 
 ### 2.2 Not part of v0.1.0
 
@@ -84,11 +84,15 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 
 - **CLIP-1** Text clipboard sync is opt-in. The config key `clipboard.text` of each computer gives the start value (default `false`). The control window has a switch that changes it while the app runs (user, 2026-10-27). The switch is not saved.
 - **CLIP-2** The sync works in both directions (user, 2026-10-27), only while a session is in forwarding, and only on the authenticated connection of that session. A peer sends its text only while its own switch is on. A peer applies a received text only while its own switch is on.
-- **CLIP-3** A peer sends its clipboard text when the local clipboard changes during the session. It does not send the text that was on the clipboard before the session started. Tentative (proposed by Claude, not confirmed by the user): no sync of the old text, for privacy.
+- **CLIP-3** A peer sends its clipboard text when the local clipboard changes during the session. It does not send the text that was on the clipboard before the session started (user, 2026-10-27). Reason: privacy. A text from before the session can be old, and the user did not copy it for this session.
 - **CLIP-4** No loops: a peer does not send back a text that it set from the other peer.
 - **CLIP-5** After the switch goes off, after the session ends, or after a disconnect, a peer sends nothing. It does not send a change from that time later.
-- **CLIP-6** Only plain UTF-8 text. A text larger than 256 KiB is not sent, and the source shows a notice. Tentative (proposed by Claude): the limit keeps the input frames on the same channel fast.
-- **CLIP-7** A peer does not send a clipboard item that a password manager marks as concealed (macOS `org.nspasteboard.ConcealedType`; Linux `x-kde-passwordManagerHint` with the value `secret`). Tentative (proposed by Claude).
+- **CLIP-6** Only plain UTF-8 text. A text larger than 256 KiB is not sent, and the source shows a notice (user, 2026-10-27). Reason: the text uses the same reliable stream as the input events, and a large text delays the keys after it. A later milestone sends larger texts on a separate clipboard stream.
+- **CLIP-7** A password manager can mark a clipboard item as concealed (macOS `org.nspasteboard.ConcealedType`; Linux `x-kde-passwordManagerHint` with the value `secret`). A peer sends a concealed item as other text, with the concealed mark (user, 2026-10-27). The receiving peer sets the same mark on its own clipboard, so that clipboard history tools do not record the item. When the concealed item goes off the clipboard of the sending peer (for example, the password manager clears it), the sending peer tells the other peer. The other peer then clears its clipboard if it still holds that item. All of this is best effort (user, 2026-10-27): each OS and each clipboard tool keeps its own limits, and Telescreen does not remove them. For example, some password managers on Linux do not set the mark; their items sync as other text. On Wayland, the clipboard also becomes empty when the program that copied quits; the sending peer cannot tell this from a clear, and does the same. Not verified: whether clipboard history tools on Linux other than KDE obey the mark, and whether macOS Universal Clipboard obeys it.
+- **CLIP-9** No log and no debug output contains clipboard text (user, 2026-10-27).
+- **CLIP-10** A paste on the receiving peer needs no extra authentication (user, 2026-10-27). Reason: the peers are paired (ADR 0004), and the user confirmed the session at the prompt. Also, a pushed text is already on the local clipboard, so Telescreen cannot see the paste.
+- **CLIP-11** When the session ends, for each cause, a peer clears its clipboard if it still holds a text that it set from the other peer (user, 2026-10-27). This includes texts with no concealed mark. Reason: the connection ends, and the text must not stay. The peer does the same when its switch goes off (Claude decides, delegated by the user, 2026-10-27). This is local: the peer sends nothing (CLIP-5). If the app stops unexpectedly, the peer cannot clear. On Wayland, the text also goes off the clipboard when Telescreen quits, because Telescreen provides it.
+- **CLIP-12** Only the clipboard selection syncs. The Linux primary selection (select and middle-click paste) does not sync (Claude decides, delegated by the user, 2026-10-27). Reason: macOS has no primary selection.
 - **CLIP-8** The clipboard is a platform capability behind an interface. macOS uses `NSPasteboard`. Linux uses the data-control protocol on its own Wayland connection. v0.2.0 uses `zwlr-data-control-unstable-v1`; `ext-data-control-v1` can come later. If the compositor does not have it (for example GNOME), the capability is missing, and the switch is not available. The input callbacks never read the clipboard (IN-2).
 
 ## 5. Input
@@ -196,7 +200,8 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-31 | Copy text before the session starts | The text is not sent (CLIP-3) |
 | AC-32 | Switch off on one peer, or end the session, then copy | Nothing is sent (CLIP-2, CLIP-5) |
 | AC-33 | Copy on one peer | The other peer does not send the same text back (CLIP-4) |
-| AC-34 | Copy a password from a password manager | It is not sent (CLIP-7) |
+| AC-34 | Copy a password from a password manager, then wait until the password manager clears its clipboard | The password arrives with the concealed mark; then the other peer clears it (CLIP-7) |
+| AC-35 | Copy text on one peer. End the session, or turn the switch off on the other peer | The other peer clears its clipboard. If the user copied something else there before, it stays (CLIP-11) |
 
 Performance: measure p50, p95, and p99 of capture to injection, event loss, and idle CPU/GPU. A network latency number must state how it was measured (round trip on one clock, or the clock synchronization method). There is no hard threshold yet.
 
@@ -238,7 +243,6 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 
 Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:
 
-- Tentative items in the requirements: CLIP-3, CLIP-6, CLIP-7.
 - The texts of the session end on the source (user, 2026-10-27), with the target label:
   - `TargetStopped` ("Disconnect" on the target): "<target> disconnected the session".
   - `TargetDisconnected` (the target app quit and told the source): "Telescreen quit on <target>".
@@ -246,4 +250,4 @@ Decisions of the implementation (Claude, 2026-10-27). The user confirmed the ite
 - "Control from here" (FLOW-17) needs a device match for the display (user, 2026-10-27). If no device matches, the target shows a notice, does not start a handoff, and the old session continues.
 - CLIP-8: v0.2.0 uses only `zwlr-data-control-unstable-v1`. `ext-data-control-v1` needs a staging feature of `wayland-protocols` and can come later.
 - The Linux clipboard backend reads an offer for at most 1 second. A text larger than 256 KiB is cut to its longest valid UTF-8 prefix, so that the core rejects it as too large (CLIP-6).
-- The controller does not read the clipboard while the switch is off or while no session can sync (CLIP-2). The Linux data-control thread still receives the data of each copy in the background. To stop this, the `Clipboard` trait needs a call that starts and stops the reads. Open: do this or not.
+- The controller does not read the clipboard while the switch is off or while no session can sync (CLIP-2). On Linux, the data-control connection is open only while the switch is on and a session is in forwarding (user, 2026-10-27). At start, the app only checks that the compositor has data-control (CLIP-8). When the connection opens, the current selection is the old text of CLIP-3. When the connection closes, Wayland removes a text that Telescreen still provides (CLIP-11).
