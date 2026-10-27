@@ -264,6 +264,24 @@ fn net2_pointer_sequence_increases() {
 }
 
 #[test]
+fn net2_the_same_position_sends_no_datagram() {
+    let mut s = forwarding(Instant::now());
+    let p = Normalized { x: 0.1, y: 0.2 };
+    assert!(s.pointer(p).is_some());
+    assert!(s.pointer(p).is_none(), "no motion, no datagram");
+    assert!(s.pointer(Normalized { x: 0.3, y: 0.2 }).is_some());
+}
+
+#[test]
+fn net2_forget_pointer_sends_the_same_position_again() {
+    let mut s = forwarding(Instant::now());
+    let p = Normalized { x: 0.1, y: 0.2 };
+    assert!(s.pointer(p).is_some());
+    s.forget_pointer();
+    assert!(s.pointer(p).is_some());
+}
+
+#[test]
 fn flow23_keyboard_away_and_back() {
     let mut s = forwarding(Instant::now());
     // The confirmation needs the portal focus, so the keyboard starts in the portal.

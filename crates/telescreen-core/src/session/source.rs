@@ -64,6 +64,8 @@ pub struct SourceSession {
     keyboard_in_portal: bool,
     held: HeldInputs,
     seq: u64,
+    /// The position of the last pointer datagram (NET-2).
+    last_pointer: Option<Normalized>,
 }
 
 impl SourceSession {
@@ -84,6 +86,7 @@ impl SourceSession {
             keyboard_in_portal: true,
             held: HeldInputs::default(),
             seq: 0,
+            last_pointer: None,
         };
         (source, actions)
     }
@@ -154,6 +157,7 @@ impl SourceSession {
                 if self.session == Some(session) && self.phase == SourcePhase::Starting =>
             {
                 self.phase = SourcePhase::Forwarding;
+                self.last_pointer = None;
                 self.keyboard_in_portal = true;
                 return vec![SourceAction::StartForwarding];
             }
@@ -260,18 +264,25 @@ impl SourceSession {
         }
     }
 
-    /// The pointer position in the portal. Returns a datagram only while forwarding.
+    /// The pointer position in the portal. Returns a datagram only while forwarding,
+    /// and only if the position is different from the last datagram (NET-2).
     pub fn pointer(&mut self, position: Normalized) -> Option<PointerDatagram> {
-        if self.phase != SourcePhase::Forwarding {
+        if self.phase != SourcePhase::Forwarding || self.last_pointer == Some(position) {
             return None;
         }
         let session = self.session?;
+        self.last_pointer = Some(position);
         self.seq = self.seq.checked_add(1)?;
         Some(PointerDatagram {
             session,
             seq: self.seq,
             position,
         })
+    }
+
+    /// The next `pointer` call returns a datagram also for the same position (NET-2).
+    pub fn forget_pointer(&mut self) {
+        self.last_pointer = None;
     }
 
     /// Ends the session on the source (FLOW-16): the release shortcut, the safety

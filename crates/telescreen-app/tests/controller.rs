@@ -627,6 +627,35 @@ fn flow10_ac5_forwarding_after_confirmation() {
 }
 
 #[test]
+fn net2_m10_keys_with_no_motion_send_no_pointer_datagram() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let sent = w.pc1.log.borrow().pointer.len();
+    assert!(sent > 0, "forwarding starts with a pointer datagram");
+    // The macOS capture reports the cursor position with each key event.
+    let at = Point { x: 10.0, y: 10.0 };
+    for down in [true, false] {
+        w.mac
+            .controller
+            .on_captured(CapturedEvent::Input(key(56, down)));
+        w.mac
+            .controller
+            .on_captured(CapturedEvent::PointerMoved { at });
+    }
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().injected, [key(56, true), key(56, false)]);
+    assert_eq!(w.pc1.log.borrow().pointer.len(), sent);
+
+    // The pointer enters the portal again at the same position.
+    w.mac.controller.on_captured(CapturedEvent::PointerLeft);
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::PointerEntered { at });
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().pointer.len(), sent + 1);
+}
+
+#[test]
 fn flow14_ac11_leaving_the_portal_keeps_forwarding() {
     let mut w = World::new();
     w.advance_to_forwarding();

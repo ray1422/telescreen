@@ -835,6 +835,7 @@ impl Controller {
             }
             CapturedEvent::PointerEntered { at } => {
                 portal.pointer = portal.bounds.clamp(at);
+                session.forget_pointer();
                 self.send_pointer();
                 return;
             }
