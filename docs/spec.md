@@ -220,7 +220,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
   - Steps run in order and stop at the first error (as now).
   - Drivers: `exec` (exit code 0 is success or true), `command` (protocol 1, JSON), and drivers for the output format of one tool, for example `betterDisplay` (JSON on stdout) and `ddcutil` (text). A tool driver can compare a value with `expect`.
   - `open` on macOS starts an app through Launch Services and returns at once. The output of the app does not come back. Use the executable in the app bundle, or `open --stdout`.
-  - Open: how a program name with no path is found. An app that macOS starts from Finder or `open` has only the system directories in `PATH`.
+  - A program name with no path is found in the search path (user, 2026-10-27). If the computer section of the config has `path` (a list of directories), use it. Else read `PATH` from the login shell of the user one time at the start. An app that macOS starts from Finder or `open` has only the system directories in its own `PATH`.
   - No `verify` means no check (user, 2026-10-27). Then forwarding starts when the steps succeed, and the video input shows "unverified". The example configs must add an explicit prompt to keep the current behavior.
 - Verification model (user, 2026-10-27; it replaces ADR 0002 in part and needs a new ADR):
   - `verify` is in the device section of the destination computer, the computer that the device switches to. The destination runs it. The route of the computer that runs the steps has no `verify`.
