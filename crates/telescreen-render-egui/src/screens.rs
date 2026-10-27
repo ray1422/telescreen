@@ -8,7 +8,8 @@ use telescreen_view::{
 pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> {
     let mut intents = Vec::new();
     egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.heading(&screen.computer);
+        // Not a choice of computer: the label of this peer.
+        ui.heading(format!("This computer: {}", screen.computer));
         ui.add(egui::Label::new(&screen.fingerprint).selectable(true));
         if let Some(mut on) = screen.clipboard
             && ui.checkbox(&mut on, "Sync text clipboard").changed()

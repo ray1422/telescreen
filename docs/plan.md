@@ -55,9 +55,8 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 
 ## Not scheduled
 
-The user plans a new design of the UI later (user, 2026-10-27). Pure UI changes and the pairing are not scheduled until then:
+The user plans a new design of the UI later (user, 2026-10-27). Until then, do not spend time on UI details. The pairing UI is not scheduled:
 
-- The heading of the control window: "This computer: <label>", so that it does not look like an option.
 - A pairing UI. Until then, pairing stays manual with `telescreen trust` (ADR 0004).
 
 ## Rules for each milestone
