@@ -28,6 +28,10 @@ pub enum Request {
     Intent(Intent),
     /// `{"cmd":"confirm"}`: the same as the confirmation key in the portal.
     Confirm,
+    /// `{"cmd":"hold_keyboard","display":"<token>"}`: takes keyboard focus (UI-7).
+    HoldKeyboard { display: DisplayToken },
+    /// `{"cmd":"release_keyboard"}`: removes the focus holder (UI-7).
+    ReleaseKeyboard,
     /// `{"cmd":"quit"}`: the same as closing the control window.
     Quit,
 }
@@ -78,6 +82,10 @@ pub fn parse_request(line: &str) -> Result<Request, DebugError> {
     match string_field(&value, "cmd")? {
         "state" => Ok(Request::State),
         "confirm" => Ok(Request::Confirm),
+        "hold_keyboard" => Ok(Request::HoldKeyboard {
+            display: DisplayToken::from(string_field(&value, "display")?),
+        }),
+        "release_keyboard" => Ok(Request::ReleaseKeyboard),
         "quit" => Ok(Request::Quit),
         "intent" => {
             let intent = value
@@ -120,7 +128,7 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
         "SelectDevice" => Ok(Intent::SelectDevice {
             alias: string_field(arguments, "alias")?.to_owned(),
         }),
-        "Disconnect" | "TakeControl" => {
+        "StopSession" | "ControlFromHere" => {
             let session = arguments
                 .get("session")
                 .and_then(Value::as_u64)
@@ -128,10 +136,10 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
                 .ok_or_else(|| {
                     DebugError::Request("session must be a non-negative u64 integer".into())
                 })?;
-            if name == "Disconnect" {
-                Ok(Intent::Disconnect { session })
+            if name == "StopSession" {
+                Ok(Intent::StopSession { session })
             } else {
-                Ok(Intent::TakeControl { session })
+                Ok(Intent::ControlFromHere { session })
             }
         }
         _ => Err(DebugError::Request(format!("unknown intent: {name}"))),

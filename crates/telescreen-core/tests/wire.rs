@@ -50,6 +50,12 @@ fn messages_round_trip() {
             event: InputEvent::Scroll { dx: -1.5, dy: 12.0 },
         },
         Message::ReleaseAll { session: s },
+        Message::KeyboardAway { session: s },
+        Message::KeyboardBack { session: s },
+        Message::SessionRefused {
+            device: telescreen_core::ids::DeviceId::from("lg"),
+            reason: telescreen_core::wire::RefuseReason::NoFocusHold,
+        },
         Message::End {
             session: s,
             reason: EndReason::SafetyExit,
@@ -89,4 +95,10 @@ fn net2_pointer_round_trip_and_order() {
         order.accept(&d(4, 0)),
         "newer session restarts the sequence"
     );
+}
+
+#[test]
+fn protocol_version_2_has_the_keyboard_messages() {
+    // FLOW-23 changed the messages, so a peer of version 1 is refused.
+    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 2);
 }

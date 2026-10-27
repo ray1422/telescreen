@@ -62,7 +62,6 @@ fn awaiting_confirm(now: Instant) -> SourceSession {
 
 fn forwarding(now: Instant) -> SourceSession {
     let mut s = awaiting_confirm(now);
-    assert!(s.set_pointer_inside(true).is_empty());
     assert_eq!(
         s.confirm(true),
         Some(vec![Send(Message::Confirm { session: S })])
@@ -115,16 +114,12 @@ fn flow7_flow10_happy_path_confirms_video_input() {
 }
 
 #[test]
-fn flow10_started_with_pointer_outside_pauses() {
-    let now = Instant::now();
-    let mut s = awaiting_confirm(now);
-    assert!(s.confirm(true).is_some());
-    assert!(
-        s.on_message(&Message::Started { session: S }, now)
-            .is_empty()
-    );
-    assert_eq!(s.phase(), SourcePhase::Paused);
-    assert_eq!(s.set_pointer_inside(true), vec![StartForwarding]);
+fn flow14_no_pause_state() {
+    // The session goes from Started to Forwarding and stays there until the end.
+    let mut s = forwarding(Instant::now());
+    assert!(s.on_keyboard(false).len() == 1);
+    assert_eq!(s.phase(), SourcePhase::Forwarding);
+    assert!(s.on_input_lost().len() == 1);
     assert_eq!(s.phase(), SourcePhase::Forwarding);
 }
 
@@ -269,30 +264,60 @@ fn net2_pointer_sequence_increases() {
 }
 
 #[test]
-fn flow14_ac11_pause_releases_held_and_resumes_without_confirmation() {
+fn flow23_keyboard_away_and_back() {
+    let mut s = forwarding(Instant::now());
+    // The confirmation needs the portal focus, so the keyboard starts in the portal.
+    assert!(s.on_keyboard(true).is_empty());
+    assert_eq!(
+        s.on_keyboard(false),
+        vec![Send(Message::KeyboardAway { session: S })]
+    );
+    assert!(s.on_keyboard(false).is_empty(), "no change, no message");
+    assert_eq!(
+        s.on_keyboard(true),
+        vec![Send(Message::KeyboardBack { session: S })]
+    );
+}
+
+#[test]
+fn flow22_in3_held_keys_stay_paired_when_the_keyboard_leaves() {
+    // macOS: the tap still sees the up event, so it goes to the target.
+    let mut s = forwarding(Instant::now());
+    s.on_input(key(42, true));
+    s.on_keyboard(false);
+    assert_eq!(
+        s.on_input(key(42, false)),
+        vec![Send(Message::Input {
+            session: S,
+            event: key(42, false)
+        })]
+    );
+}
+
+#[test]
+fn in13_ac28_input_lost_releases_held_state() {
     let mut s = forwarding(Instant::now());
     s.on_input(key(42, true));
     s.on_input(InputEvent::Button {
         button: Button::Left,
         down: true,
     });
-    let actions = s.set_pointer_inside(false);
     assert_eq!(
-        actions,
-        vec![StopForwarding, Send(Message::ReleaseAll { session: S })]
+        s.on_input_lost(),
+        vec![Send(Message::ReleaseAll { session: S })]
     );
-    assert_eq!(s.phase(), SourcePhase::Paused);
-    assert!(
-        s.on_input(key(30, true)).is_empty(),
-        "input is local while paused"
-    );
-    assert!(s.pointer(Normalized::default()).is_none());
-    assert!(s.set_pointer_inside(false).is_empty());
-
-    assert_eq!(s.set_pointer_inside(true), vec![StartForwarding]);
     assert_eq!(s.phase(), SourcePhase::Forwarding);
-    // The held state was released, so the old key-up is not forwarded.
+    // The held state was released, so a late up is not forwarded.
     assert!(s.on_input(key(42, false)).is_empty());
+    // New input still goes to the target.
+    assert_eq!(s.on_input(key(30, true)).len(), 1);
+}
+
+#[test]
+fn in13_input_lost_outside_forwarding_does_nothing() {
+    let mut s = awaiting_confirm(Instant::now());
+    assert!(s.on_input_lost().is_empty());
+    assert!(s.on_keyboard(false).is_empty());
 }
 
 #[test]
@@ -319,20 +344,6 @@ fn flow16_release_shortcut_while_forwarding() {
     assert!(
         s.end(EndReason::SourceClosed).is_empty(),
         "end twice has no effect"
-    );
-}
-
-#[test]
-fn flow16_end_while_paused_does_not_stop_forwarding_again() {
-    let mut s = forwarding(Instant::now());
-    s.set_pointer_inside(false);
-    let actions = s.end(EndReason::SourceClosed);
-    assert_eq!(
-        actions,
-        vec![Send(Message::End {
-            session: S,
-            reason: EndReason::SourceClosed
-        })]
     );
 }
 
@@ -381,18 +392,6 @@ fn flow16_ac23_target_ends_session() {
         s.phase(),
         SourcePhase::Ended(EndReason::TargetRequestedControl)
     );
-}
-
-#[test]
-fn flow16_target_end_while_paused() {
-    let mut s = forwarding(Instant::now());
-    s.set_pointer_inside(false);
-    let msg = Message::End {
-        session: S,
-        reason: EndReason::TargetDisconnected,
-    };
-    assert!(s.on_message(&msg, Instant::now()).is_empty());
-    assert!(s.is_finished());
 }
 
 #[test]

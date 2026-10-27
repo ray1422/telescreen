@@ -23,8 +23,6 @@ pub enum SourcePhase {
     Starting,
     /// Input is captured, suppressed, and forwarded (FLOW-13).
     Forwarding,
-    /// The pointer is out of the portal. The session stays (FLOW-14).
-    Paused,
     /// The target refused the session. Terminal.
     Refused(RefuseReason),
     /// Terminal.
@@ -63,7 +61,7 @@ pub struct SourceSession {
     phase: SourcePhase,
     video: VideoInput,
     confirm_deadline: Option<Instant>,
-    pointer_inside: bool,
+    keyboard_in_portal: bool,
     held: HeldInputs,
     seq: u64,
 }
@@ -71,7 +69,7 @@ pub struct SourceSession {
 impl SourceSession {
     /// Starts a session request to `target` for the shared device `device`.
     /// Returns `[Send(RequestSession { device })]`. The phase is `Requesting`, the
-    /// video input is `Unchanged`, and the pointer is not in the portal.
+    /// video input is `Unchanged`.
     pub fn start(target: ComputerId, device: DeviceId) -> (Self, Vec<SourceAction>) {
         let actions = vec![SourceAction::Send(Message::RequestSession {
             device: device.clone(),
@@ -83,7 +81,7 @@ impl SourceSession {
             phase: SourcePhase::Requesting,
             video: VideoInput::Unchanged,
             confirm_deadline: None,
-            pointer_inside: false,
+            keyboard_in_portal: true,
             held: HeldInputs::default(),
             seq: 0,
         };
@@ -155,8 +153,9 @@ impl SourceSession {
             Message::Started { session }
                 if self.session == Some(session) && self.phase == SourcePhase::Starting =>
             {
-                self.phase = SourcePhase::Paused;
-                return self.set_pointer_inside(self.pointer_inside);
+                self.phase = SourcePhase::Forwarding;
+                self.keyboard_in_portal = true;
+                return vec![SourceAction::StartForwarding];
             }
             Message::End { session, reason } if self.session == Some(session) => {
                 return self.finish(reason, false);
@@ -214,25 +213,35 @@ impl SourceSession {
         Some(vec![SourceAction::Send(Message::Confirm { session })])
     }
 
-    /// The pointer entered (`true`) or left (`false`) the portal (FLOW-13, FLOW-14).
-    pub fn set_pointer_inside(&mut self, inside: bool) -> Vec<SourceAction> {
-        self.pointer_inside = inside;
-        match (self.phase, inside) {
-            (SourcePhase::Forwarding, false) => {
-                self.phase = SourcePhase::Paused;
-                let _ = self.held.release_all();
-                let mut actions = vec![SourceAction::StopForwarding];
-                if let Some(session) = self.session {
-                    actions.push(SourceAction::Send(Message::ReleaseAll { session }));
-                }
-                actions
-            }
-            (SourcePhase::Paused, true) => {
-                self.phase = SourcePhase::Forwarding;
-                vec![SourceAction::StartForwarding]
-            }
-            _ => Vec::new(),
+    /// Reports a keyboard focus change while forwarding (FLOW-22, FLOW-23).
+    /// The confirmation puts the keyboard in the portal at the start.
+    pub fn on_keyboard(&mut self, in_portal: bool) -> Vec<SourceAction> {
+        if self.phase != SourcePhase::Forwarding || self.keyboard_in_portal == in_portal {
+            return Vec::new();
         }
+        let Some(session) = self.session else {
+            return Vec::new();
+        };
+        self.keyboard_in_portal = in_portal;
+        let message = if in_portal {
+            Message::KeyboardBack { session }
+        } else {
+            Message::KeyboardAway { session }
+        };
+        vec![SourceAction::Send(message)]
+    }
+
+    /// Releases held input when the capture can no longer see up events (IN-13).
+    /// The session stays in forwarding (FLOW-14).
+    pub fn on_input_lost(&mut self) -> Vec<SourceAction> {
+        if self.phase != SourcePhase::Forwarding {
+            return Vec::new();
+        }
+        let Some(session) = self.session else {
+            return Vec::new();
+        };
+        let _ = self.held.release_all();
+        vec![SourceAction::Send(Message::ReleaseAll { session })]
     }
 
     /// A captured key, button, or scroll event. It goes to the target only while

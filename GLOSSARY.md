@@ -73,16 +73,20 @@ The computer that a display shows at a given time. It is separate from the input
 _Avoid_: active computer
 
 **Input focus**:
-The peer that receives the keyboard and mouse at a given time. It follows the portal region.
+The peer that receives an input event. Pointer input follows the cursor: it goes to the target while the cursor is in the portal. Keys follow the keyboard focus.
 _Avoid_: active computer, owner
+
+**Keyboard focus**:
+The window that receives the keys. It changes by a click, as on one computer. While the portal has it, keys go to the target.
+_Avoid_: active window
+
+**Focus holder**:
+An invisible surface on the target that takes the keyboard focus from the applications of the target while the portal does not have the keyboard focus. Thus only one input field shows the focus.
+_Avoid_: dummy window, fake focus
 
 **Forwarding**:
 The state in which the source captures, suppresses, and sends its input to the target.
 _Avoid_: streaming, sharing
-
-**Connected**:
-The state of a session while the pointer is out of the portal. Input is local, and the session stays. Moving the pointer into the portal switches the input to the target at once.
-_Avoid_: pause, exit, release
 
 **Release shortcut**:
 The key combination that ends the session from the source. It is never forwarded.

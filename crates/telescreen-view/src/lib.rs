@@ -93,10 +93,6 @@ pub enum SessionPhase {
     },
     Starting,
     Forwarding,
-    /// The pointer is out of the portal. `release` is the release shortcut.
-    Paused {
-        release: String,
-    },
     Ended {
         reason: String,
     },
@@ -134,12 +130,13 @@ pub enum Intent {
     },
     /// End the session of the portal (on the source).
     EndSession,
-    /// "disconnect" on the target.
-    Disconnect {
+    /// End the incoming session on the target (FLOW-17).
+    StopSession {
         session: SessionId,
     },
-    /// Request control back on the target (FLOW-17).
-    TakeControl {
+    /// End the incoming session on the target (FLOW-17).
+    /// Start a session in the other direction.
+    ControlFromHere {
         session: SessionId,
     },
 }

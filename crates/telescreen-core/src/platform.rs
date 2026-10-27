@@ -50,6 +50,16 @@ pub trait Injector {
     fn input(&mut self, event: &InputEvent) -> Result<(), PlatformError>;
 }
 
+/// Holds the keyboard focus away from target applications (UI-7, FLOW-23).
+/// The focus holder shows nothing and takes no pointer input.
+pub trait FocusHolder {
+    /// Takes the keyboard focus on the input-target display (UI-7).
+    fn hold(&mut self, display: &DisplayInfo) -> Result<(), PlatformError>;
+    /// Removes the focus holder and restores the previous keyboard focus (UI-7).
+    /// Does nothing if no hold is active.
+    fn release(&mut self);
+}
+
 /// An event from the input capture of the source. The capture callback makes it
 /// and pushes it to a bounded queue (IN-2).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -62,9 +72,17 @@ pub enum CapturedEvent {
     /// motion does not fill the queue.
     PointerMoved { at: Point },
     /// The cursor came into the portal, at this position (FLOW-14).
+    /// The session stays in forwarding.
     PointerEntered { at: Point },
     /// The cursor left the portal (FLOW-14).
+    /// The session stays in forwarding.
     PointerLeft,
+    /// The portal got the keyboard focus (FLOW-22).
+    KeyboardEntered,
+    /// The portal lost the keyboard focus (FLOW-22).
+    KeyboardLeft,
+    /// The capture can no longer see forwarded up events (IN-13).
+    InputLost,
     /// The release shortcut (IN-7). It is never forwarded.
     ReleaseShortcut,
     /// The safety exit (IN-8). The capture already stopped suppression.
@@ -100,13 +118,24 @@ pub trait InputCapture {
     /// edge, and `PointerEntered` at once if the cursor is in the portal now. A
     /// second call replaces the portal area (AC-8).
     fn arm(&mut self, portal: Rect) -> Result<(), PlatformError>;
-    /// Starts forwarding. From now on, while the cursor is in the portal, the
-    /// capture suppresses key, button, scroll, and gesture events and reports
-    /// them, and it reports `PointerMoved`. Outside the portal it lets all input
-    /// through. It uses [`crate::key_route::KeyRoutes`], so that each up event
-    /// goes where its down event went (IN-3). Forwarding continues across each
-    /// leave and entry, until `disarm`.
+    /// Starts forwarding (FLOW-13).
+    /// Keys follow the keyboard focus (FLOW-22).
+    /// Pointer input follows the cursor in the portal (FLOW-20).
+    /// The capture uses [`crate::key_route::InputRouter`] for paired events (IN-3).
+    /// It reports keyboard focus changes before the input that caused them (FLOW-23).
+    /// Forwarding continues across each leave and entry until `disarm`.
     fn forward(&mut self) -> Result<(), PlatformError>;
+    /// The app calls this when the portal's native keyboard focus changes (FLOW-22).
+    /// The capture reports `KeyboardEntered` or `KeyboardLeft` if it changed.
+    fn set_portal_focus(&mut self, _focused: bool) {}
+    /// FLOW-21: while the source waits for the confirmation, keeps the portal fixed
+    /// and focused. With `on`, the capture suppresses the gestures and shortcuts that
+    /// switch Spaces or applications, and the clicks out of the portal. It lets the
+    /// confirmation key and the clicks in the portal through, and it reports nothing.
+    /// `guard(false)`, `forward`, and `disarm` end it. It needs `arm` first.
+    fn guard(&mut self, _on: bool) -> Result<(), PlatformError> {
+        Ok(())
+    }
     /// Stops all capture. Local input comes back.
     fn disarm(&mut self);
     /// The main loop calls this on each turn. A capture with a watchdog stops

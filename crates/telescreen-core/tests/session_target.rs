@@ -8,7 +8,10 @@ use telescreen_core::pointer::Normalized;
 use telescreen_core::session::target::{TargetAction, TargetPhase, TargetSession};
 use telescreen_core::wire::{EndReason, Message, PointerDatagram};
 
-use TargetAction::{CheckDisplay, HidePrompt, Inject, MovePointer, ReleaseLease, Send, ShowPrompt};
+use TargetAction::{
+    CheckDisplay, HidePrompt, HoldKeyboard, Inject, MovePointer, ReleaseKeyboard, ReleaseLease,
+    Send, ShowPrompt,
+};
 
 const S: SessionId = SessionId(42);
 
@@ -168,7 +171,7 @@ fn net2_pointer_drops_old_datagrams() {
 }
 
 #[test]
-fn flow14_release_all_on_pause() {
+fn in13_release_all_keeps_the_session() {
     let mut t = forwarding();
     t.on_message(&input(key(42, true)));
     t.on_message(&input(InputEvent::Button {
@@ -188,6 +191,79 @@ fn flow14_release_all_on_pause() {
     );
     assert_eq!(t.phase(), TargetPhase::Forwarding, "the session stays");
     assert!(t.on_message(&Message::ReleaseAll { session: S }).is_empty());
+}
+
+#[test]
+fn flow23_keyboard_away_holds_and_back_releases() {
+    let mut t = forwarding();
+    assert_eq!(
+        t.on_message(&Message::KeyboardAway { session: S }),
+        vec![HoldKeyboard]
+    );
+    assert!(
+        t.on_message(&Message::KeyboardAway { session: S })
+            .is_empty(),
+        "already held"
+    );
+    assert_eq!(
+        t.on_message(&Message::KeyboardBack { session: S }),
+        vec![ReleaseKeyboard]
+    );
+    assert!(
+        t.on_message(&Message::KeyboardBack { session: S })
+            .is_empty(),
+        "not held"
+    );
+    assert_eq!(t.phase(), TargetPhase::Forwarding);
+}
+
+#[test]
+fn flow23_keyboard_messages_need_forwarding_and_the_session() {
+    let mut t = prompting();
+    assert!(
+        t.on_message(&Message::KeyboardAway { session: S })
+            .is_empty()
+    );
+    let mut t = forwarding();
+    assert!(
+        t.on_message(&Message::KeyboardAway {
+            session: SessionId(41)
+        })
+        .is_empty()
+    );
+}
+
+#[test]
+fn flow23_end_removes_the_focus_holder() {
+    let mut t = forwarding();
+    t.on_message(&Message::KeyboardAway { session: S });
+    t.on_message(&input(key(56, true)));
+    let actions = t.on_message(&Message::End {
+        session: S,
+        reason: EndReason::ReleaseShortcut,
+    });
+    assert_eq!(
+        actions,
+        vec![Inject(key(56, false)), ReleaseKeyboard, ReleaseLease]
+    );
+
+    let mut t = forwarding();
+    t.on_message(&Message::KeyboardAway { session: S });
+    assert_eq!(t.on_peer_lost(), vec![ReleaseKeyboard, ReleaseLease]);
+
+    let mut t = forwarding();
+    t.on_message(&Message::KeyboardAway { session: S });
+    assert_eq!(
+        t.end(EndReason::TargetDisconnected),
+        vec![
+            ReleaseKeyboard,
+            Send(Message::End {
+                session: S,
+                reason: EndReason::TargetDisconnected
+            }),
+            ReleaseLease
+        ]
+    );
 }
 
 #[test]

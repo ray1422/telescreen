@@ -7,6 +7,7 @@ use telescreen_core::ids::DisplayToken;
 use telescreen_core::platform::{CapturedEvent, InputCapture};
 use telescreen_platform_macos::capture::MacCapture;
 use telescreen_platform_macos::displays::{self, MacDisplays};
+use telescreen_platform_macos::focus::MacFocusHolder;
 use telescreen_platform_macos::inject::MacInjector;
 use telescreen_platform_macos::window;
 use winit::event::WindowEvent;
@@ -75,6 +76,7 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
             )),
         },
         injector,
+        focus_holder: Some(Box::new(MacFocusHolder::new())),
         prompt: Box::new(prompts.clone()),
         capabilities,
         labels: Labels {
@@ -133,25 +135,33 @@ impl Hooks {
         self.raised = false;
     }
 
-    /// UI-1, UI-2, ADR 0003.
-    pub(crate) fn portal_focus(&mut self, portal: &Window, focused: bool, forwarding: bool) {
+    /// Updates native keyboard focus (FLOW-22, UI-1, UI-2).
+    pub(crate) fn portal_focus(&mut self, portal: &Window, focused: bool, guarded: bool) {
+        // The controller gives the focus to the capture (FLOW-22).
         if focused {
             window::allow_only_roman_input(portal);
             if !self.raised && portal.fullscreen().is_some() {
                 window::raise_portal(portal);
                 self.raised = true;
             }
-        } else if forwarding {
-            // While forwarding, Space and app switching are suppressed. If one
-            // happens anyway, take the focus back.
+        } else if guarded {
+            // FLOW-21: keep the focus during the confirmation wait.
             window::activate_app();
             portal.focus_window();
         }
     }
 
-    /// The event tap captures the input, not the window.
-    pub(crate) fn portal_window_event(&mut self, _: &WindowEvent) -> bool {
-        false
+    /// Keeps forwarded pointer input out of the portal UI (FLOW-22).
+    pub(crate) fn portal_window_event(&mut self, event: &WindowEvent, forwarding: bool) -> bool {
+        forwarding
+            && matches!(
+                event,
+                WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::CursorEntered { .. }
+                    | WindowEvent::CursorLeft { .. }
+            )
     }
 }
 

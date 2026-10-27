@@ -8,7 +8,7 @@ Each computer runs the same Telescreen and has both roles: it can be the source 
 
 v0.1.0 has both directions. Make Mac to Linux work and verify it first. Then make Linux to Mac work. v0.1.0 is complete only when both directions work.
 
-Linux as the source (verified protocols on niri, `docs/spikes.md`): the portal is a fullscreen window. After the confirmation, it inhibits compositor shortcuts (`zwp_keyboard_shortcuts_inhibit_manager_v1`) and forwards the input of the portal window. It does not lock the pointer (FLOW-20, user, 2026-10-27; an earlier version locked it, which was a proposal of Claude). Pointer enter and leave of the portal window give the pause. It needs no root and no `/dev/input` access. A crash releases the inhibit, because the compositor removes it with the window.
+Linux as the source (verified protocols on niri, `docs/spikes.md`): the portal is a fullscreen window. After the confirmation, it inhibits compositor shortcuts (`zwp_keyboard_shortcuts_inhibit_manager_v1`) and forwards the input of the portal window. It does not lock the pointer (FLOW-20, user, 2026-10-27; an earlier version locked it, which was a proposal of Claude). The native keyboard focus of the portal window is the keyboard focus (FLOW-22). As the target, Linux uses a layer-shell focus holder (UI-7). It needs no root and no `/dev/input` access. A crash releases the inhibit, because the compositor removes it with the window.
 
 macOS as the target: inject with `CGEventPost` (Accessibility).
 

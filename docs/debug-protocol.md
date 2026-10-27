@@ -19,6 +19,8 @@ Each request and each response is one line of JSON. One connection can send more
 | `{"cmd":"intent","intent":<intent>}` | the same as the click in the UI | `{"ok":true}` |
 | `{"cmd":"confirm"}` | the same as the confirmation key in the focused portal (FLOW-8); the focus check applies (AC-6) | `{"ok":true}`, or an error if the portal does not wait for a confirmation |
 | `{"cmd":"quit"}` | the same as closing the control window | `{"ok":true}` |
+| `{"cmd":"hold_keyboard","display":<display token>}` | calls the focus holder of this peer directly (UI-7), with no session | `{"ok":true}`, or an error if the peer has no focus holder or no such display |
+| `{"cmd":"release_keyboard"}` | removes the focus holder | `{"ok":true}` |
 
 An invalid request gets `{"ok":false,"error":<text>}`.
 
@@ -26,7 +28,7 @@ An invalid request gets `{"ok":false,"error":<text>}`.
 
 A window is `{"role":"control"|"portal"|"prompt","monitor":<display token or null>,"fullscreen":<bool>,"focused":<bool>,"position":[x,y] or null,"size":[w,h]}`. Position and size are logical pixels. Wayland does not report the position.
 
-An intent is one of: `"OpenPortal"`, `"ClosePortal"`, `"EndSession"`, `{"StartHandoff":{"target":<computer id>}}`, `{"SelectDevice":{"alias":<device alias>}}`, `{"Disconnect":{"session":<id>}}`, `{"TakeControl":{"session":<id>}}`.
+An intent is one of: `"OpenPortal"`, `"ClosePortal"`, `"EndSession"`, `{"StartHandoff":{"target":<computer id>}}`, `{"SelectDevice":{"alias":<device alias>}}`, `{"StopSession":{"session":<id>}}`, `{"ControlFromHere":{"session":<id>}}`.
 
 Example with `socat`:
 
@@ -39,3 +41,4 @@ echo '{"cmd":"state"}' | socat - UNIX-CONNECT:/tmp/telescreen.sock
 - The protocol does not inject input and does not replace the input capture. The hardware tests of the capture (AC-14 to AC-17) still need the user.
 - `StartHandoff` runs the handoff steps of the config. With the real config, it switches the shared display. For a test without a switch, use a config whose steps only print `{"ok":true}`.
 - `confirm` on the source arms the input capture and suppresses the local input.
+- `hold_keyboard` takes the keyboard focus from all applications of this computer until `release_keyboard`, the session end, or the app end. Use it only on a computer where nobody types. The `focused` facts of the windows show the effect.

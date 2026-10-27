@@ -18,6 +18,8 @@
 //! Confirm{session} ─────────────▶          check display, remove prompt (FLOW-10)
 //!        ◀─────────────────────── Started{session}
 //! Input / ReleaseAll / datagrams ▶         inject
+//! KeyboardAway{session} ────────▶          hold keyboard focus (FLOW-23)
+//! KeyboardBack{session} ────────▶          release keyboard focus holder
 //! End{session, reason}  ◀──────▶  End{session, reason}
 //! Heartbeat ◀──────────────────▶ Heartbeat (each second; the transport owns it)
 //! ```
@@ -29,7 +31,7 @@ use crate::input::InputEvent;
 use crate::pointer::Normalized;
 
 /// The wire protocol version. A peer refuses a different version.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// The maximum size of one reliable frame payload.
 pub const MAX_FRAME: usize = 64 * 1024;
@@ -58,8 +60,16 @@ pub enum Message {
         session: SessionId,
         event: InputEvent,
     },
-    /// Release all held keys and buttons: the source paused (FLOW-14).
+    /// Release all held keys and buttons after input was lost (IN-13).
     ReleaseAll {
+        session: SessionId,
+    },
+    /// The portal lost the keyboard focus (FLOW-23).
+    KeyboardAway {
+        session: SessionId,
+    },
+    /// The portal got the keyboard focus (FLOW-23).
+    KeyboardBack {
         session: SessionId,
     },
 
@@ -97,6 +107,8 @@ pub enum RefuseReason {
     NoInputTarget,
     /// The target cannot inject input (permission or backend).
     NoInjection,
+    /// The target has no focus holder (UI-7, AC-29).
+    NoFocusHold,
     /// A different session holds the lease of the device (AC-20).
     Busy,
 }
@@ -109,8 +121,10 @@ pub enum EndReason {
     SafetyExit,
     /// The user ended the session in the UI of the source.
     SourceClosed,
-    /// The user selected "disconnect" on the target.
+    /// The target app quit (AC-18).
     TargetDisconnected,
+    /// The user selected "Stop this session" on the target (FLOW-17).
+    TargetStopped,
     /// The target requests control back (FLOW-17).
     TargetRequestedControl,
     /// No confirmation in the timeout (FLOW-11).

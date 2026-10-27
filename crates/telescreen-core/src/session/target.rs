@@ -35,6 +35,10 @@ pub enum TargetAction {
     CheckDisplay,
     Inject(InputEvent),
     MovePointer(Normalized),
+    /// Takes keyboard focus from target applications (FLOW-23, UI-7).
+    HoldKeyboard,
+    /// Removes the focus holder (FLOW-23, UI-7).
+    ReleaseKeyboard,
     /// Release the device lease of this session.
     ReleaseLease,
 }
@@ -48,6 +52,7 @@ pub struct TargetSession {
     phase: TargetPhase,
     held: HeldInputs,
     pointer_order: PointerOrder,
+    keyboard_held: bool,
 }
 
 impl TargetSession {
@@ -71,6 +76,7 @@ impl TargetSession {
             phase: TargetPhase::AwaitingHandoff,
             held: HeldInputs::default(),
             pointer_order: PointerOrder::default(),
+            keyboard_held: false,
         };
         (target, actions)
     }
@@ -108,6 +114,8 @@ impl TargetSession {
             | Message::Confirm { session }
             | Message::Input { session, .. }
             | Message::ReleaseAll { session }
+            | Message::KeyboardAway { session }
+            | Message::KeyboardBack { session }
             | Message::End { session, .. } => session,
             _ => return Vec::new(),
         };
@@ -132,6 +140,18 @@ impl TargetSession {
             }
             Message::ReleaseAll { .. } if self.phase == TargetPhase::Forwarding => {
                 self.release_held()
+            }
+            Message::KeyboardAway { .. }
+                if self.phase == TargetPhase::Forwarding && !self.keyboard_held =>
+            {
+                self.keyboard_held = true;
+                vec![TargetAction::HoldKeyboard]
+            }
+            Message::KeyboardBack { .. }
+                if self.phase == TargetPhase::Forwarding && self.keyboard_held =>
+            {
+                self.keyboard_held = false;
+                vec![TargetAction::ReleaseKeyboard]
             }
             Message::End { reason, .. } => {
                 self.finish(*reason, false, self.prompt_can_be_visible())
@@ -189,7 +209,8 @@ impl TargetSession {
     /// (FLOW-17), a lost display, or a lost permission.
     ///
     /// The actions of each end, in this order: `Inject` up events for all held
-    /// input, `HidePrompt` if the prompt can be visible (`ShowingPrompt`, `Prompting`,
+    /// input, `ReleaseKeyboard` if the focus holder is held (FLOW-23),
+    /// `HidePrompt` if the prompt can be visible (`ShowingPrompt`, `Prompting`,
     /// `CheckingDisplay`), `Send(End)` (only for an end on this peer), `ReleaseLease`.
     /// An end of a finished session returns no actions.
     pub fn end(&mut self, reason: EndReason) -> Vec<TargetAction> {
@@ -235,6 +256,10 @@ impl TargetSession {
             return Vec::new();
         }
         let mut actions = self.release_held();
+        if self.keyboard_held {
+            self.keyboard_held = false;
+            actions.push(TargetAction::ReleaseKeyboard);
+        }
         if hide_prompt {
             actions.push(TargetAction::HidePrompt);
         }

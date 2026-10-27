@@ -4,12 +4,14 @@
 //! - [`inject`]: the wlroots virtual pointer (absolute motion on the input-target
 //!   output) and a uinput keyboard.
 //! - [`prompt`]: the layer-shell confirmation prompt.
+//! - [`focus`]: the invisible layer-shell keyboard focus holder.
 //! - [`inhibit`]: keyboard shortcut inhibition for the portal window.
 //!
 //! Tested only on niri 26.04 (`docs/spikes.md`). Do not claim other compositors.
 #![cfg(target_os = "linux")]
 
 pub mod displays;
+pub mod focus;
 pub mod inhibit;
 pub mod inject;
 pub mod prompt;

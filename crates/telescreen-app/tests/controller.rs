@@ -17,8 +17,8 @@ use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::input::InputEvent;
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{
-    Capability, CapturedEvent, DisplayInfo, Displays, Injector, InputCapabilities, InputCapture,
-    PlatformError,
+    Capability, CapturedEvent, DisplayInfo, Displays, FocusHolder, Injector, InputCapabilities,
+    InputCapture, PlatformError,
 };
 use telescreen_core::pointer::{Normalized, Point, Rect};
 use telescreen_core::session::VideoInput;
@@ -89,6 +89,8 @@ struct Log {
     closed: Vec<ComputerId>,
     /// The number of `NetPort::shutdown` calls.
     net_shutdowns: usize,
+    /// Injected events and focus holder calls, in sequence (FLOW-23).
+    target: Vec<String>,
 }
 
 type Shared = Rc<RefCell<Log>>;
@@ -133,6 +135,11 @@ impl InputCapture for Capture {
     fn disarm(&mut self) {
         self.0.borrow_mut().capture.push("disarm".into());
     }
+    fn guard(&mut self, on: bool) -> Result<(), PlatformError> {
+        let text = if on { "guard on" } else { "guard off" };
+        self.0.borrow_mut().capture.push(text.into());
+        Ok(())
+    }
 }
 
 struct Inject(Shared);
@@ -145,8 +152,24 @@ impl Injector for Inject {
         Ok(())
     }
     fn input(&mut self, event: &InputEvent) -> Result<(), PlatformError> {
-        self.0.borrow_mut().injected.push(*event);
+        let mut log = self.0.borrow_mut();
+        log.injected.push(*event);
+        log.target.push(format!("inject {event:?}"));
         Ok(())
+    }
+}
+
+struct Holder(Shared);
+impl FocusHolder for Holder {
+    fn hold(&mut self, display: &DisplayInfo) -> Result<(), PlatformError> {
+        self.0
+            .borrow_mut()
+            .target
+            .push(format!("hold {}", display.token.0));
+        Ok(())
+    }
+    fn release(&mut self) {
+        self.0.borrow_mut().target.push("release".into());
     }
 }
 
@@ -197,7 +220,21 @@ fn peer(id: &str, displays: Vec<DisplayInfo>) -> Peer {
 }
 
 fn peer_with(id: &str, displays: Vec<DisplayInfo>, capabilities: InputCapabilities) -> Peer {
+    peer_full(id, displays, capabilities, true)
+}
+
+fn peer_full(
+    id: &str,
+    displays: Vec<DisplayInfo>,
+    capabilities: InputCapabilities,
+    holder: bool,
+) -> Peer {
     let log: Shared = Rc::default();
+    let focus_holder: Option<Box<dyn FocusHolder>> = if holder {
+        Some(Box::new(Holder(log.clone())))
+    } else {
+        None
+    };
     let ports = Ports {
         net: Box::new(Net(log.clone())),
         jobs: Box::new(Jobs(log.clone())),
@@ -205,6 +242,7 @@ fn peer_with(id: &str, displays: Vec<DisplayInfo>, capabilities: InputCapabiliti
         capture: Box::new(Capture(log.clone())),
         injector: Some(Box::new(Inject(log.clone()))),
         prompt: Box::new(Prompt(log.clone())),
+        focus_holder,
         capabilities,
     };
     let labels = Labels {
@@ -474,9 +512,10 @@ fn flow7_ac3_prompt_with_hint_on_target() {
         .unwrap()
         .video_input;
     assert_eq!(video, VideoInput::Unverified);
-    assert!(
-        w.mac.log.borrow().capture.is_empty(),
-        "no capture before the confirmation"
+    assert_eq!(
+        w.mac.log.borrow().capture,
+        ["arm 3400", "guard on"],
+        "no forwarding before the confirmation; only the guard (FLOW-21)"
     );
 }
 
@@ -498,7 +537,10 @@ fn flow10_ac5_forwarding_after_confirmation() {
     let mut w = World::new();
     w.advance_to_forwarding();
     assert!(!w.pc1.log.borrow().prompt_visible, "the prompt goes away");
-    assert_eq!(w.mac.log.borrow().capture, ["arm 3400", "forward"]);
+    assert_eq!(
+        w.mac.log.borrow().capture,
+        ["arm 3400", "guard on", "guard off", "forward"]
+    );
     let video = w
         .mac
         .controller
@@ -526,64 +568,123 @@ fn flow10_ac5_forwarding_after_confirmation() {
 }
 
 #[test]
-fn flow14_ac11_pause_and_resume() {
+fn flow14_ac11_leaving_the_portal_keeps_forwarding() {
     let mut w = World::new();
     w.advance_to_forwarding();
     w.mac
         .controller
         .on_captured(CapturedEvent::Input(key(42, true)));
-    // The free cursor leaves the portal (FLOW-20).
+    // The free cursor leaves the portal (FLOW-20). There is no pause state.
     w.mac.controller.on_captured(CapturedEvent::PointerLeft);
     w.pump();
-    assert!(matches!(w.phase(), Some(SessionPhase::Paused { .. })));
-    assert_eq!(
-        w.mac.log.borrow().capture.last().unwrap(),
-        "forward",
-        "the capture keeps forwarding mode; it lets input through outside"
-    );
-    let pointers = w.pc1.log.borrow().pointer.len();
-    w.mac.controller.on_captured(CapturedEvent::PointerMoved {
-        at: Point {
-            x: -300.0,
-            y: 500.0,
-        },
-    });
-    w.pump();
-    assert_eq!(
-        w.pc1.log.borrow().pointer.len(),
-        pointers,
-        "no pointer position while paused"
-    );
-    assert_eq!(
-        w.pc1.log.borrow().injected,
-        [key(42, true), key(42, false)],
-        "no key stays down"
-    );
-
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "forward");
+    // The keyboard is still in the portal, so the capture forwards the up (IN-3).
     w.mac
         .controller
-        .on_captured(CapturedEvent::Input(key(30, true)));
+        .on_captured(CapturedEvent::Input(key(42, false)));
     w.pump();
-    assert_eq!(
-        w.pc1.log.borrow().injected.len(),
-        2,
-        "local input while paused"
-    );
+    assert_eq!(w.pc1.log.borrow().injected, [key(42, true), key(42, false)]);
 
     w.mac.controller.on_captured(CapturedEvent::PointerEntered {
         at: Point { x: 0.0, y: 300.0 },
     });
     w.pump();
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Forwarding),
-        "no new confirmation"
-    );
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
     let last = *w.pc1.log.borrow().pointer.last().unwrap();
     assert_eq!(
         (last.x, (last.y - 300.0 / 999.0).abs() < 1e-4),
         (0.0, true),
         "the entry point goes to the target: {last:?}"
+    );
+}
+
+#[test]
+fn flow23_ac27_one_visible_keyboard_focus() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    assert!(
+        w.pc1.log.borrow().target.is_empty(),
+        "no holder at the start"
+    );
+
+    // A click on a different window of the source.
+    w.mac.controller.on_captured(CapturedEvent::KeyboardLeft);
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().target, ["hold HDMI-A-2"]);
+
+    // A click in the portal: the keyboard comes back before the click.
+    let click = InputEvent::Button {
+        button: telescreen_core::input::Button::Left,
+        down: true,
+    };
+    w.mac.controller.on_captured(CapturedEvent::KeyboardEntered);
+    w.mac.controller.on_captured(CapturedEvent::Input(click));
+    w.pump();
+    assert_eq!(
+        w.pc1.log.borrow().target,
+        [
+            "hold HDMI-A-2".to_string(),
+            "release".into(),
+            format!("inject {click:?}")
+        ]
+    );
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+}
+
+#[test]
+fn flow23_session_end_removes_the_holder() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::KeyboardLeft);
+    w.mac.controller.on_captured(CapturedEvent::ReleaseShortcut);
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().target, ["hold HDMI-A-2", "release"]);
+}
+
+#[test]
+fn in13_ac28_input_lost_releases_on_the_target() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::Input(key(42, true)));
+    w.mac.controller.on_captured(CapturedEvent::InputLost);
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().injected, [key(42, true), key(42, false)]);
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+}
+
+#[test]
+fn ac29_target_without_focus_holder_refuses() {
+    let caps = InputCapabilities {
+        capture: Capability::Available,
+        suppress: Capability::Available,
+        inject: Capability::Available,
+    };
+    let mut pc1 = peer_full("pc1", vec![display("HDMI-A-2", 0.0, 2048.0)], caps, false);
+    pc1.controller.on_net(
+        NetEvent::Message {
+            peer: ComputerId::from("mac"),
+            message: Message::RequestSession {
+                device: "shared-lg".into(),
+            },
+        },
+        Instant::now(),
+    );
+    let sent = pc1.log.borrow_mut().net.pop_front().unwrap();
+    assert!(
+        matches!(
+            sent,
+            NetCommand::Send {
+                message: Message::SessionRefused {
+                    reason: RefuseReason::NoFocusHold,
+                    ..
+                },
+                ..
+            }
+        ),
+        "{sent:?}"
     );
 }
 
@@ -631,6 +732,43 @@ fn flow11_ac7_timeout_removes_prompt() {
 }
 
 #[test]
+fn flow21_ac26_guard_from_handoff_to_confirmation() {
+    let mut w = World::new();
+    w.advance_to_confirmation();
+    assert_eq!(w.mac.log.borrow().capture, ["arm 3400", "guard on"]);
+    assert!(w.mac.controller.guarded());
+}
+
+#[test]
+fn flow21_guard_ends_with_the_timeout() {
+    let mut w = World::new();
+    w.advance_to_confirmation();
+    w.mac
+        .controller
+        .tick(w.now + std::time::Duration::from_secs(61));
+    w.pump();
+    assert!(!w.mac.controller.guarded());
+    assert!(
+        w.mac
+            .log
+            .borrow()
+            .capture
+            .iter()
+            .any(|c| c == "guard off" || c == "disarm"),
+        "{:?}",
+        w.mac.log.borrow().capture
+    );
+}
+
+#[test]
+fn flow21_no_guard_after_a_failed_handoff() {
+    let mut w = World::new();
+    w.handoff = HandoffResult::Failed { completed_steps: 0 };
+    w.advance_to_confirmation();
+    assert!(!w.mac.controller.guarded());
+}
+
+#[test]
 fn flow12_ac10_failed_handoff_does_not_reach_the_prompt() {
     let mut w = World::new();
     w.handoff = HandoffResult::Failed { completed_steps: 0 };
@@ -649,7 +787,7 @@ fn flow12_ac10_failed_handoff_does_not_reach_the_prompt() {
 }
 
 #[test]
-fn ac23_target_disconnects() {
+fn ac23_stop_this_session() {
     let mut w = World::new();
     w.advance_to_forwarding();
     w.mac
@@ -657,7 +795,34 @@ fn ac23_target_disconnects() {
         .on_captured(CapturedEvent::Input(key(56, true)));
     w.pump();
     let session = w.pc1.controller.control_screen().incoming[0].session;
-    w.pc1.controller.on_intent(Intent::TakeControl { session });
+    w.pc1.controller.on_intent(Intent::StopSession { session });
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
+    assert_eq!(
+        w.phase(),
+        Some(SessionPhase::Ended {
+            reason: "the target stopped the session".into()
+        })
+    );
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    assert!(
+        w.pc1.controller.portal_screen().is_none(),
+        "no reverse session"
+    );
+}
+
+#[test]
+fn flow17_ac23_control_from_here_starts_the_reverse_session() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::Input(key(56, true)));
+    w.pump();
+    let session = w.pc1.controller.control_screen().incoming[0].session;
+    w.pc1
+        .controller
+        .on_intent(Intent::ControlFromHere { session });
     w.pump();
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
     assert_eq!(
@@ -667,6 +832,16 @@ fn ac23_target_disconnects() {
         })
     );
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    // pc1 is now the source: a portal on the display of the old session, and a
+    // handoff to the old source that waits for the confirmation.
+    let portal = w.pc1.controller.portal_screen().unwrap();
+    assert_eq!(
+        portal.session.unwrap().phase,
+        SessionPhase::WaitingForConfirmation {
+            key: "Return".into()
+        }
+    );
+    assert_eq!(w.mac.controller.control_screen().incoming.len(), 1);
 }
 
 #[test]

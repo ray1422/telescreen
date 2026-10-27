@@ -9,8 +9,9 @@
 //!
 //! The cursor is always free (FLOW-20). The tap never suppresses pointer motion,
 //! drags included. While forwarding, it suppresses and reports the key, button,
-//! and scroll events that [`KeyRoutes`] sends to the target, and the other event
-//! types (gestures) while the cursor is in the portal.
+//! and scroll events that [`InputRouter`] sends to the target (FLOW-22).
+//! Forwarded buttons also reach the portal for native keyboard focus.
+//! Other event types are suppressed while the cursor is in the portal (IN-10).
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -21,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use telescreen_core::input::{Button, InputEvent};
-use telescreen_core::key_route::{KeyRoutes, Route};
+use telescreen_core::key_route::{InputRouter, Route};
 use telescreen_core::keys::{self, Key};
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
 use telescreen_core::pointer::{Point, Rect};
@@ -47,6 +48,8 @@ type Wake = Box<dyn Fn() + Send + Sync>;
 struct Shared {
     start: Instant,
     mode: AtomicU8,
+    guarded: AtomicBool,
+    secure_input: AtomicBool,
     /// The portal bounds as f64 bits: x, y, width, height.
     portal: [AtomicU64; 4],
     /// The cursor is in the portal.
@@ -59,7 +62,8 @@ struct Shared {
     overflow: AtomicBool,
     woken: AtomicBool,
     tap: AtomicPtr<c_void>,
-    /// Callback-only state. The mutex is never contended.
+    /// The main thread holds this lock only for short updates, so the callback
+    /// waits for it only briefly (IN-2).
     keys: Mutex<KeyState>,
     tx: Sender<CapturedEvent>,
     wake: Wake,
@@ -70,8 +74,8 @@ struct KeyState {
     escapes: VecDeque<Instant>,
     /// Modifier keys that are down (evdev codes).
     modifiers: Vec<Key>,
-    /// Where each key and button that is down went (IN-3).
-    routes: KeyRoutes,
+    /// Routes and native keyboard focus (IN-3, FLOW-22).
+    router: InputRouter,
 }
 
 /// The event tap. Clone it to keep a handle for [`MacCapture::drain`] and
@@ -98,6 +102,8 @@ impl MacCapture {
         let shared = Arc::new(Shared {
             start: Instant::now(),
             mode: AtomicU8::new(OFF),
+            guarded: AtomicBool::new(false),
+            secure_input: AtomicBool::new(false),
             portal: Default::default(),
             entered: AtomicBool::new(false),
             moved: Default::default(),
@@ -171,6 +177,7 @@ impl InputCapture for MacCapture {
     }
 
     fn forward(&mut self) -> Result<(), PlatformError> {
+        self.shared.guarded.store(false, SeqCst);
         if crate::secure_event_input() {
             return Err(PlatformError::Permission(
                 "Secure Event Input is on (a password field has the focus). macOS blocks the capture of keys."
@@ -178,6 +185,7 @@ impl InputCapture for MacCapture {
             ));
         }
         let s = &self.shared;
+        s.secure_input.store(false, SeqCst);
         s.beat();
         s.lock_keys().escapes.clear();
         s.mode.store(FORWARDING, SeqCst);
@@ -186,15 +194,46 @@ impl InputCapture for MacCapture {
         Ok(())
     }
 
+    fn set_portal_focus(&mut self, focused: bool) {
+        let s = &self.shared;
+        let mut keys = s.lock_keys();
+        if let Some(focused) = keys.router.set_window_focus(focused) {
+            s.keyboard_changed(focused);
+        }
+    }
+
+    fn guard(&mut self, on: bool) -> Result<(), PlatformError> {
+        let s = &self.shared;
+        if on && s.mode.load(SeqCst) == OFF {
+            return Err(PlatformError::Failed(
+                "the portal guard needs an armed capture".into(),
+            ));
+        }
+        s.guarded.store(on, SeqCst);
+        Ok(())
+    }
+
     fn disarm(&mut self) {
         let s = &self.shared;
         s.mode.store(OFF, SeqCst);
+        s.guarded.store(false, SeqCst);
         s.entered.store(false, SeqCst);
-        s.lock_keys().routes.clear();
+        let mut keys = s.lock_keys();
+        keys.router = InputRouter::new();
+        keys.modifiers.clear();
     }
 
     fn heartbeat(&mut self) {
-        self.shared.beat();
+        let s = &self.shared;
+        s.beat();
+        let secure = crate::secure_event_input();
+        let was_secure = s.secure_input.swap(secure, SeqCst);
+        if secure && !was_secure && self.is_forwarding() {
+            let mut keys = s.lock_keys();
+            keys.router.clear();
+            keys.modifiers.clear();
+            s.push(CapturedEvent::InputLost);
+        }
     }
 }
 
@@ -209,6 +248,15 @@ impl Shared {
 
     fn lock_keys(&self) -> std::sync::MutexGuard<'_, KeyState> {
         self.keys.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Reports keyboard focus before the input that caused it (FLOW-23).
+    fn keyboard_changed(&self, focused: bool) {
+        self.push(if focused {
+            CapturedEvent::KeyboardEntered
+        } else {
+            CapturedEvent::KeyboardLeft
+        });
     }
 
     fn portal(&self) -> Rect {
@@ -336,8 +384,21 @@ extern "C" fn callback(
     // SAFETY: `info` is the pointer from `run_tap`, which is never freed.
     let shared = unsafe { &*(info as *const Shared) };
     if kind == ffi::TAP_DISABLED_BY_TIMEOUT || kind == ffi::TAP_DISABLED_BY_USER {
+        let forwarding = shared.mode.load(SeqCst) == FORWARDING;
+        let mut keys = if forwarding {
+            Some(shared.lock_keys())
+        } else {
+            None
+        };
+        if let Some(keys) = keys.as_mut() {
+            keys.router.clear();
+            keys.modifiers.clear();
+        }
         // SAFETY: the tap pointer is valid for the life of the process.
         unsafe { ffi::CGEventTapEnable(shared.tap.load(SeqCst), true) };
+        if keys.is_some() {
+            shared.push(CapturedEvent::InputLost);
+        }
         return event;
     }
     if shared.mode.load(SeqCst) == OFF {
@@ -355,14 +416,45 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
     // SAFETY (for the event reads below): the event is valid during the callback.
     let field = |f: u32| unsafe { ffi::CGEventGetIntegerValueField(event, f) };
     let forwarding = shared.mode.load(SeqCst) == FORWARDING;
-    match kind {
-        // Motion moves the free cursor: never suppressed (FLOW-20).
-        ffi::MOUSE_MOVED | ffi::LEFT_DRAGGED | ffi::RIGHT_DRAGGED | ffi::OTHER_DRAGGED => {
-            // SAFETY: as above.
-            let at = unsafe { ffi::CGEventGetLocation(event) };
-            shared.cursor_at(Point { x: at.x, y: at.y });
-            false
+    let motion = matches!(
+        kind,
+        ffi::MOUSE_MOVED | ffi::LEFT_DRAGGED | ffi::RIGHT_DRAGGED | ffi::OTHER_DRAGGED
+    );
+    if !forwarding {
+        if !shared.guarded.load(SeqCst) || motion {
+            return false;
         }
+        return match kind {
+            ffi::KEY_DOWN | ffi::KEY_UP | ffi::FLAGS_CHANGED => {
+                // SAFETY: the event is valid during the callback.
+                let flags = unsafe { ffi::CGEventGetFlags(event) };
+                flags & (ffi::FLAG_COMMAND | ffi::FLAG_CONTROL) != 0
+            }
+            ffi::LEFT_DOWN
+            | ffi::LEFT_UP
+            | ffi::RIGHT_DOWN
+            | ffi::RIGHT_UP
+            | ffi::OTHER_DOWN
+            | ffi::OTHER_UP => {
+                // SAFETY: the event is valid during the callback.
+                let at = unsafe { ffi::CGEventGetLocation(event) };
+                !shared.portal().contains(Point { x: at.x, y: at.y })
+            }
+            _ => true,
+        };
+    }
+    if motion {
+        // SAFETY: the event is valid during the callback.
+        let at = unsafe { ffi::CGEventGetLocation(event) };
+        shared.cursor_at(Point { x: at.x, y: at.y });
+        return false;
+    }
+    // The main thread holds this lock only for short updates.
+    let mut keys = shared.lock_keys();
+    // SAFETY: the event is valid during the callback.
+    let at = unsafe { ffi::CGEventGetLocation(event) };
+    shared.cursor_at(Point { x: at.x, y: at.y });
+    match kind {
         ffi::KEY_DOWN | ffi::KEY_UP => {
             let code = field(ffi::FIELD_KEYCODE);
             let down = kind == ffi::KEY_DOWN;
@@ -376,10 +468,10 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
                 }
             }
             let Some(key) = u16::try_from(code).ok().and_then(keys::from_mac) else {
-                return shared.forward_now();
+                return keys.router.keyboard_in_portal();
             };
-            let forwarded = route(shared, InputEvent::Key { key, down });
-            if forwarded && down && key == Key::ESC && safety_exit(shared) {
+            let forwarded = route(shared, &mut keys, InputEvent::Key { key, down });
+            if forwarded && down && key == Key::ESC && safety_exit(&mut keys) {
                 shared.stop(CapturedEvent::SafetyExit);
             }
             forwarded
@@ -389,8 +481,8 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
             let flags = unsafe { ffi::CGEventGetFlags(event) };
             let code = field(ffi::FIELD_KEYCODE);
             let mut forwarded = false;
-            for input in modifier_events(shared, code, flags) {
-                forwarded |= route(shared, input);
+            for input in modifier_events(&mut keys, code, flags) {
+                forwarded |= route(shared, &mut keys, input);
             }
             forwarded
         }
@@ -412,7 +504,10 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
                 },
             };
             match button {
-                Some(button) => route(shared, InputEvent::Button { button, down }),
+                Some(button) => {
+                    route(shared, &mut keys, InputEvent::Button { button, down });
+                    false
+                }
                 None => shared.forward_now(),
             }
         }
@@ -420,10 +515,7 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
             // Point deltas: positive is up or left on macOS; the wire is the opposite.
             let dy = -(field(ffi::FIELD_SCROLL_POINT_DELTA_1) as f32);
             let dx = -(field(ffi::FIELD_SCROLL_POINT_DELTA_2) as f32);
-            if dx == 0.0 && dy == 0.0 {
-                return shared.forward_now();
-            }
-            route(shared, InputEvent::Scroll { dx, dy })
+            route(shared, &mut keys, InputEvent::Scroll { dx, dy })
         }
         // Gestures (Space swipes, Mission Control), system-defined events, and all
         // other types: in the portal, suppress and do not forward (IN-10, ADR 0003).
@@ -433,10 +525,12 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
 
 /// Routes one input event (IN-3). Reports it if it goes to the target, and
 /// returns true to suppress it.
-fn route(shared: &Shared, input: InputEvent) -> bool {
-    let forward_now = shared.forward_now();
-    let route = shared.lock_keys().routes.route(&input, forward_now);
-    if route == Route::Forward {
+fn route(shared: &Shared, keys: &mut KeyState, input: InputEvent) -> bool {
+    let decision = keys.router.route(&input, shared.entered.load(SeqCst));
+    if let Some(focused) = decision.keyboard {
+        shared.keyboard_changed(focused);
+    }
+    if decision.route == Route::Forward {
         shared.push(CapturedEvent::Input(input));
         true
     } else {
@@ -445,9 +539,8 @@ fn route(shared: &Shared, input: InputEvent) -> bool {
 }
 
 /// Counts Escape presses in the callback (IN-8). True at the tenth press in 5 s.
-fn safety_exit(shared: &Shared) -> bool {
+fn safety_exit(keys: &mut KeyState) -> bool {
     let now = Instant::now();
-    let mut keys = shared.lock_keys();
     keys.escapes.push_back(now);
     while keys
         .escapes
@@ -465,7 +558,7 @@ fn safety_exit(shared: &Shared) -> bool {
 
 /// A flags-changed event names the modifier key that changed. The device bits of
 /// the flags tell if that key is now down.
-fn modifier_events(shared: &Shared, code: i64, flags: u64) -> Vec<InputEvent> {
+fn modifier_events(keys: &mut KeyState, code: i64, flags: u64) -> Vec<InputEvent> {
     let Some(key) = u16::try_from(code).ok().and_then(keys::from_mac) else {
         return Vec::new();
     };
@@ -489,7 +582,6 @@ fn modifier_events(shared: &Shared, code: i64, flags: u64) -> Vec<InputEvent> {
         _ => return Vec::new(),
     };
     let down = flags & bit != 0;
-    let mut keys = shared.lock_keys();
     let held = keys.modifiers.contains(&key);
     match (down, held) {
         (true, false) => keys.modifiers.push(key),

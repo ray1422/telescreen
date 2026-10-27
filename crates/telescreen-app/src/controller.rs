@@ -10,9 +10,10 @@ use std::time::Instant;
 
 use telescreen_core::config::{Config, Device, Operation};
 use telescreen_core::driver::{self, DeviceRef, OperationKind, Outcome, PortalInfo, Request};
-use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::platform::{
-    Capability, CapturedEvent, DisplayInfo, Displays, Injector, InputCapabilities, InputCapture,
+    Capability, CapturedEvent, DisplayInfo, Displays, FocusHolder, Injector, InputCapabilities,
+    InputCapture, PlatformError,
 };
 use telescreen_core::pointer::{self, Point, Rect};
 use telescreen_core::routes;
@@ -131,6 +132,8 @@ pub struct Ports {
     pub capture: Box<dyn InputCapture>,
     /// `None` if this peer cannot inject input.
     pub injector: Option<Box<dyn Injector>>,
+    /// `None` if this peer has no focus holder and cannot be a target (UI-7).
+    pub focus_holder: Option<Box<dyn FocusHolder>>,
     pub prompt: Box<dyn PromptPresenter>,
     pub capabilities: InputCapabilities,
 }
@@ -162,11 +165,13 @@ struct Portal {
     display: DisplayInfo,
     bounds: Rect,
     focused: bool,
+    guarded: bool,
     matching: Matching,
     match_pending: usize,
     matched: Vec<String>,
     match_error: Option<String>,
     device: Option<String>,
+    handoff_target: Option<ComputerId>,
     session: Option<SourceSession>,
     pointer: Point,
     notice: Option<String>,
@@ -181,6 +186,7 @@ pub struct Controller {
     fingerprint: String,
     ports: Ports,
     portal: Option<Portal>,
+    portal_window_request: Option<DisplayToken>,
     next_portal: u64,
     connected: BTreeSet<ComputerId>,
     leases: LeaseTable,
@@ -200,6 +206,33 @@ const MAX_NOTICES: usize = 8;
 const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Controller {
+    /// Holds keyboard focus on the named local display (UI-7).
+    #[cfg(feature = "debug-protocol")]
+    pub fn debug_hold_keyboard(&mut self, display: &DisplayToken) -> Result<(), String> {
+        let holder = self
+            .ports
+            .focus_holder
+            .as_mut()
+            .ok_or_else(|| "no keyboard focus holder is available (UI-7)".to_string())?;
+        let display = self
+            .ports
+            .displays
+            .displays()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|info| &info.token == display)
+            .ok_or_else(|| format!("no display {}", display.0))?;
+        holder.hold(&display).map_err(|error| error.to_string())
+    }
+
+    /// Removes the debug keyboard focus hold (UI-7).
+    #[cfg(feature = "debug-protocol")]
+    pub fn debug_release_keyboard(&mut self) {
+        if let Some(holder) = self.ports.focus_holder.as_mut() {
+            holder.release();
+        }
+    }
+
     pub fn new(
         config: Config,
         local: ComputerId,
@@ -217,6 +250,7 @@ impl Controller {
             fingerprint,
             ports,
             portal: None,
+            portal_window_request: None,
             next_portal: 1,
             connected: BTreeSet::new(),
             leases: LeaseTable::new(first_generation),
@@ -239,6 +273,9 @@ impl Controller {
             if let Capability::Missing(reason) = cap {
                 controller.notice(format!("Input {name} is not available: {reason}"));
             }
+        }
+        if controller.ports.focus_holder.is_none() {
+            controller.notice("Keyboard focus holder is not available on this peer.".into());
         }
         controller
     }
@@ -342,16 +379,24 @@ impl Controller {
             display,
             bounds,
             focused: true,
+            guarded: false,
             matching: Matching::Evaluating,
             match_pending: 0,
             matched: Vec::new(),
             match_error: None,
             device: None,
+            handoff_target: None,
             session: None,
             pointer: Point::default(),
             notice: None,
         });
         self.evaluate_portal_match();
+    }
+
+    /// Takes the portal window request from FLOW-17.
+    /// Returns the display token once.
+    pub fn take_portal_window_request(&mut self) -> Option<DisplayToken> {
+        self.portal_window_request.take()
     }
 
     /// The portal moved to a different display, or the display topology changed
@@ -368,6 +413,7 @@ impl Controller {
         portal.display = display;
         portal.bounds = bounds;
         portal.device = None;
+        portal.handoff_target = None;
         self.evaluate_portal_match();
     }
 
@@ -455,6 +501,25 @@ impl Controller {
             }
         };
         self.dial_candidates();
+        self.start_pending_handoff();
+    }
+
+    /// Starts the reverse handoff after portal matching finishes (FLOW-17).
+    fn start_pending_handoff(&mut self) {
+        let Some(portal) = self.portal.as_mut() else {
+            return;
+        };
+        if matches!(portal.matching, Matching::Evaluating) {
+            return;
+        }
+        let Some(target) = portal.handoff_target.take() else {
+            return;
+        };
+        if !matches!(portal.matching, Matching::Matched(_)) {
+            self.notice("Cannot control from here: the portal needs one matching device.".into());
+            return;
+        }
+        self.start_handoff(target);
     }
 
     fn portal_device(&self) -> Option<Device> {
@@ -487,6 +552,7 @@ impl Controller {
     }
 
     pub fn close_portal(&mut self, reason: EndReason) {
+        self.portal_window_request = None;
         self.end_portal_session(reason);
         if self.portal.take().is_some() {
             self.ports.capture.disarm();
@@ -504,6 +570,7 @@ impl Controller {
     pub fn set_portal_focus(&mut self, focused: bool) {
         if let Some(portal) = self.portal.as_mut() {
             portal.focused = focused;
+            self.ports.capture.set_portal_focus(focused);
         }
     }
 
@@ -514,15 +581,10 @@ impl Controller {
             return false;
         };
         let focused = portal.focused;
-        let bounds = portal.bounds;
         let Some(actions) = portal.session.as_mut().and_then(|s| s.confirm(focused)) else {
             return false;
         };
-        if let Err(e) = self.ports.capture.arm(bounds) {
-            self.notice(format!("Input capture failed: {e}"));
-            self.end_portal_session(EndReason::PermissionLost);
-            return true;
-        }
+        self.set_guard(false);
         self.run_source_actions(actions);
         true
     }
@@ -622,16 +684,19 @@ impl Controller {
                     });
                 }
                 SourceAction::RunHandoff => self.run_handoff(),
-                SourceAction::StartForwarding => match self.ports.capture.forward() {
-                    Ok(()) => self.send_pointer(),
-                    Err(e) => {
-                        self.notice(format!("Input capture failed: {e}"));
-                        let actions = self.end_actions(EndReason::PermissionLost);
-                        self.run_source_actions(actions);
-                        return;
+                SourceAction::StartForwarding => {
+                    self.set_guard(false);
+                    match self.ports.capture.forward() {
+                        Ok(()) => self.send_pointer(),
+                        Err(e) => {
+                            self.notice(format!("Input capture failed: {e}"));
+                            let actions = self.end_actions(EndReason::PermissionLost);
+                            self.run_source_actions(actions);
+                            return;
+                        }
                     }
-                },
-                // The capture lets input through outside the portal (FLOW-20).
+                }
+                // A finished session disarms the capture below (FLOW-16).
                 SourceAction::StopForwarding => {}
             }
         }
@@ -641,7 +706,22 @@ impl Controller {
             .and_then(|p| p.session.as_ref())
             .is_some_and(SourceSession::is_finished);
         if finished {
+            self.set_guard(false);
             self.ports.capture.disarm();
+        }
+    }
+
+    /// Changes the portal guard during the confirmation wait (FLOW-21).
+    fn set_guard(&mut self, on: bool) {
+        let Some(portal) = self.portal.as_mut() else {
+            return;
+        };
+        if portal.guarded == on {
+            return;
+        }
+        portal.guarded = on;
+        if let Err(e) = self.ports.capture.guard(on) {
+            self.notice(format!("Portal guard failed: {e}"));
         }
     }
 
@@ -684,6 +764,15 @@ impl Controller {
             portal: Some(portal_info(portal)),
             displays,
         };
+        let bounds = portal.bounds;
+        let focused = portal.focused;
+        if let Err(e) = self.ports.capture.arm(bounds) {
+            self.notice(format!("Input capture failed: {e}"));
+            self.end_portal_session(EndReason::PermissionLost);
+            return;
+        }
+        self.ports.capture.set_portal_focus(focused);
+        self.set_guard(true);
         self.spawn(
             Pending::Handoff {
                 session: session_id,
@@ -731,9 +820,13 @@ impl Controller {
             }
             CapturedEvent::PointerEntered { at } => {
                 portal.pointer = portal.bounds.clamp(at);
-                session.set_pointer_inside(true)
+                self.send_pointer();
+                return;
             }
-            CapturedEvent::PointerLeft => session.set_pointer_inside(false),
+            CapturedEvent::PointerLeft => return,
+            CapturedEvent::KeyboardEntered => session.on_keyboard(true),
+            CapturedEvent::KeyboardLeft => session.on_keyboard(false),
+            CapturedEvent::InputLost => session.on_input_lost(),
             CapturedEvent::ReleaseShortcut => session.end(EndReason::ReleaseShortcut),
             CapturedEvent::SafetyExit => session.end(EndReason::SafetyExit),
             CapturedEvent::Overflow => session.end(EndReason::QueueOverflow),
@@ -844,6 +937,8 @@ impl Controller {
             | Message::Confirm { session }
             | Message::Input { session, .. }
             | Message::ReleaseAll { session }
+            | Message::KeyboardAway { session }
+            | Message::KeyboardBack { session }
             | Message::End { session, .. } => {
                 let session = *session;
                 let Some(target) = self.incoming.get_mut(&session) else {
@@ -884,7 +979,7 @@ impl Controller {
         });
     }
 
-    /// FLOW-5 on the target: route, input-target, injection, lease.
+    /// Checks the target route, input-target, injection, focus holder, and lease (FLOW-5, UI-7).
     fn request_session(&mut self, peer: ComputerId, device_id: DeviceId) {
         let local = self
             .config
@@ -909,6 +1004,9 @@ impl Controller {
             || matches!(self.ports.capabilities.inject, Capability::Missing(_))
         {
             return self.refuse(peer, device_id, RefuseReason::NoInjection);
+        }
+        if self.ports.focus_holder.is_none() {
+            return self.refuse(peer, device_id, RefuseReason::NoFocusHold);
         }
         // FLOW-6: a new handoff of this device ends the session of the local
         // portal. A session of a different source keeps its lease (AC-20).
@@ -1008,6 +1106,31 @@ impl Controller {
                     queue.extend(more.unwrap_or_default());
                 }
                 TargetAction::HidePrompt => self.ports.prompt.hide(session),
+                TargetAction::HoldKeyboard => {
+                    let display = self.find_display(session);
+                    let result = match (display, self.ports.focus_holder.as_mut()) {
+                        (Some(display), Some(holder)) => holder.hold(&display),
+                        (None, _) => Err(PlatformError::Failed(
+                            "the input-target display is gone".into(),
+                        )),
+                        (_, None) => Err(PlatformError::Unsupported(
+                            "no focus holder is available".into(),
+                        )),
+                    };
+                    if let Err(e) = result {
+                        self.notice(format!("Cannot hold the keyboard focus: {e}"));
+                        queue.clear();
+                        let more = self
+                            .target_mut(session)
+                            .map(|t| t.end(EndReason::PermissionLost));
+                        queue.extend(more.unwrap_or_default());
+                    }
+                }
+                TargetAction::ReleaseKeyboard => {
+                    if let Some(holder) = self.ports.focus_holder.as_mut() {
+                        holder.release();
+                    }
+                }
                 TargetAction::CheckDisplay => {
                     let display = self.find_display(session);
                     let valid = match (&display, self.ports.injector.as_mut()) {
@@ -1141,13 +1264,33 @@ impl Controller {
             }
             Intent::StartHandoff { target } => self.start_handoff(target),
             Intent::EndSession => self.end_portal_session(EndReason::SourceClosed),
-            Intent::Disconnect { session } => {
-                self.end_incoming(session, EndReason::TargetDisconnected)
-            }
-            Intent::TakeControl { session } => {
-                self.end_incoming(session, EndReason::TargetRequestedControl)
-            }
+            Intent::StopSession { session } => self.end_incoming(session, EndReason::TargetStopped),
+            Intent::ControlFromHere { session } => self.control_from_here(session),
         }
+    }
+
+    /// Ends the incoming session (FLOW-17).
+    /// Opens a portal on its input-target display.
+    /// Starts a handoff to the old source.
+    fn control_from_here(&mut self, session: SessionId) {
+        let Some(target) = self.incoming.get(&session) else {
+            self.notice("Cannot control from here: the incoming session has ended.".into());
+            return;
+        };
+        let source = target.source().clone();
+        let token = target.display().clone();
+        self.end_incoming(session, EndReason::TargetRequestedControl);
+        let Some(display) = self.displays().into_iter().find(|d| d.token == token) else {
+            self.notice("Cannot control from here: the input-target display is gone.".into());
+            return;
+        };
+        self.open_portal(display);
+        let Some(portal) = self.portal.as_mut() else {
+            return;
+        };
+        portal.handoff_target = Some(source);
+        self.portal_window_request = Some(token);
+        self.start_pending_handoff();
     }
 
     /// The window layer could not show a prompt that the presenter accepted.
@@ -1205,9 +1348,14 @@ impl Controller {
         self.portal.is_some()
     }
 
-    /// True while input is forwarded: the portal must keep the focus (ADR 0003).
+    /// True while input is forwarded (FLOW-13).
     pub fn forwarding(&self) -> bool {
         self.portal_phase() == Some(SourcePhase::Forwarding)
+    }
+
+    /// True while the portal keeps the focus for confirmation (FLOW-21).
+    pub fn guarded(&self) -> bool {
+        self.portal.as_ref().is_some_and(|portal| portal.guarded)
     }
 
     pub fn portal_screen(&self) -> Option<PortalScreen> {
@@ -1250,9 +1398,6 @@ impl Controller {
             },
             SourcePhase::Starting => SessionPhase::Starting,
             SourcePhase::Forwarding => SessionPhase::Forwarding,
-            SourcePhase::Paused => SessionPhase::Paused {
-                release: self.labels.release_shortcut.clone(),
-            },
             SourcePhase::Refused(reason) => SessionPhase::Ended {
                 reason: refuse_text(reason),
             },
@@ -1317,6 +1462,7 @@ fn refuse_text(reason: RefuseReason) -> String {
         RefuseReason::NoRoute => "the target config has no route from this computer",
         RefuseReason::NoInputTarget => "the target cannot resolve its input-target display",
         RefuseReason::NoInjection => "the target cannot inject input",
+        RefuseReason::NoFocusHold => "the target has no keyboard focus holder",
         RefuseReason::Busy => "the device is in use by a different session",
     }
     .into()
@@ -1328,6 +1474,7 @@ fn end_text(reason: EndReason) -> &'static str {
         EndReason::SafetyExit => "safety exit",
         EndReason::SourceClosed => "ended on this computer",
         EndReason::TargetDisconnected => "disconnected on the target",
+        EndReason::TargetStopped => "the target stopped the session",
         EndReason::TargetRequestedControl => "the target took control back",
         EndReason::ConfirmTimeout => "no confirmation in time",
         EndReason::HandoffFailed => "the handoff failed",

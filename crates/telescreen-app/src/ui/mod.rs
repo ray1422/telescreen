@@ -34,6 +34,7 @@ use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::monitor::MonitorHandle;
 use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
 use crate::controller::{Controller, JobId, JobOutput, Ports};
@@ -103,6 +104,7 @@ pub fn run(
         displays: parts.displays,
         capture: parts.capture,
         injector: parts.injector,
+        focus_holder: parts.focus_holder,
         prompt: parts.prompt,
         capabilities: parts.capabilities,
     };
@@ -237,6 +239,18 @@ impl App {
                 .add_notice("Cannot find the display of the control window.".into());
             return;
         };
+        self.create_portal_window(event_loop, monitor, token, false);
+    }
+
+    /// Creates a portal at its logical display bounds (FLOW-2).
+    /// Enters fullscreen after creating the window.
+    fn create_portal_window(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        monitor: MonitorHandle,
+        token: DisplayToken,
+        opened: bool,
+    ) {
         let mut attributes = platform::window_attributes(Window::default_attributes())
             .with_title("Telescreen portal");
         // Make the window on the display first. The fullscreen request then uses
@@ -265,13 +279,37 @@ impl App {
                 self.portal = Some(PortalSurface {
                     surface,
                     token,
-                    opened: false,
+                    opened,
                 });
             }
-            Err(e) => self
-                .controller
-                .add_notice(format!("Cannot open the portal: {e}")),
+            Err(e) => {
+                self.controller
+                    .add_notice(format!("Cannot open the portal: {e}"));
+                if opened {
+                    self.controller.close_portal(EndReason::SourceClosed);
+                }
+            }
         }
+    }
+
+    /// Makes the window for a portal opened by the controller (FLOW-17).
+    fn take_portal_window_request(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(token) = self.controller.take_portal_window_request() else {
+            return;
+        };
+        if self.portal.take().is_some() {
+            self.hooks.portal_closed();
+        }
+        let monitor = event_loop
+            .available_monitors()
+            .find(|monitor| platform::monitor_token(monitor).as_ref() == Some(&token));
+        let Some(monitor) = monitor else {
+            self.controller
+                .add_notice(format!("Cannot find the portal display {token}."));
+            self.controller.close_portal(EndReason::PortalGone);
+            return;
+        };
+        self.create_portal_window(event_loop, monitor, token, true);
     }
 
     /// Calls `open_portal` when the window is on its display (FLOW-2).
@@ -329,6 +367,7 @@ impl App {
                 Intent::ClosePortal => self.close_portal_window(),
                 other => self.controller.on_intent(other),
             }
+            self.take_portal_window_request(event_loop);
         }
     }
 
@@ -426,7 +465,10 @@ impl App {
     /// Portal window events before the renderer sees them. Returns true if the
     /// event was used here (a confirmation, or input of a Linux capture).
     fn portal_event(&mut self, event: &WindowEvent) -> bool {
-        if self.hooks.portal_window_event(event) {
+        if self
+            .hooks
+            .portal_window_event(event, self.controller.forwarding())
+        {
             return true;
         }
         let window = match &self.portal {
@@ -437,14 +479,14 @@ impl App {
             WindowEvent::Focused(focused) => {
                 self.controller.set_portal_focus(*focused);
                 self.hooks
-                    .portal_focus(&window, *focused, self.controller.forwarding());
+                    .portal_focus(&window, *focused, self.controller.guarded());
                 if *focused {
                     self.start_portal();
                 }
                 false
             }
-            WindowEvent::Occluded(true) if self.controller.forwarding() => {
-                // ADR 0003: a Space change while forwarding. Take the focus back.
+            WindowEvent::Occluded(true) if self.controller.guarded() => {
+                // FLOW-21: keep the portal in place during the confirmation wait.
                 self.hooks.portal_focus(&window, false, true);
                 false
             }
@@ -530,6 +572,16 @@ impl App {
                     debug::error_response("not confirmed: the portal must have the focus")
                 }
             }
+            Request::HoldKeyboard { display } => {
+                match self.controller.debug_hold_keyboard(&display) {
+                    Ok(()) => debug::ok_response(),
+                    Err(error) => debug::error_response(&error),
+                }
+            }
+            Request::ReleaseKeyboard => {
+                self.controller.debug_release_keyboard();
+                debug::ok_response()
+            }
             Request::Quit => {
                 self.controller.shutdown();
                 self.close_portal_window();
@@ -613,6 +665,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Net(event) => {
                 log_net_event(&event);
                 self.controller.on_net(event, Instant::now());
+                self.take_portal_window_request(event_loop);
             }
             UserEvent::Job(id, output) => {
                 log_job(&output);
@@ -730,6 +783,7 @@ pub(crate) struct Parts {
     pub displays: Box<dyn telescreen_core::platform::Displays>,
     pub capture: Box<dyn telescreen_core::platform::InputCapture>,
     pub injector: Option<Box<dyn telescreen_core::platform::Injector>>,
+    pub focus_holder: Option<Box<dyn telescreen_core::platform::FocusHolder>>,
     pub prompt: Box<dyn telescreen_view::PromptPresenter>,
     pub capabilities: telescreen_core::platform::InputCapabilities,
     pub labels: crate::controller::Labels,

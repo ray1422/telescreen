@@ -11,6 +11,7 @@
 pub mod capture;
 pub mod displays;
 mod ffi;
+pub mod focus;
 pub mod inject;
 pub mod window;
 

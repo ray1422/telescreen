@@ -57,16 +57,18 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **FLOW-8** The user confirms with the confirmation key (Return. In v0.1.0 the key is fixed; a later version makes it configurable, user, 2026-10-27), or with a click in the portal. The source accepts the confirmation only while the target reports that the prompt is visible, and the portal has the window focus. At other times the key is a normal key.
 - **FLOW-9** The source suppresses the confirmation key and the confirmation click. It does not forward them. The click on the switch button must not go to the target.
 - **FLOW-10** Forwarding starts only after the confirmation, and only if the display token of the target is still valid. After the confirmation, the UI shows the video input as confirmed.
-- **FLOW-21** From the handoff until the confirmation or the timeout of FLOW-11, the portal stays fullscreen and fixed in place, and it keeps the window focus. It cannot be switched away (user, 2026-10-27). On macOS the source suppresses the gestures and shortcuts of IN-10 in this time, and it activates the portal again if it loses the focus.
+- **FLOW-21** From the handoff until the confirmation or the timeout of FLOW-11, the portal stays fullscreen and fixed in place, and it keeps the window focus. It cannot be switched away (user, 2026-10-27). On macOS the source suppresses the gestures and shortcuts of IN-10 and the clicks out of the portal in this time, and it activates the portal again if it loses the focus. The confirmation key and clicks in the portal still go to the portal. On Linux the portal inhibits the compositor shortcuts in this time. A Wayland client cannot take the focus back, so a click on a different output can still move the focus.
 - **FLOW-11** If there is no confirmation in 60 seconds (fixed in v0.1.0; configurable in a later version, user, 2026-10-27), cancel the wait. The target removes the prompt. The UI shows the video input as unknown. Do not switch the video input back.
 - **FLOW-12** If a handoff step fails, or `verify` is false: do not start forwarding, do not retry automatically, and do not claim a rollback. After a partial success, show the video input as unknown.
 
-### 4.3 Forwarding, pause, and end
+### 4.3 Forwarding and end
 
-- **FLOW-13** While the pointer is in the portal, the source captures, suppresses, and forwards its keyboard and mouse input to the target. The input focus follows the portal region. The source must not need window focus events from the target.
-- **FLOW-14** Switch of the controlled computer: when the pointer leaves the portal through an edge that touches a different local display, input goes back to the source at once. The session stays connected; this is a seamless switch, not a pause (user, 2026-10-27, ADR 0003). The target display does not change. When the pointer comes back into the portal, forwarding starts again with no new confirmation, if no new handoff ran.
+- **FLOW-13** While forwarding, the source captures, suppresses, and forwards its input to the target by two rules. Pointer motion, buttons, scroll, and gestures follow the cursor: they go to the target while the cursor is in the portal (FLOW-20). Keys follow the keyboard focus (FLOW-22). The source must not need window focus events from the target.
+- **FLOW-14** Switch of the controlled computer: the cursor can leave the portal at each time (FLOW-20), and the user can click and type on the source. This is a seamless switch (user, 2026-10-27, ADR 0003). The session has no pause state: it stays in forwarding until it ends. Only the routes of single events change. The target display does not change, and no new confirmation is necessary.
 - **FLOW-15** Portal edges with no adjacent local display stop the pointer.
-- **FLOW-20** The cursor of the source is always free: the source does not freeze or lock it, and pointer motion is never suppressed (user, 2026-10-27). Only input while the cursor is in the portal area goes to the target. Each key and button up goes where its down went (IN-3).
+- **FLOW-20** The cursor of the source is always free: the source does not freeze or lock it, and pointer motion is never suppressed (user, 2026-10-27). Only pointer input while the cursor is in the portal area goes to the target. Each key and button up goes where its down went (IN-3).
+- **FLOW-22** The keyboard focus follows clicks, as on one computer with more displays (user, 2026-10-27). Keys go to the target while the portal window has the native keyboard focus of the source, also when the cursor is out of the portal. A click in the portal gives the portal the keyboard focus. The click also goes to the target (user, 2026-10-27). A click on a different window of the source takes the keyboard focus away from the portal by the normal OS rules. Moving the cursor alone does not change the keyboard focus.
+- **FLOW-23** At each time, at most one input field on the two computers shows the keyboard focus (user, 2026-10-27: two blinking text cursors are incorrect behavior). When the portal loses the keyboard focus, the source sends `KeyboardAway`. The target then takes the keyboard focus from its applications with a focus holder that shows nothing (UI-7). When the portal gets the keyboard focus again, the source sends `KeyboardBack` before the click that caused it. The target removes the focus holder before it injects that click. At the session end, the target removes the focus holder.
 - **FLOW-16** These events end the session: the release shortcut, the safety exit, a disconnect (heartbeat timeout or a closed connection), "Stop this session" on the target, "Control from here" on the target (FLOW-17), lease expiry, removal of the portal display, and revocation of a permission. Then the source stops suppression and restores the key state. The target releases all held keys and buttons. If the video input is not confirmed, show it as unknown. Do not claim an automatic recovery.
 - **FLOW-17** The target shows "Controlled by <source label>" with two actions (user, 2026-10-27): "Stop this session" ends the session. "Control from here" ends the session, then starts a session in the other direction, with this computer as the source: a new connection that replaces the old one.
 - **FLOW-18** A session end does not switch the video input back. A switch back needs an explicit handoff route. The user should be able to start the switch back from a display of the source that the handoff does not change (for example the built-in display).
@@ -83,18 +85,20 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **IN-7** The release shortcut (macOS: Control+Option+Command+Escape. Linux: Control+Alt+Shift+Escape, user, 2026-10-27. Fixed in v0.1.0; configurable in a later version) ends the session. It is never forwarded.
 - **IN-8** The safety exit (Escape 10 times in 5 seconds) ends suppression and the session. The input callback counts the presses itself, with no dependency on the main thread, the UI, or the network. Escape is still forwarded.
 - **IN-9** A watchdog that is independent of input events must stop suppression when the main loop does not respond for a few seconds, and when a suppression deadline passes (spike 2).
-- **IN-10** While forwarding on macOS, suppress all gestures and shortcuts that switch Spaces or applications, or that open Mission Control. Do not forward them (ADR 0003). When the pointer is out of the portal, they go to macOS.
+- **IN-10** While forwarding on macOS, suppress all gestures and shortcuts that switch Spaces or applications, or that open Mission Control, by the rules of FLOW-13: shortcuts while the portal has the keyboard focus, and gestures while the cursor is in the portal. Do not forward gestures (ADR 0003). At other times, they go to macOS.
 - **IN-11** Pointer position: the source maps the pointer position in the portal, normalized to the portal size, to the input-target display of the target. The backends handle scale, rotation, negative origins, and pixel coordinates. The pointer must not leave the input-target display on the target.
 - **IN-12** If the OS blocks capture (for example macOS Secure Event Input, or a missing permission), report it clearly. Do not claim that capture works.
+- **IN-13** Input lost: if the capture can no longer see the up events of the forwarded keys, the source releases all held state of the session and sends `ReleaseAll`. The session continues. Examples: the Linux portal loses the keyboard focus (other windows get the up events), macOS turns on Secure Event Input during the session, and macOS disables the event tap for a time.
 
 ## 6. Portal window and prompt
 
 - **UI-1** The portal is borderless and covers its display. On macOS it is a native fullscreen Space, above the menu bar level (window level 26), so the menu bar and the title bar do not show at the top edge (ADR 0003, spike 1).
 - **UI-2** While the portal has the focus, it allows only Roman input sources, and macOS restores the previous input source after it (spike 1).
-- **UI-3** If the portal leaves fullscreen (for example a drag in Mission Control), detect it and pause forwarding. Tentative (proposed by Claude, not confirmed by the user): enter fullscreen again.
-- **UI-4** The portal shows the candidate targets, the state of the session (waiting for confirmation, forwarding, connected (the pointer is out of the portal), ended), and the video input state (confirmed, unverified, unknown).
+- **UI-3** If the portal leaves fullscreen (for example a drag in Mission Control), detect it and end the session (there is no pause state, FLOW-14). Tentative (proposed by Claude, not confirmed by the user): enter fullscreen again.
+- **UI-4** The portal shows the candidate targets, the state of the session (waiting for confirmation, forwarding, ended), and the video input state (confirmed, unverified, unknown).
 - **UI-5** The prompt on the target is an overlay on the input-target display. On Linux use layer-shell where the compositor has it; else a normal fullscreen window.
-- **UI-6** On Linux as the source, the portal is a fullscreen window. While forwarding, it inhibits compositor shortcuts (ADR 0006). It does not lock the pointer (FLOW-20). Pointer enter and leave of the portal window give the pause. The shortcut inhibit is tentative (proposed by Claude; the user asked about portability and did not reject it).
+- **UI-6** On Linux as the source, the portal is a fullscreen window. While forwarding, it inhibits compositor shortcuts (ADR 0006). It does not lock the pointer (FLOW-20). The keyboard focus is the native focus of the portal window (FLOW-22). When the portal loses it, the source sends `KeyboardAway` and applies IN-13. The shortcut inhibit is tentative (proposed by Claude; the user asked about portability and did not reject it).
+- **UI-7** The focus holder on the target (FLOW-23) is a platform capability behind an interface, so that more backends can come later. It shows nothing and does not take pointer input. On Linux it is a layer-shell surface of one pixel with exclusive keyboard interactivity and an empty input region, on the input-target output. On macOS it is a transparent Telescreen window that becomes the key window; when it is removed, the application that was frontmost before is activated again. If the target has no focus holder backend (for example GNOME, which has no layer-shell), the target reports the capability as missing and refuses the session with `NoFocusHold`, as for a missing injection. GNOME support is a later goal (user, 2026-10-27); see section 10.
 
 ## 7. Network and security
 
@@ -117,6 +121,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 | Pointer injection | `CGEventPost` | wlroots virtual pointer, absolute motion on the input-target output |
 | Key injection | `CGEventPost` | uinput keyboard (the compositor keymap applies) |
 | Prompt overlay | AppKit window above the fullscreen level | layer-shell overlay |
+| Focus holder (UI-7) | transparent key window | layer-shell surface, exclusive keyboard |
 | Network | in process (ADR 0008) | in process |
 
 ### 8.2 Support matrix
@@ -150,7 +155,7 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-8 | The portal moves to a different display | `portal-match` runs again. The old binding and coordinates do not apply |
 | AC-9 | `portal-match` false / more than one true / timeout | No match / ambiguous / error. No device is selected arbitrarily |
 | AC-10 | A handoff step fails, or `verify` is false | Forwarding does not start. No retry. No rollback claim |
-| AC-11 | The pointer leaves the portal to the built-in display, then comes back | Input is local while out; the session stays connected; forwarding starts again on return with no confirmation. No key or button stays pressed on the target |
+| AC-11 | The pointer leaves the portal to the built-in display, then comes back, with no click | Pointer input is local while out; keys still go to the target; the session stays in forwarding. No key or button stays pressed on the target |
 | AC-12 | Resolution, scale, rotation, negative coordinates, different aspect ratios | The target pointer position is correct. Out-of-bounds behavior is defined |
 | AC-13 | Ordinary keys, modifier keys, and shortcuts | They have an effect on the target and not on the source |
 | AC-14 | Space swipes, Mission Control, Command+Tab while forwarding on macOS | They do not happen on the source and do not go to the target |
@@ -166,12 +171,16 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-24 | A generic USB device | The user can hand it off from the device list. It does not need to be a display |
 | AC-25 | The installed macOS app connects on the LAN | The connection works (Local Network privacy) |
 | AC-26 | While the source waits for the confirmation, try to switch the Space or the application, or click a different display | The portal stays fullscreen and keeps the focus (FLOW-21) |
+| AC-27 | Type in a field on the target, click a field on the source, type, then click the field on the target again | After each click, only the clicked field shows the keyboard focus, and the keys go there (FLOW-22, FLOW-23). The click in the portal reaches the target |
+| AC-28 | Hold Shift in the portal, then lose the keyboard focus without a key up (Linux: a compositor shortcut that cannot be inhibited) | The target releases Shift (IN-13). The session continues |
+| AC-29 | A target with no focus holder backend | The session is refused with `NoFocusHold` (UI-7) |
 
 Performance: measure p50, p95, and p99 of capture to injection, event loss, and idle CPU/GPU. A network latency number must state how it was measured (round trip on one clock, or the clock synchronization method). There is no hard threshold yet.
 
 ## 10. Open questions
 
-- Whether a pause should also switch the video input back automatically. Current decision: no.
+- GNOME as the target (user, 2026-10-27: GNOME must be supported in the end). GNOME has no layer-shell, so the prompt (UI-5) and the focus holder (UI-7) need a different backend behind the same interfaces. A candidate is a GNOME Shell extension. X11 is not an option (user, 2026-10-27).
+
 - The lease arbitration and the recovery protocol (NET-6): message design and timeouts. Tentative proposal for v0.1.0: `docs/adr/0007-session-protocol.md`. The user decided to keep it tentative until the hardware tests (AC-18) run.
 - Which special shortcuts to support beyond IN-5, and the per-platform list of shortcuts that cannot be captured.
 - The effect of Wi-Fi delay spikes (spike 4: p99 about 85 ms) on the pointer in real use. Measure it in the product.

@@ -27,15 +27,15 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
         for incoming in &screen.incoming {
             ui.push_id(incoming.session, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(&incoming.source);
+                    ui.label(format!("Controlled by {}", incoming.source));
                     ui.label(&incoming.state);
-                    if ui.button("Disconnect").clicked() {
-                        intents.push(Intent::Disconnect {
+                    if ui.button("Stop this session").clicked() {
+                        intents.push(Intent::StopSession {
                             session: incoming.session,
                         });
                     }
-                    if ui.button("Take control back").clicked() {
-                        intents.push(Intent::TakeControl {
+                    if ui.button("Control from here").clicked() {
+                        intents.push(Intent::ControlFromHere {
                             session: incoming.session,
                         });
                     }
@@ -126,11 +126,6 @@ pub(crate) fn portal(ui: &mut egui::Ui, screen: &PortalScreen) -> Vec<Intent> {
                     }
                     SessionPhase::Forwarding => {
                         ui.label("Forwarding input.");
-                    }
-                    SessionPhase::Paused { release } => {
-                        ui.label(format!(
-                            "Paused. Move the pointer into this portal to continue. Release shortcut: {release}."
-                        ));
                     }
                     SessionPhase::Ended { reason } => {
                         ui.label(format!("Session ended: {reason}."));
@@ -295,9 +290,6 @@ mod tests {
             },
             SessionPhase::Starting,
             SessionPhase::Forwarding,
-            SessionPhase::Paused {
-                release: "Control+Alt+Shift+Escape".into(),
-            },
             SessionPhase::Ended {
                 reason: "The target disconnected".into(),
             },

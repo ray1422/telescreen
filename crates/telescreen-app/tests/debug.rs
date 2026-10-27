@@ -22,6 +22,21 @@ fn requests_without_arguments() {
     assert_eq!(parse(r#"{"cmd":"state"}"#), Request::State);
     assert_eq!(parse(r#"{"cmd":"confirm"}"#), Request::Confirm);
     assert_eq!(parse(r#"{"cmd":"quit"}"#), Request::Quit);
+    assert_eq!(
+        parse(r#"{"cmd":"release_keyboard"}"#),
+        Request::ReleaseKeyboard
+    );
+}
+
+#[test]
+fn ui7_hold_keyboard_names_a_display() {
+    assert_eq!(
+        parse(r#"{"cmd":"hold_keyboard","display":"HDMI-A-2"}"#),
+        Request::HoldKeyboard {
+            display: DisplayToken::from("HDMI-A-2"),
+        }
+    );
+    assert!(parse_request(r#"{"cmd":"hold_keyboard"}"#).is_err());
 }
 
 #[test]
@@ -41,14 +56,14 @@ fn intents() {
             Intent::SelectDevice { alias: "LG".into() },
         ),
         (
-            json!({"Disconnect": {"session": 7}}),
-            Intent::Disconnect {
+            json!({"StopSession": {"session": 7}}),
+            Intent::StopSession {
                 session: SessionId(7),
             },
         ),
         (
-            json!({"TakeControl": {"session": 7}}),
-            Intent::TakeControl {
+            json!({"ControlFromHere": {"session": 7}}),
+            Intent::ControlFromHere {
                 session: SessionId(7),
             },
         ),

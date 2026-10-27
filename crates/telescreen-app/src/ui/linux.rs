@@ -2,9 +2,9 @@
 //!
 //! The capture on Linux is the portal window itself. The cursor is always free
 //! (FLOW-20): the portal does not lock or hide it. While forwarding, the portal
-//! inhibits compositor shortcuts and forwards the input that [`KeyRoutes`] sends
-//! to the target. Pointer enter and leave of the window give the pause. Not tested
-//! on hardware yet.
+//! inhibits compositor shortcuts and forwards the input that [`InputRouter`] sends
+//! to the target. The session has no pause. Keys follow the native keyboard focus
+//! of the portal window (FLOW-22, UI-6). Not tested on hardware yet.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -14,11 +14,12 @@ use std::time::{Duration, Instant};
 
 use telescreen_core::ids::DisplayToken;
 use telescreen_core::input::{Button, InputEvent};
-use telescreen_core::key_route::{KeyRoutes, Route};
+use telescreen_core::key_route::{InputRouter, Route};
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
 use telescreen_core::pointer::{Point, Rect};
 use telescreen_platform_linux::displays::LinuxDisplays;
+use telescreen_platform_linux::focus::LinuxFocusHolder;
 use telescreen_platform_linux::inhibit::ShortcutInhibitor;
 use telescreen_platform_linux::inject::LinuxInjector;
 use telescreen_platform_linux::prompt::LayerPrompt;
@@ -53,13 +54,13 @@ struct CaptureState {
     portal: Rect,
     /// The last cursor position in the window, in logical pixels.
     cursor: Option<Point>,
-    /// The cursor is in the portal window, and the window has the keyboard focus.
+    /// The cursor is in the portal window (FLOW-20).
     inside: bool,
     inhibitor: Option<ShortcutInhibitor>,
     modifiers: ModifiersState,
     escapes: VecDeque<Instant>,
     /// Where each key and button that is down went (IN-3).
-    routes: KeyRoutes,
+    router: InputRouter,
     events: Vec<CapturedEvent>,
 }
 
@@ -114,8 +115,14 @@ impl CaptureState {
     /// Routes one input event (IN-3). Reports it and returns true if it goes to
     /// the target.
     fn route(&mut self, input: InputEvent) -> bool {
-        let forward_now = self.forward_now();
-        if self.routes.route(&input, forward_now) == Route::Forward {
+        if self.mode != Mode::Forwarding {
+            return false;
+        }
+        let decision = self.router.route(&input, self.inside);
+        if let Some(focused) = decision.keyboard {
+            self.keyboard_changed(focused);
+        }
+        if decision.route == Route::Forward {
             self.events.push(CapturedEvent::Input(input));
             true
         } else {
@@ -123,10 +130,42 @@ impl CaptureState {
         }
     }
 
+    /// Reports keyboard focus before input (FLOW-23).
+    fn keyboard_changed(&mut self, focused: bool) {
+        self.events.push(if focused {
+            CapturedEvent::KeyboardEntered
+        } else {
+            CapturedEvent::KeyboardLeft
+        });
+    }
+
+    /// Releases held input when native keyboard focus is lost (IN-13, UI-6).
+    fn portal_focus(&mut self, focused: bool) {
+        if let Some(focused) = self.router.set_window_focus(focused) {
+            self.keyboard_changed(focused);
+            if !focused && self.mode == Mode::Forwarding {
+                self.router.clear();
+                self.events.push(CapturedEvent::InputLost);
+            }
+        }
+    }
+
+    /// Keeps the inhibitor across the guard and forwarding (FLOW-21, UI-6).
+    fn inhibit(&mut self) -> Result<(), PlatformError> {
+        if self.inhibitor.is_none() {
+            let window = self
+                .window
+                .as_ref()
+                .ok_or_else(|| PlatformError::Failed("no portal window".into()))?;
+            self.inhibitor = Some(ShortcutInhibitor::new(&**window)?);
+        }
+        Ok(())
+    }
+
     fn stop(&mut self, event: CapturedEvent) {
         self.inhibitor = None;
         self.mode = Mode::Off;
-        self.routes.clear();
+        self.router.clear();
         self.events.push(event);
     }
 }
@@ -151,21 +190,35 @@ impl InputCapture for LinuxCapture {
 
     fn forward(&mut self) -> Result<(), PlatformError> {
         let mut s = self.0.borrow_mut();
-        let window = s
-            .window
-            .clone()
-            .ok_or_else(|| PlatformError::Failed("no portal window".into()))?;
-        s.inhibitor = match ShortcutInhibitor::new(&*window) {
-            Ok(inhibitor) => Some(inhibitor),
-            Err(e) => {
-                // Forwarding still works; compositor shortcuts stay with the compositor.
-                eprintln!("telescreen: shortcut inhibit: {e}");
-                None
-            }
-        };
+        if s.window.is_none() {
+            return Err(PlatformError::Failed("no portal window".into()));
+        }
+        if let Err(error) = s.inhibit() {
+            // Forwarding still works; compositor shortcuts stay with the compositor.
+            eprintln!("telescreen: shortcut inhibit: {error}");
+        }
         s.escapes.clear();
         s.mode = Mode::Forwarding;
         s.report_position();
+        Ok(())
+    }
+
+    fn set_portal_focus(&mut self, focused: bool) {
+        self.0.borrow_mut().portal_focus(focused);
+    }
+
+    fn guard(&mut self, on: bool) -> Result<(), PlatformError> {
+        let mut s = self.0.borrow_mut();
+        if on {
+            if s.mode == Mode::Off {
+                return Err(PlatformError::Failed(
+                    "the portal guard needs an armed capture".into(),
+                ));
+            }
+            s.inhibit()?;
+        } else if s.mode != Mode::Forwarding {
+            s.inhibitor = None;
+        }
         Ok(())
     }
 
@@ -173,7 +226,7 @@ impl InputCapture for LinuxCapture {
         let mut s = self.0.borrow_mut();
         s.inhibitor = None;
         s.mode = Mode::Off;
-        s.routes.clear();
+        s.router.clear();
     }
 }
 
@@ -193,6 +246,16 @@ pub(crate) fn parts(_proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> 
             None
         }
     };
+    let focus_holder: Option<Box<dyn telescreen_core::platform::FocusHolder>> =
+        match LinuxFocusHolder::start() {
+            Ok(holder) => Some(Box::new(holder)),
+            Err(reason) => {
+                notices.push(format!(
+                    "This computer cannot be a target: {reason} (UI-7)."
+                ));
+                None
+            }
+        };
     // UI-5: layer-shell where the compositor has it, else a normal window.
     let (prompt, prompts): (
         Box<dyn telescreen_view::PromptPresenter>,
@@ -216,13 +279,14 @@ pub(crate) fn parts(_proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> 
         inhibitor: None,
         modifiers: ModifiersState::empty(),
         escapes: VecDeque::new(),
-        routes: KeyRoutes::new(),
+        router: InputRouter::new(),
         events: Vec::new(),
     })));
     Ok(Parts {
         displays: Box::new(LinuxDisplays),
         capture: Box::new(capture.clone()),
         injector,
+        focus_holder,
         prompt,
         capabilities,
         labels: Labels {
@@ -283,6 +347,7 @@ impl Hooks {
         s.window = Some(window.clone());
         s.inside = false;
         s.cursor = None;
+        s.router = InputRouter::new();
     }
 
     pub(crate) fn portal_closed(&mut self) {
@@ -290,26 +355,16 @@ impl Hooks {
         s.inhibitor = None;
         s.window = None;
         s.mode = Mode::Off;
-        s.routes.clear();
+        s.router = InputRouter::new();
     }
 
-    /// Without the keyboard focus the portal gets no keys: that is the same as a
-    /// leave. The focus coming back with the cursor in the window is an entry.
+    /// Records native keyboard focus independently of the cursor (FLOW-22, UI-6).
     pub(crate) fn portal_focus(&mut self, _: &Window, focused: bool, _: bool) {
-        let mut s = self.capture.0.borrow_mut();
-        if focused {
-            if s.cursor.is_some() {
-                s.set_inside(true);
-            }
-        } else {
-            s.set_inside(false);
-            // The source pauses and the target releases all held state.
-            s.routes.clear();
-        }
+        self.capture.0.borrow_mut().portal_focus(focused);
     }
 
     /// Returns true if the event is input of the capture, so the UI must not get it.
-    pub(crate) fn portal_window_event(&mut self, event: &WindowEvent) -> bool {
+    pub(crate) fn portal_window_event(&mut self, event: &WindowEvent, _: bool) -> bool {
         let mut s = self.capture.0.borrow_mut();
         match event {
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -349,7 +404,7 @@ impl Hooks {
                     .to_scancode()
                     .and_then(|c| u16::try_from(c).ok())
                 else {
-                    return s.forward_now();
+                    return s.mode == Mode::Forwarding && s.router.keyboard_in_portal();
                 };
                 let forwarded = s.route(InputEvent::Key {
                     key: Key(code),
