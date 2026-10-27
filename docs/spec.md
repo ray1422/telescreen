@@ -241,9 +241,9 @@ Decisions of the implementation (Claude, 2026-10-27). The user confirmed the ite
 - Tentative items in the requirements: CLIP-3, CLIP-6, CLIP-7.
 - The texts of the session end on the source (user, 2026-10-27), with the target label:
   - `TargetStopped` ("Disconnect" on the target): "<target> disconnected the session".
-  - `TargetDisconnected` (the target app quit and told the source): proposed "Telescreen quit on <target>". Not confirmed: a separate text, or the same text as `PeerLost`.
+  - `TargetDisconnected` (the target app quit and told the source): "Telescreen quit on <target>".
   - `PeerLost` (heartbeat timeout or a closed connection): "Connection to <target> lost".
-- "Control from here" (FLOW-17) needs a device match for the display (proposed by Claude, not confirmed). If no device matches, the target shows a notice, does not start a handoff, and the old session continues.
+- "Control from here" (FLOW-17) needs a device match for the display (user, 2026-10-27). If no device matches, the target shows a notice, does not start a handoff, and the old session continues.
 - CLIP-8: v0.2.0 uses only `zwlr-data-control-unstable-v1`. `ext-data-control-v1` needs a staging feature of `wayland-protocols` and can come later.
 - The Linux clipboard backend reads an offer for at most 1 second. A text larger than 256 KiB is cut to its longest valid UTF-8 prefix, so that the core rejects it as too large (CLIP-6).
 - The controller does not read the clipboard while the switch is off or while no session can sync (CLIP-2). The Linux data-control thread still receives the data of each copy in the background. To stop this, the `Clipboard` trait needs a call that starts and stops the reads. Open: do this or not.
