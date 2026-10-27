@@ -61,6 +61,9 @@ Negative test (AC-21): before the trust step, start both apps (step 2). Each con
 | 3.9a | Hold Shift on the built-in display, move the pointer into the portal, release Shift | Shift is not held on the Mac or on Linux | IN-3 |
 | 3.10 | Move the pointer back into the portal | The pointer controls Linux again, with no prompt | AC-11 |
 | 3.10a | Type in a Linux text field. Click a text field on the built-in display, type, then click the Linux text field again and type | After each click, only the clicked field shows a text cursor, and the keys go there. The click in the portal reached Linux | AC-27, FLOW-23 |
+| 3.10b | Copy text on the Mac, paste on Linux; copy on Linux, paste on the Mac | The text arrives in both directions. It does not come back | AC-30, AC-33 |
+| 3.10c | Turn off "Sync text clipboard" on one side, then copy | Nothing arrives | AC-32 |
+| 3.10d | Copy a password from a password manager that marks it as concealed | Nothing arrives | AC-34 |
 | 3.11 | Control+Option+Command+Escape | The session ends. Local keys come back | AC-15 |
 | 3.12 | New session, then Escape 10 times in 5 s | The session ends; Escape went to Linux | AC-16 |
 | 3.13 | New session, then on Linux "Stop this session" | The session ends on both sides | AC-23 |
@@ -85,6 +88,7 @@ Repeat the table of part 3 with the roles reversed: the portal on Linux (a fulls
 - AC-17: on the Mac source, focus a password field (Secure Event Input) and start forwarding. Expected: a notice, no capture claim.
 - AC-28 (Linux source): hold Shift in the portal, press `Mod+Shift+Escape` (niri does not inhibit it), then change the focus with a niri shortcut. Expected: Shift is released on the Mac.
 - AC-29: start a target on a compositor with no layer-shell (for example GNOME). Expected: a notice, and a refusal with "no keyboard focus holder".
+- AC-31: copy text before the session starts. Expected: it does not arrive.
 - Unattended checks with the debug protocol (no clicks, no keys): `hold_keyboard` on Linux makes the `focused` fact of the control window false; `release_keyboard` makes it true again.
 - AC-19: unplug the LG (or turn it off) while forwarding. Expected: forwarding stops and the portal closes.
 - AC-20: needs a third computer. Not possible with this hardware.

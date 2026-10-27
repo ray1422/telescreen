@@ -20,6 +20,7 @@
 //! Input / ReleaseAll / datagrams ▶         inject
 //! KeyboardAway{session} ────────▶          hold keyboard focus (FLOW-23)
 //! KeyboardBack{session} ────────▶          release keyboard focus holder
+//! ClipboardText{session, text} ◀▶          sync text while forwarding (CLIP-2)
 //! End{session, reason}  ◀──────▶  End{session, reason}
 //! Heartbeat ◀──────────────────▶ Heartbeat (each second; the transport owns it)
 //! ```
@@ -31,10 +32,10 @@ use crate::input::InputEvent;
 use crate::pointer::Normalized;
 
 /// The wire protocol version. A peer refuses a different version.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// The maximum size of one reliable frame payload.
-pub const MAX_FRAME: usize = 64 * 1024;
+pub const MAX_FRAME: usize = crate::clipboard::MAX_TEXT + 4 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
@@ -71,6 +72,11 @@ pub enum Message {
     /// The portal got the keyboard focus (FLOW-23).
     KeyboardBack {
         session: SessionId,
+    },
+    /// Plain text in both directions while forwarding (CLIP-2).
+    ClipboardText {
+        session: SessionId,
+        text: String,
     },
 
     // Target to source.

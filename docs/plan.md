@@ -45,7 +45,7 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M7 | Linux source and macOS target | AC-22 passes; the reverse session works (AC-23) | code done (Linux portal capture, macOS injection and prompt); hardware test not run |
 | M7a | Keyboard focus model, portal guard, target actions (FLOW-17, FLOW-21..FLOW-23, IN-13, UI-7) | AC-23, AC-26..AC-29 pass on the hardware | code done (2026-10-27); with the debug protocol and no clicks or keys: both directions reach forwarding, "Control from here" and "Stop this session" work, and the focus holder takes and returns the keyboard focus on niri and on macOS (Telescreen frontmost); clicks and keys not tested |
 | M8 | v0.1.0 | Support matrix in the spec updated; README build instructions; tag `v0.1.0` (ask the user first) | not started |
-| M9 | v0.2.0 text clipboard | The v0.2.0 conditions in spec section 2.1 pass on both directions; tag `v0.2.0` (ask the user first) | not started |
+| M9 | v0.2.0 text clipboard | The v0.2.0 conditions in spec section 2.1 pass on both directions; tag `v0.2.0` (ask the user first) | code done (2026-10-27): core sync rules, NSPasteboard, wlr data-control; the backend starts on niri; the copy and paste test with the user did not run |
 
 ## Rules for each milestone
 

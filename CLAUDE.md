@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-v0.1.0 is in development: the Cargo workspace in `crates/` builds, and the automated tests pass. The hardware acceptance tests did not run. Read these files in this sequence before you design:
+v0.1.0 and v0.2.0 are in development: the code of both is complete, the Cargo workspace in `crates/` builds, and the automated tests pass on macOS and on the Linux computer. The hardware acceptance tests with clicks and keys did not run. Read these files in this sequence before you design:
 
 1. `docs/spec.md`: the normative product spec with requirement IDs (scope, versions, user flow, input, UI, network, platforms, acceptance criteria, open questions). Refer to its IDs in tests and Codex prompts.
 2. `docs/plan.md`: the work plan to v0.2.0 (crates, the view boundary, who does what, milestones and their status). Keep its status column current.

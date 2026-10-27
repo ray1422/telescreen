@@ -28,6 +28,8 @@ class ConfigContract(unittest.TestCase):
             'empty hint': lambda c: c['computers']['pc1'].update(hint=''),
             'non-string hint': lambda c: c['computers']['pc1'].update(hint=['x']),
             'long hint': lambda c: c['computers']['pc1'].update(hint='x' * 501),
+            'non-boolean clipboard text': lambda c: c['computers']['pc1'].update(clipboard={'text': 'yes'}),
+            'unknown clipboard key': lambda c: c['computers']['pc1'].update(clipboard={'image': True}),
             'version': lambda c: c.update(version=2),
             'unknown field': lambda c: device(c).update(portal_match={}),
             'duplicate device id': lambda c: c['computers']['mac']['devices'].update(

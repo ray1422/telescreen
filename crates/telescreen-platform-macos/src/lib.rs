@@ -9,6 +9,7 @@
 #![cfg(target_os = "macos")]
 
 pub mod capture;
+pub mod clipboard;
 pub mod displays;
 mod ffi;
 pub mod focus;

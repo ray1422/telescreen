@@ -16,6 +16,8 @@ pub struct ControlScreen {
     pub fingerprint: String,
     pub displays: Vec<DisplayRow>,
     pub incoming: Vec<IncomingRow>,
+    /// The text clipboard switch, or `None` without a backend (CLIP-1, CLIP-8).
+    pub clipboard: Option<bool>,
     /// Problems and limits that the user must know (IN-12), newest last.
     pub notices: Vec<String>,
 }
@@ -119,6 +121,10 @@ impl PromptScreen {
 /// What the user did in a window.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Intent {
+    /// Changes the text clipboard switch for this run (CLIP-1).
+    SetClipboard {
+        on: bool,
+    },
     /// Open the portal on the display of the control window (user, 2026-10-27).
     OpenPortal,
     ClosePortal,

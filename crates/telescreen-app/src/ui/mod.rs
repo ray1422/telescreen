@@ -105,6 +105,7 @@ pub fn run(
         capture: parts.capture,
         injector: parts.injector,
         focus_holder: parts.focus_holder,
+        clipboard: parts.clipboard,
         prompt: parts.prompt,
         capabilities: parts.capabilities,
     };
@@ -784,6 +785,7 @@ pub(crate) struct Parts {
     pub capture: Box<dyn telescreen_core::platform::InputCapture>,
     pub injector: Option<Box<dyn telescreen_core::platform::Injector>>,
     pub focus_holder: Option<Box<dyn telescreen_core::platform::FocusHolder>>,
+    pub clipboard: Option<Box<dyn telescreen_core::platform::Clipboard>>,
     pub prompt: Box<dyn telescreen_view::PromptPresenter>,
     pub capabilities: telescreen_core::platform::InputCapabilities,
     pub labels: crate::controller::Labels,
@@ -792,12 +794,12 @@ pub(crate) struct Parts {
 }
 
 /// Writes a network event to stderr for diagnostics. It does not write input
-/// events or pointer datagrams: they can contain typed text.
+/// events, clipboard text, or pointer datagrams: they can contain private text.
 fn log_net_event(event: &NetEvent) {
     match event {
         NetEvent::Pointer { .. } => {}
         NetEvent::Message {
-            message: Message::Heartbeat | Message::Input { .. },
+            message: Message::Heartbeat | Message::Input { .. } | Message::ClipboardText { .. },
             ..
         } => {}
         NetEvent::Message { peer, message } => eprintln!("telescreen: from {peer}: {message:?}"),

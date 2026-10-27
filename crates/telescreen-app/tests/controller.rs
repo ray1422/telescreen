@@ -11,14 +11,15 @@ use serde_json::json;
 use telescreen_app::controller::{
     Controller, Job, JobId, JobOutput, JobPort, Labels, NetPort, Ports,
 };
+use telescreen_core::clipboard::ClipboardItem;
 use telescreen_core::config::Config;
 use telescreen_core::driver::{OperationKind, Outcome};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::input::InputEvent;
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{
-    Capability, CapturedEvent, DisplayInfo, Displays, FocusHolder, Injector, InputCapabilities,
-    InputCapture, PlatformError,
+    Capability, CapturedEvent, Clipboard, DisplayInfo, Displays, FocusHolder, Injector,
+    InputCapabilities, InputCapture, PlatformError,
 };
 use telescreen_core::pointer::{Normalized, Point, Rect};
 use telescreen_core::session::VideoInput;
@@ -35,6 +36,7 @@ fn config() -> Config {
         "computers": {
             "mac": {
                 "label": "MacBook",
+                "clipboard": {"text": true},
                 "endpoint": {"host": "mac.test", "port": 24800},
                 "devices": {
                     "Desktop": {
@@ -48,6 +50,7 @@ fn config() -> Config {
             "pc1": {
                 "label": "Linux",
                 "hint": "Copy: Ctrl+C",
+                "clipboard": {"text": true},
                 "endpoint": {"host": "pc1.test", "port": 24800},
                 "devices": {
                     "Monitor": {
@@ -91,6 +94,10 @@ struct Log {
     net_shutdowns: usize,
     /// Injected events and focus holder calls, in sequence (FLOW-23).
     target: Vec<String>,
+    /// Local clipboard changes that the next `changed` call reports.
+    clip_pending: Vec<ClipboardItem>,
+    /// Texts that the controller put on the clipboard.
+    clip_set: Vec<String>,
 }
 
 type Shared = Rc<RefCell<Log>>;
@@ -155,6 +162,24 @@ impl Injector for Inject {
         let mut log = self.0.borrow_mut();
         log.injected.push(*event);
         log.target.push(format!("inject {event:?}"));
+        Ok(())
+    }
+}
+
+struct Clip(Shared);
+impl Clipboard for Clip {
+    fn changed(&mut self) -> Option<ClipboardItem> {
+        // A real clipboard reports only its latest content.
+        self.0.borrow_mut().clip_pending.drain(..).next_back()
+    }
+    fn set_text(&mut self, text: &str) -> Result<(), PlatformError> {
+        let mut log = self.0.borrow_mut();
+        log.clip_set.push(text.into());
+        // The platform then reports the change that the app made (CLIP-4).
+        log.clip_pending.push(ClipboardItem {
+            text: text.into(),
+            concealed: false,
+        });
         Ok(())
     }
 }
@@ -243,6 +268,7 @@ fn peer_full(
         injector: Some(Box::new(Inject(log.clone()))),
         prompt: Box::new(Prompt(log.clone())),
         focus_holder,
+        clipboard: Some(Box::new(Clip(log.clone()))),
         capabilities,
     };
     let labels = Labels {
@@ -1077,4 +1103,141 @@ fn adr0007_controller_sends_the_heartbeat() {
         .controller
         .tick(t0 + std::time::Duration::from_millis(1000));
     assert_eq!(sent(&w), 2);
+}
+
+fn copy(peer: &Peer, text: &str, concealed: bool) {
+    peer.log.borrow_mut().clip_pending.push(ClipboardItem {
+        text: text.into(),
+        concealed,
+    });
+}
+
+#[test]
+fn clip1_the_control_window_shows_the_switch() {
+    let mut w = World::new();
+    assert_eq!(w.mac.controller.control_screen().clipboard, Some(true));
+    w.mac
+        .controller
+        .on_intent(Intent::SetClipboard { on: false });
+    assert_eq!(w.mac.controller.control_screen().clipboard, Some(false));
+}
+
+#[test]
+fn clip2_ac30_text_goes_in_both_directions() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    copy(&w.mac, "hello", false);
+    w.mac.controller.tick(w.now);
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().clip_set, ["hello"]);
+    copy(&w.pc1, "back", false);
+    w.pc1.controller.tick(w.now);
+    w.pump();
+    assert_eq!(w.mac.log.borrow().clip_set, ["back"]);
+}
+
+#[test]
+fn clip3_ac31_text_from_before_the_session_is_not_sent() {
+    let mut w = World::new();
+    copy(&w.mac, "old", false);
+    w.advance_to_forwarding();
+    w.mac.controller.tick(w.now);
+    w.pump();
+    assert!(w.pc1.log.borrow().clip_set.is_empty());
+}
+
+#[test]
+fn clip2_ac32_no_sync_with_a_switch_off() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_intent(Intent::SetClipboard { on: false });
+    copy(&w.mac, "a", false);
+    w.mac.controller.tick(w.now);
+    w.pump();
+    assert!(w.pc1.log.borrow().clip_set.is_empty(), "the sender is off");
+
+    w.mac
+        .controller
+        .on_intent(Intent::SetClipboard { on: true });
+    w.pc1
+        .controller
+        .on_intent(Intent::SetClipboard { on: false });
+    copy(&w.mac, "b", false);
+    w.mac.controller.tick(w.now);
+    w.pump();
+    assert!(
+        w.pc1.log.borrow().clip_set.is_empty(),
+        "the receiver is off"
+    );
+}
+
+#[test]
+fn clip5_ac32_no_sync_after_the_session_end() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::ReleaseShortcut);
+    w.pump();
+    copy(&w.mac, "late", false);
+    w.mac.controller.tick(w.now);
+    w.pump();
+    assert!(w.pc1.log.borrow().clip_set.is_empty());
+}
+
+#[test]
+fn clip4_ac33_no_echo() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    copy(&w.mac, "hello", false);
+    w.mac.controller.tick(w.now);
+    w.pump();
+    w.pc1.controller.tick(w.now);
+    w.pump();
+    assert!(w.mac.log.borrow().clip_set.is_empty(), "pc1 does not echo");
+}
+
+#[test]
+fn clip7_ac34_concealed_text_is_not_sent() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    copy(&w.mac, "hunter2", true);
+    w.mac.controller.tick(w.now);
+    w.pump();
+    assert!(w.pc1.log.borrow().clip_set.is_empty());
+}
+
+#[test]
+fn clip6_large_text_gives_a_notice() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let big = "x".repeat(telescreen_core::clipboard::MAX_TEXT + 1);
+    copy(&w.mac, &big, false);
+    w.mac.controller.tick(w.now);
+    w.pump();
+    assert!(w.pc1.log.borrow().clip_set.is_empty());
+    let notices = w.mac.controller.control_screen().notices;
+    assert!(
+        notices.iter().any(|n| n.contains("clipboard")),
+        "{notices:?}"
+    );
+}
+
+#[test]
+fn clip1_no_clipboard_read_without_the_switch_or_a_session() {
+    let mut w = World::new();
+    copy(&w.mac, "before", false);
+    w.mac.controller.tick(w.now);
+    assert_eq!(w.mac.log.borrow().clip_pending.len(), 1, "no session");
+
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_intent(Intent::SetClipboard { on: false });
+    copy(&w.mac, "off", false);
+    w.mac.controller.tick(w.now);
+    assert!(
+        !w.mac.log.borrow().clip_pending.is_empty(),
+        "the switch is off"
+    );
 }

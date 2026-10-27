@@ -5,6 +5,7 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::clipboard::ClipboardItem;
 use crate::ids::DisplayToken;
 use crate::input::InputEvent;
 use crate::pointer::{Normalized, Point, Rect};
@@ -39,6 +40,16 @@ pub enum PlatformError {
 /// Enumerates the local displays.
 pub trait Displays {
     fn displays(&self) -> Result<Vec<DisplayInfo>, PlatformError>;
+}
+
+/// Provides the local text clipboard capability (CLIP-8).
+/// The app calls it outside input callbacks (IN-2).
+pub trait Clipboard {
+    /// Returns the latest item if the clipboard changed since the last call.
+    /// Returns `None` if it did not change or does not contain text.
+    fn changed(&mut self) -> Option<ClipboardItem>;
+    /// Replaces the clipboard with plain text (CLIP-8).
+    fn set_text(&mut self, text: &str) -> Result<(), PlatformError>;
 }
 
 /// Injects input on the target (IN-11, FLOW-5).

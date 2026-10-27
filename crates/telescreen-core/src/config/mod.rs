@@ -61,9 +61,21 @@ pub struct Computer {
     pub label: Option<String>,
     /// Plain text for the confirmation prompt of this computer (FLOW-7).
     pub hint: Option<String>,
+    /// Clipboard sync of this computer (CLIP-1).
+    #[serde(default)]
+    pub clipboard: ClipboardConfig,
     pub endpoint: Endpoint,
     /// Keys are local aliases. They have no OS meaning.
     pub devices: BTreeMap<String, Device>,
+}
+
+/// The `clipboard` key of a computer (CLIP-1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClipboardConfig {
+    /// The start value of the text clipboard switch. The default is off.
+    #[serde(default)]
+    pub text: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

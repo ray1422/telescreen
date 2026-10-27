@@ -1,5 +1,6 @@
 //! Linux (Wayland) backends of Telescreen (`docs/spec.md` section 8.1, ADR 0006).
 //!
+//! - [`clipboard`]: the regular text clipboard through data-control.
 //! - [`displays`]: the outputs, with their names and logical coordinates.
 //! - [`inject`]: the wlroots virtual pointer (absolute motion on the input-target
 //!   output) and a uinput keyboard.
@@ -10,6 +11,7 @@
 //! Tested only on niri 26.04 (`docs/spikes.md`). Do not claim other compositors.
 #![cfg(target_os = "linux")]
 
+pub mod clipboard;
 pub mod displays;
 pub mod focus;
 pub mod inhibit;

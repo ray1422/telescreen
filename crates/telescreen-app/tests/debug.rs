@@ -56,6 +56,10 @@ fn intents() {
             Intent::SelectDevice { alias: "LG".into() },
         ),
         (
+            json!({"SetClipboard": {"on": false}}),
+            Intent::SetClipboard { on: false },
+        ),
+        (
             json!({"StopSession": {"session": 7}}),
             Intent::StopSession {
                 session: SessionId(7),
@@ -99,6 +103,7 @@ fn report() -> StateReport {
             displays: vec![],
             incoming: vec![],
             notices: vec!["a notice".into()],
+            clipboard: None,
         },
         portal: None,
         windows: vec![

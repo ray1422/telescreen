@@ -74,6 +74,17 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **FLOW-18** A session end does not switch the video input back. A switch back needs an explicit handoff route. The user should be able to start the switch back from a display of the source that the handoff does not change (for example the built-in display).
 - **FLOW-19** If the portal display disappears from the source, stop forwarding and restore the UI. Do not continue to suppress input in a window that moved to a different display.
 
+### 4.4 Text clipboard (v0.2.0)
+
+- **CLIP-1** Text clipboard sync is opt-in. The config key `clipboard.text` of each computer gives the start value (default `false`). The control window has a switch that changes it while the app runs (user, 2026-10-27). The switch is not saved.
+- **CLIP-2** The sync works in both directions (user, 2026-10-27), only while a session is in forwarding, and only on the authenticated connection of that session. A peer sends its text only while its own switch is on. A peer applies a received text only while its own switch is on.
+- **CLIP-3** A peer sends its clipboard text when the local clipboard changes during the session. It does not send the text that was on the clipboard before the session started. Tentative (proposed by Claude, not confirmed by the user): no sync of the old text, for privacy.
+- **CLIP-4** No loops: a peer does not send back a text that it set from the other peer.
+- **CLIP-5** After the switch goes off, after the session ends, or after a disconnect, a peer sends nothing. It does not send a change from that time later.
+- **CLIP-6** Only plain UTF-8 text. A text larger than 256 KiB is not sent, and the source shows a notice. Tentative (proposed by Claude): the limit keeps the input frames on the same channel fast.
+- **CLIP-7** A peer does not send a clipboard item that a password manager marks as concealed (macOS `org.nspasteboard.ConcealedType`; Linux `x-kde-passwordManagerHint` with the value `secret`). Tentative (proposed by Claude).
+- **CLIP-8** The clipboard is a platform capability behind an interface. macOS uses `NSPasteboard`. Linux uses the data-control protocol on its own Wayland connection. v0.2.0 uses `zwlr-data-control-unstable-v1`; `ext-data-control-v1` can come later. If the compositor does not have it (for example GNOME), the capability is missing, and the switch is not available. The input callbacks never read the clipboard (IN-2).
+
 ## 5. Input
 
 - **IN-1** Capture, suppress, forward, and inject are four separate capabilities. Detect and report each one. Window key events and global hotkey registration are not input capture.
@@ -122,6 +133,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 | Key injection | `CGEventPost` | uinput keyboard (the compositor keymap applies) |
 | Prompt overlay | AppKit window above the fullscreen level | layer-shell overlay |
 | Focus holder (UI-7) | transparent key window | layer-shell surface, exclusive keyboard |
+| Text clipboard (CLIP-8) | `NSPasteboard` | data-control protocol |
 | Network | in process (ADR 0008) | in process |
 
 ### 8.2 Support matrix
@@ -174,6 +186,11 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-27 | Type in a field on the target, click a field on the source, type, then click the field on the target again | After each click, only the clicked field shows the keyboard focus, and the keys go there (FLOW-22, FLOW-23). The click in the portal reaches the target |
 | AC-28 | Hold Shift in the portal, then lose the keyboard focus without a key up (Linux: a compositor shortcut that cannot be inhibited) | The target releases Shift (IN-13). The session continues |
 | AC-29 | A target with no focus holder backend | The session is refused with `NoFocusHold` (UI-7) |
+| AC-30 | Switch on at both peers. Copy text on the source, then paste on the target; then copy on the target and paste on the source | The text arrives in both directions (CLIP-2) |
+| AC-31 | Copy text before the session starts | The text is not sent (CLIP-3) |
+| AC-32 | Switch off on one peer, or end the session, then copy | Nothing is sent (CLIP-2, CLIP-5) |
+| AC-33 | Copy on one peer | The other peer does not send the same text back (CLIP-4) |
+| AC-34 | Copy a password from a password manager | It is not sent (CLIP-7) |
 
 Performance: measure p50, p95, and p99 of capture to injection, event loss, and idle CPU/GPU. A network latency number must state how it was measured (round trip on one clock, or the clock synchronization method). There is no hard threshold yet.
 

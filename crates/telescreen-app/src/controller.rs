@@ -8,12 +8,13 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::time::Instant;
 
+use telescreen_core::clipboard::{ClipboardSync, Outgoing};
 use telescreen_core::config::{Config, Device, Operation};
 use telescreen_core::driver::{self, DeviceRef, OperationKind, Outcome, PortalInfo, Request};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::platform::{
-    Capability, CapturedEvent, DisplayInfo, Displays, FocusHolder, Injector, InputCapabilities,
-    InputCapture, PlatformError,
+    Capability, CapturedEvent, Clipboard, DisplayInfo, Displays, FocusHolder, Injector,
+    InputCapabilities, InputCapture, PlatformError,
 };
 use telescreen_core::pointer::{self, Point, Rect};
 use telescreen_core::routes;
@@ -134,6 +135,8 @@ pub struct Ports {
     pub injector: Option<Box<dyn Injector>>,
     /// `None` if this peer has no focus holder and cannot be a target (UI-7).
     pub focus_holder: Option<Box<dyn FocusHolder>>,
+    /// `None` if this peer has no clipboard backend (CLIP-8).
+    pub clipboard: Option<Box<dyn Clipboard>>,
     pub prompt: Box<dyn PromptPresenter>,
     pub capabilities: InputCapabilities,
 }
@@ -185,6 +188,7 @@ pub struct Controller {
     labels: Labels,
     fingerprint: String,
     ports: Ports,
+    clipboard: ClipboardSync,
     portal: Option<Portal>,
     portal_window_request: Option<DisplayToken>,
     next_portal: u64,
@@ -242,6 +246,8 @@ impl Controller {
         first_generation: u64,
         ports: Ports,
     ) -> Self {
+        let clipboard =
+            ClipboardSync::new(config.computer(&local).is_some_and(|c| c.clipboard.text));
         let mut controller = Self {
             config,
             local,
@@ -249,6 +255,7 @@ impl Controller {
             labels,
             fingerprint,
             ports,
+            clipboard,
             portal: None,
             portal_window_request: None,
             next_portal: 1,
@@ -685,6 +692,7 @@ impl Controller {
                 }
                 SourceAction::RunHandoff => self.run_handoff(),
                 SourceAction::StartForwarding => {
+                    self.discard_clipboard_change();
                     self.set_guard(false);
                     match self.ports.capture.forward() {
                         Ok(()) => self.send_pointer(),
@@ -859,9 +867,91 @@ impl Controller {
             .map(|s| s.tick(now))
             .unwrap_or_default();
         self.run_source_actions(actions);
+        self.sync_clipboard();
     }
 
     // ----- Network -----
+
+    /// Drops text from before forwarding or a switch change (CLIP-3, CLIP-5).
+    /// With the switch off, the app does not read the clipboard (CLIP-1).
+    fn discard_clipboard_change(&mut self) {
+        if !self.clipboard.enabled() {
+            return;
+        }
+        if let Some(clipboard) = self.ports.clipboard.as_mut() {
+            let _ = clipboard.changed();
+        }
+    }
+
+    /// Lists the sessions that can sync text (CLIP-2).
+    fn clipboard_sessions(&self) -> Vec<(SessionId, ComputerId)> {
+        let mut sessions = Vec::new();
+        if let Some(source) = self.portal.as_ref().and_then(|p| p.session.as_ref())
+            && source.phase() == SourcePhase::Forwarding
+            && let Some(session) = source.session()
+        {
+            sessions.push((session, source.target().clone()));
+        }
+        sessions.extend(
+            self.incoming
+                .iter()
+                .filter(|(_, target)| target.phase() == TargetPhase::Forwarding)
+                .map(|(session, target)| (*session, target.source().clone())),
+        );
+        sessions
+    }
+
+    /// Polls once and sends a local change to forwarding sessions (CLIP-2, CLIP-5).
+    /// The app reads the clipboard only with the switch on and a session that can
+    /// sync (CLIP-1, CLIP-5).
+    fn sync_clipboard(&mut self) {
+        if !self.clipboard.enabled() {
+            return;
+        }
+        let sessions = self.clipboard_sessions();
+        if sessions.is_empty() {
+            return;
+        }
+        let Some(item) = self.ports.clipboard.as_mut().and_then(|c| c.changed()) else {
+            return;
+        };
+        match self.clipboard.local_change(&item) {
+            Some(Outgoing::Send(text)) => {
+                for (session, peer) in sessions {
+                    self.ports.net.send(NetCommand::Send {
+                        peer,
+                        message: Message::ClipboardText {
+                            session,
+                            text: text.clone(),
+                        },
+                    });
+                }
+            }
+            Some(Outgoing::TooLarge { bytes }) => {
+                self.notice(format!(
+                    "Cannot sync clipboard text of {bytes} bytes: it is too large."
+                ));
+            }
+            None => {}
+        }
+    }
+
+    /// Applies text only from the peer of a forwarding session (CLIP-2, CLIP-5).
+    fn receive_clipboard(&mut self, peer: &ComputerId, session: SessionId, text: &str) {
+        if !self
+            .clipboard_sessions()
+            .iter()
+            .any(|(id, computer)| *id == session && computer == peer)
+        {
+            return;
+        }
+        if let Some(clipboard) = self.ports.clipboard.as_mut()
+            && self.clipboard.received(text)
+            && let Err(error) = clipboard.set_text(text)
+        {
+            self.notice(format!("Cannot set clipboard text: {error}"));
+        }
+    }
 
     pub fn on_net(&mut self, event: NetEvent, now: Instant) {
         match event {
@@ -923,6 +1013,9 @@ impl Controller {
 
     fn on_message(&mut self, peer: ComputerId, message: Message, now: Instant) {
         match &message {
+            Message::ClipboardText { session, text } => {
+                self.receive_clipboard(&peer, *session, text);
+            }
             // To the source side.
             Message::SessionGranted { .. }
             | Message::SessionRefused { .. }
@@ -1145,6 +1238,7 @@ impl Controller {
                     };
                     if valid {
                         self.injector_session = Some(session);
+                        self.discard_clipboard_change();
                     }
                     let more = self
                         .target_mut(session)
@@ -1248,6 +1342,13 @@ impl Controller {
 
     pub fn on_intent(&mut self, intent: Intent) {
         match intent {
+            Intent::SetClipboard { on } => {
+                let turned_on = on && !self.clipboard.enabled();
+                self.clipboard.set_enabled(on);
+                if turned_on {
+                    self.discard_clipboard_change();
+                }
+            }
             Intent::OpenPortal | Intent::ClosePortal => {
                 // The window layer opens and closes the portal window, then calls
                 // `open_portal` or `close_portal`.
@@ -1433,6 +1534,11 @@ impl Controller {
             fingerprint: self.fingerprint.clone(),
             displays,
             incoming,
+            clipboard: self
+                .ports
+                .clipboard
+                .as_ref()
+                .map(|_| self.clipboard.enabled()),
             notices: self.notices.clone(),
         }
     }

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use telescreen_core::ids::DisplayToken;
 use telescreen_core::platform::{CapturedEvent, InputCapture};
 use telescreen_platform_macos::capture::MacCapture;
+use telescreen_platform_macos::clipboard::MacClipboard;
 use telescreen_platform_macos::displays::{self, MacDisplays};
 use telescreen_platform_macos::focus::MacFocusHolder;
 use telescreen_platform_macos::inject::MacInjector;
@@ -77,6 +78,7 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
         },
         injector,
         focus_holder: Some(Box::new(MacFocusHolder::new())),
+        clipboard: Some(Box::new(MacClipboard::new())),
         prompt: Box::new(prompts.clone()),
         capabilities,
         labels: Labels {

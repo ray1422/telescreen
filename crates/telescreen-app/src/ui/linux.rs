@@ -18,6 +18,7 @@ use telescreen_core::key_route::{InputRouter, Route};
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
 use telescreen_core::pointer::{Point, Rect};
+use telescreen_platform_linux::clipboard::LinuxClipboard;
 use telescreen_platform_linux::displays::LinuxDisplays;
 use telescreen_platform_linux::focus::LinuxFocusHolder;
 use telescreen_platform_linux::inhibit::ShortcutInhibitor;
@@ -237,6 +238,16 @@ pub(crate) struct Hooks {
 
 pub(crate) fn parts(_proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
     let mut notices = Vec::new();
+    let clipboard: Option<Box<dyn telescreen_core::platform::Clipboard>> =
+        match LinuxClipboard::start() {
+            Ok(clipboard) => Some(Box::new(clipboard)),
+            Err(reason) => {
+                notices.push(format!(
+                    "Text clipboard sync is not available: {reason} (CLIP-8)."
+                ));
+                None
+            }
+        };
     let capabilities = telescreen_platform_linux::capabilities();
     let injector: Option<Box<dyn telescreen_core::platform::Injector>> = match LinuxInjector::new()
     {
@@ -287,6 +298,7 @@ pub(crate) fn parts(_proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> 
         capture: Box::new(capture.clone()),
         injector,
         focus_holder,
+        clipboard,
         prompt,
         capabilities,
         labels: Labels {

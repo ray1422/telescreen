@@ -122,6 +122,12 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
         .next()
         .ok_or_else(|| DebugError::Request("missing intent variant".into()))?;
     match name.as_str() {
+        "SetClipboard" => Ok(Intent::SetClipboard {
+            on: arguments
+                .get("on")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| DebugError::Request("on must be a boolean".into()))?,
+        }),
         "StartHandoff" => Ok(Intent::StartHandoff {
             target: ComputerId::from(string_field(arguments, "target")?),
         }),

@@ -7,6 +7,7 @@ This document and `schema/config.schema.json` together define the contract. At t
 - `version: 1`: the config format version. Reject unknown versions at load time.
 - `computers`: the keys are stable computer IDs. Specify the local ID explicitly at startup. You must not guess it from the hostname.
 - `hint`: optional plain text, 1 to 500 characters. The confirmation prompt (ADR 0002) of this computer shows it after a handoff to this computer. Example: the copy/paste shortcuts of this computer. It is not a template and not markup.
+- `clipboard`: optional. `clipboard.text` (boolean, default `false`) is the start value of the text clipboard switch of this computer (CLIP-1). The control window can change the switch while the app runs; the change is not saved. No other key is permitted in `clipboard`.
 - `endpoint: {host, port}`: the connection address of the agent. It does not represent a trusted identity. Keep the pairing identity in local runtime data. Do not write secrets to this file.
 - `devices`: a mapping. Its keys are local aliases. The aliases have no OS-identification semantics at all.
 - `id`: the shared physical device ID. An `id` must not be duplicated in the same computer. Different computers use the same ID to show that they connect to the same physical device. Only the listed connections exist.

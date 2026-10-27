@@ -10,6 +10,11 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.heading(&screen.computer);
         ui.add(egui::Label::new(&screen.fingerprint).selectable(true));
+        if let Some(mut on) = screen.clipboard
+            && ui.checkbox(&mut on, "Sync text clipboard").changed()
+        {
+            intents.push(Intent::SetClipboard { on });
+        }
         for display in &screen.displays {
             if display.has_portal {
                 ui.label(format!("{} (portal)", display.name));
@@ -226,6 +231,7 @@ mod tests {
                     },
                 ],
                 notices: vec!["Older notice.".into(), "Newer notice.".into()],
+                clipboard: Some(true),
             },
         ];
         for screen in screens {

@@ -52,6 +52,7 @@ computers:
   pc1:
     label: Linux Workstation
     hint: "Copy/paste: Ctrl+C / Ctrl+V. Terminal: Ctrl+Shift+C / Ctrl+Shift+V."
+    clipboard: {text: true}          # v0.2.0: start with the text clipboard switch on (CLIP-1)
     endpoint: {host: pc1.local, port: 24800}
     devices:
       Monitor1:

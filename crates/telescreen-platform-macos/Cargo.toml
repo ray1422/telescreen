@@ -17,5 +17,5 @@ core-foundation-sys.workspace = true
 serde_json.workspace = true
 objc2.workspace = true
 objc2-foundation = { workspace = true, features = ["NSString", "NSArray", "NSGeometry", "NSValue", "NSDictionary", "NSObject", "NSThread"] }
-objc2-app-kit = { workspace = true, features = ["NSApplication", "NSWindow", "NSView", "NSResponder", "NSScreen", "NSTextInputContext", "NSGraphics", "NSRunningApplication", "NSPanel", "NSColor"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSWindow", "NSView", "NSResponder", "NSScreen", "NSTextInputContext", "NSGraphics", "NSRunningApplication", "NSPanel", "NSColor", "NSPasteboard"] }
 raw-window-handle.workspace = true

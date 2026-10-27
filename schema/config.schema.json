@@ -169,6 +169,18 @@
           "maxLength": 500,
           "description": "Plain text that the confirmation prompt of this computer shows, for example its copy/paste shortcuts."
         },
+        "clipboard": {
+          "type": "object",
+          "description": "Clipboard sync of this computer (v0.2.0, CLIP-1).",
+          "properties": {
+            "text": {
+              "type": "boolean",
+              "default": false,
+              "description": "The start value of the text clipboard switch. The control window can change it while the app runs."
+            }
+          },
+          "additionalProperties": false
+        },
         "endpoint": {
           "type": "object",
           "properties": {

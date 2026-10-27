@@ -4,6 +4,7 @@
 //! messages. It has no I/O threads, sockets, windows, or OS input APIs. The
 //! platform crates implement the traits in [`platform`].
 
+pub mod clipboard;
 pub mod config;
 pub mod driver;
 pub mod ids;
