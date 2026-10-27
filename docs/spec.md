@@ -236,11 +236,14 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
   - If the target has no route to the source, the session ends, and the target shows a notice that the user must switch the display by hand. The target shows it, because the display shows the target. The source also adds the notice to its control window.
   - The built-in `prompt` verifier has its own window on the switched display. It does not use the portal, because the portal can be gone.
 
-The implementation made these decisions without the user (Claude, 2026-10-27). The user must confirm or change each one:
+Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:
 
 - Tentative items in the requirements: CLIP-3, CLIP-6, CLIP-7.
-- The end reason of "Stop this session" on the target (FLOW-17) is `TargetStopped`, with the text "the target stopped the session". It is different from `TargetDisconnected` ("disconnected on the target", AC-18), because the two tests need different texts.
-- "Control from here" (FLOW-17) needs a device match for the display. If no device matches, the target shows a notice and does not start a handoff.
+- The texts of the session end on the source (user, 2026-10-27), with the target label:
+  - `TargetStopped` ("Disconnect" on the target): "<target> disconnected the session".
+  - `TargetDisconnected` (the target app quit and told the source): "Telescreen quit on <target>".
+  - `PeerLost` (heartbeat timeout or a closed connection): "Connection to <target> lost".
+- "Control from here" (FLOW-17) needs a device match for the display (user, 2026-10-27). If no device matches, the target shows a notice, does not start a handoff, and the old session continues.
 - CLIP-8: v0.2.0 uses only `zwlr-data-control-unstable-v1`. `ext-data-control-v1` needs a staging feature of `wayland-protocols` and can come later.
 - The Linux clipboard backend reads an offer for at most 1 second. A text larger than 256 KiB is cut to its longest valid UTF-8 prefix, so that the core rejects it as too large (CLIP-6).
 - The controller does not read the clipboard while the switch is off or while no session can sync (CLIP-2). The Linux data-control thread still receives the data of each copy in the background. To stop this, the `Clipboard` trait needs a call that starts and stops the reads. Open: do this or not.
