@@ -1,4 +1,5 @@
 //! The regular Wayland text clipboard on its own connection (CLIP-7, CLIP-8).
+//! The connection is open only while the clipboard can sync (CLIP-11).
 //! The main thread only reads a channel of changes (IN-2).
 
 use std::collections::HashMap;
@@ -7,10 +8,10 @@ use std::io::{self, PipeReader, Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use telescreen_core::clipboard::{ClipboardItem, MAX_TEXT};
+use telescreen_core::clipboard::{ClipboardChange, ClipboardItem, MAX_TEXT};
 use telescreen_core::platform::{Clipboard, PlatformError};
 use wayland_client::backend::{ObjectId, WaylandError};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -28,55 +29,131 @@ const PASSWORD_HINT: &str = "x-kde-passwordManagerHint";
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
 const TICK: Duration = Duration::from_millis(10);
 
-type Items = Arc<Mutex<Receiver<ClipboardItem>>>;
+type Changes = Arc<Mutex<Receiver<ClipboardChange>>>;
 
-/// Sends clipboard work to a separate Wayland thread (CLIP-8, IN-2).
-#[derive(Debug)]
+enum Command {
+    Set { text: String, concealed: bool },
+    ClearIfOwned,
+    Close,
+}
+
+/// The data of one source that this peer offers (CLIP-7).
+struct SourceData {
+    text: String,
+    concealed: bool,
+}
+
+/// Sends clipboard work to a separate Wayland thread while open (CLIP-8, IN-2).
+#[derive(Debug, Default)]
 pub struct LinuxClipboard {
-    commands: Sender<String>,
-    items: Items,
+    worker: Option<Worker>,
+}
+
+#[derive(Debug)]
+struct Worker {
+    commands: Sender<Command>,
+    changes: Changes,
+    thread: JoinHandle<()>,
 }
 
 impl LinuxClipboard {
-    /// Connects to data-control on the first seat (CLIP-8).
-    /// Fails if the compositor has no data-control manager.
+    /// Checks that the compositor has data-control on the first seat (CLIP-8).
+    /// Keeps no connection open and reads nothing.
     pub fn start() -> Result<Self, String> {
+        drop(Backend::connect()?);
+        Ok(Self::default())
+    }
+}
+
+impl Clipboard for LinuxClipboard {
+    fn open(&mut self) -> Result<(), PlatformError> {
+        if self.worker.is_some() {
+            return Ok(());
+        }
         let (commands, command_rx) = channel();
-        let (item_tx, item_rx) = sync_channel(1);
-        let items = Arc::new(Mutex::new(item_rx));
-        let thread_items = Arc::clone(&items);
+        let (change_tx, change_rx) = sync_channel(1);
+        let changes = Arc::new(Mutex::new(change_rx));
+        let thread_changes = Arc::clone(&changes);
         let (ready_tx, ready_rx) = channel();
-        thread::Builder::new()
+        let thread = thread::Builder::new()
             .name("telescreen-clipboard".into())
             .spawn(move || match Backend::connect() {
                 Ok(backend) => {
                     if ready_tx.send(Ok(())).is_ok() {
-                        backend.run(command_rx, item_tx, thread_items);
+                        backend.run(command_rx, change_tx, thread_changes);
                     }
                 }
                 Err(error) => {
                     let _ = ready_tx.send(Err(error));
                 }
             })
-            .map_err(|error| format!("cannot start the clipboard thread: {error}"))?;
+            .map_err(|error| {
+                PlatformError::Failed(format!("cannot start the clipboard thread: {error}"))
+            })?;
         ready_rx
             .recv_timeout(Duration::from_secs(2))
-            .map_err(|error| format!("the clipboard did not start: {error}"))??;
-        Ok(Self { commands, items })
+            .map_err(|error| {
+                PlatformError::Failed(format!("the clipboard did not start: {error}"))
+            })?
+            .map_err(PlatformError::Failed)?;
+        self.worker = Some(Worker {
+            commands,
+            changes,
+            thread,
+        });
+        Ok(())
+    }
+
+    fn close(&mut self) {
+        let Some(worker) = self.worker.take() else {
+            return;
+        };
+        // The thread runs the commands in sequence, so a clear before this one is done.
+        let _ = worker.commands.send(Command::Close);
+        if worker.thread.join().is_err() {
+            eprintln!("telescreen: the clipboard thread failed");
+        }
+    }
+
+    fn changed(&mut self) -> Option<ClipboardChange> {
+        // The producer also reads this one-slot channel to replace an unread change.
+        // Never wait for its lock on the main thread (IN-2).
+        self.worker
+            .as_ref()?
+            .changes
+            .try_lock()
+            .ok()?
+            .try_recv()
+            .ok()
+    }
+
+    fn set_text(&mut self, text: &str, concealed: bool) -> Result<(), PlatformError> {
+        self.send(Command::Set {
+            text: text.to_owned(),
+            concealed,
+        })
+    }
+
+    fn clear_if_owned(&mut self) {
+        let _ = self.send(Command::ClearIfOwned);
     }
 }
 
-impl Clipboard for LinuxClipboard {
-    fn changed(&mut self) -> Option<ClipboardItem> {
-        // The producer also reads this one-slot channel to replace an unread item.
-        // Never wait for its lock on the main thread (IN-2).
-        self.items.try_lock().ok()?.try_recv().ok()
-    }
-
-    fn set_text(&mut self, text: &str) -> Result<(), PlatformError> {
-        self.commands
-            .send(text.to_owned())
+impl LinuxClipboard {
+    fn send(&self, command: Command) -> Result<(), PlatformError> {
+        self.worker
+            .as_ref()
+            .ok_or_else(|| PlatformError::Failed("the clipboard is closed".into()))?
+            .commands
+            .send(command)
             .map_err(|_| PlatformError::Failed("the clipboard thread stopped".into()))
+    }
+}
+
+impl Drop for LinuxClipboard {
+    fn drop(&mut self) {
+        self.clear_if_owned();
+        self.close();
     }
 }
 
@@ -102,10 +179,16 @@ impl Backend {
             .bind(&qh, 1..=7, ())
             .map_err(|error| format!("cannot bind the first wl_seat: {error}"))?;
         let device = manager.get_data_device(&seat, &qh, ());
-        let mut state = State::default();
+        // The first selection is the baseline: do not read it (CLIP-3).
+        let mut state = State {
+            baseline: true,
+            ..State::default()
+        };
         queue
             .roundtrip(&mut state)
             .map_err(|error| format!("Wayland data-control: {error}"))?;
+        state.baseline = false;
+        state.cleared = false;
         if state.finished {
             return Err("the compositor stopped the data-control device".into());
         }
@@ -118,21 +201,47 @@ impl Backend {
         })
     }
 
-    fn run(mut self, commands: Receiver<String>, item_tx: SyncSender<ClipboardItem>, items: Items) {
+    fn run(
+        mut self,
+        commands: Receiver<Command>,
+        change_tx: SyncSender<ClipboardChange>,
+        changes: Changes,
+    ) {
+        let publish = |change: ClipboardChange| -> bool {
+            let Ok(receiver) = changes.lock() else {
+                return false;
+            };
+            // Keep just the latest unread change (CLIP-8).
+            let _ = receiver.try_recv();
+            let _ = change_tx.try_send(change);
+            true
+        };
         loop {
             match commands.recv_timeout(TICK) {
-                Ok(text) => {
-                    let source = self
-                        .manager
-                        .create_data_source(&self.queue.handle(), Arc::new(text));
+                Ok(Command::Set { text, concealed }) => {
+                    let source = self.manager.create_data_source(
+                        &self.queue.handle(),
+                        Arc::new(SourceData { text, concealed }),
+                    );
                     for mime in TEXT_TYPES {
                         source.offer(mime.into());
                     }
+                    if concealed {
+                        source.offer(PASSWORD_HINT.into());
+                    }
                     self.device.set_selection(Some(&source));
+                    self.state.own = Some(source.clone());
                     self.state.sources.push(source);
                 }
+                Ok(Command::ClearIfOwned) => {
+                    // The compositor cancels the own source when a different
+                    // program takes the selection (CLIP-11).
+                    if self.state.own.take().is_some() {
+                        self.device.set_selection(None);
+                    }
+                }
+                Ok(Command::Close) | Err(RecvTimeoutError::Disconnected) => return,
                 Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
             }
             if let Err(error) = self.dispatch() {
                 eprintln!("telescreen: clipboard: {error}");
@@ -141,18 +250,18 @@ impl Backend {
             if self.state.finished {
                 return;
             }
+            if std::mem::take(&mut self.state.cleared) && !publish(ClipboardChange::Cleared) {
+                return;
+            }
             let Some(mut pending) = self.state.pending.take() else {
                 continue;
             };
             match pending.read_ready() {
                 Ok(true) => {
-                    if let Some(item) = pending.into_item() {
-                        let Ok(receiver) = items.lock() else {
-                            return;
-                        };
-                        // Keep just the latest unread item (CLIP-8).
-                        let _ = receiver.try_recv();
-                        let _ = item_tx.try_send(item);
+                    if let Some(item) = pending.into_item()
+                        && !publish(ClipboardChange::Text(item))
+                    {
+                        return;
                     }
                 }
                 Ok(false) => self.state.pending = Some(pending),
@@ -187,6 +296,7 @@ impl Backend {
 impl Drop for Backend {
     fn drop(&mut self) {
         self.state.pending = None;
+        self.state.own = None;
         for (_, offer) in self.state.offers.drain() {
             offer.proxy.destroy();
         }
@@ -207,6 +317,12 @@ struct State {
     selection: Option<DataOffer>,
     pending: Option<PendingItem>,
     sources: Vec<DataSource>,
+    /// The latest source that this peer set and that the compositor did not cancel.
+    own: Option<DataSource>,
+    /// The next selection is the baseline (CLIP-3).
+    baseline: bool,
+    /// The selection holds no text now (CLIP-7).
+    cleared: bool,
     finished: bool,
 }
 
@@ -259,12 +375,22 @@ impl Dispatch<DataDevice, ()> for State {
                     state.offers.remove(&previous.id());
                     previous.destroy();
                 }
-                if let Some(offer) = &id
-                    && let Some(data) = state.offers.get(&offer.id())
-                {
-                    state.pending = PendingItem::receive(connection, offer, &data.types).ok();
+                state.cleared = false;
+                if !state.baseline {
+                    match id
+                        .as_ref()
+                        .and_then(|offer| Some((offer, state.offers.get(&offer.id())?)))
+                    {
+                        Some((offer, data)) => {
+                            state.pending =
+                                PendingItem::receive(connection, offer, &data.types).ok();
+                            // An offer with no text type is not text (CLIP-7).
+                            state.cleared = state.pending.is_none();
+                        }
+                        // An empty selection is a clear (CLIP-7).
+                        None => state.cleared = true,
+                    }
                 }
-                // An empty selection produces no change (CLIP-8).
                 state.selection = id;
             }
             zwlr_data_control_device_v1::Event::PrimarySelection { id: Some(offer) } => {
@@ -298,27 +424,34 @@ impl Dispatch<DataOffer, ()> for State {
     }
 }
 
-impl Dispatch<DataSource, Arc<String>> for State {
+impl Dispatch<DataSource, Arc<SourceData>> for State {
     fn event(
         state: &mut Self,
         source: &DataSource,
         event: zwlr_data_control_source_v1::Event,
-        text: &Arc<String>,
+        data: &Arc<SourceData>,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
             zwlr_data_control_source_v1::Event::Send { mime_type, fd } => {
-                if !TEXT_TYPES.contains(&mime_type.as_str()) {
+                // The hint gives the mark, never the text (CLIP-7).
+                let hint = mime_type == PASSWORD_HINT && data.concealed;
+                if !hint && !TEXT_TYPES.contains(&mime_type.as_str()) {
                     return;
                 }
-                let text = Arc::clone(text);
+                let data = Arc::clone(data);
                 // The reader can stall without blocking Wayland or its own echo (CLIP-4).
                 if let Err(error) = thread::Builder::new()
                     .name("telescreen-clipboard-write".into())
                     .spawn(move || {
                         let mut file = File::from(fd);
-                        let _ = file.write_all(text.as_bytes());
+                        let bytes = if hint {
+                            b"secret".as_slice()
+                        } else {
+                            data.text.as_bytes()
+                        };
+                        let _ = file.write_all(bytes);
                     })
                 {
                     eprintln!("telescreen: cannot start a clipboard writer: {error}");
@@ -326,6 +459,9 @@ impl Dispatch<DataSource, Arc<String>> for State {
             }
             zwlr_data_control_source_v1::Event::Cancelled => {
                 state.sources.retain(|active| active != source);
+                if state.own.as_ref() == Some(source) {
+                    state.own = None;
+                }
                 source.destroy();
             }
             _ => {}

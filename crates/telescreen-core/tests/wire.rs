@@ -55,7 +55,9 @@ fn messages_round_trip() {
         Message::ClipboardText {
             session: s,
             text: "héllo\nwörld".into(),
+            concealed: true,
         },
+        Message::ClipboardClear { session: s },
         Message::SessionRefused {
             device: telescreen_core::ids::DeviceId::from("lg"),
             reason: telescreen_core::wire::RefuseReason::NoFocusHold,
@@ -102,9 +104,9 @@ fn net2_pointer_round_trip_and_order() {
 }
 
 #[test]
-fn protocol_version_3_has_the_keyboard_and_clipboard_messages() {
-    // FLOW-23 and CLIP-2 changed the messages, so an older peer is refused.
-    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 3);
+fn protocol_version_4_has_the_concealed_clipboard_messages() {
+    // CLIP-7 changed the messages, so an older peer is refused.
+    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 4);
 }
 
 #[test]
@@ -112,6 +114,7 @@ fn clip6_the_largest_clipboard_text_fits_in_a_frame() {
     let message = Message::ClipboardText {
         session: telescreen_core::ids::SessionId(1),
         text: "\u{10348}".repeat(telescreen_core::clipboard::MAX_TEXT / 4),
+        concealed: true,
     };
     let bytes = encode_message(&message).unwrap();
     assert!(bytes.len() <= telescreen_core::wire::MAX_FRAME);

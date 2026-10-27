@@ -5,7 +5,7 @@
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::clipboard::ClipboardItem;
+use crate::clipboard::ClipboardChange;
 use crate::ids::DisplayToken;
 use crate::input::InputEvent;
 use crate::pointer::{Normalized, Point, Rect};
@@ -43,13 +43,26 @@ pub trait Displays {
 }
 
 /// Provides the local text clipboard capability (CLIP-8).
-/// The app calls it outside input callbacks (IN-2).
+/// The app calls it outside input callbacks (IN-2). The app calls `changed`,
+/// `set_text`, and `clear_if_owned` only between `open` and `close`.
 pub trait Clipboard {
-    /// Returns the latest item if the clipboard changed since the last call.
-    /// Returns `None` if it did not change or does not contain text.
-    fn changed(&mut self) -> Option<ClipboardItem>;
-    /// Replaces the clipboard with plain text (CLIP-8).
-    fn set_text(&mut self, text: &str) -> Result<(), PlatformError>;
+    /// Starts to watch the clipboard. The current content is the baseline:
+    /// `changed` does not report it (CLIP-3). On Linux, this opens the
+    /// data-control connection.
+    fn open(&mut self) -> Result<(), PlatformError>;
+    /// Stops to watch the clipboard. On Linux, this closes the data-control
+    /// connection. The app calls `clear_if_owned` first (CLIP-11).
+    fn close(&mut self);
+    /// Returns the latest change since the last call, or `None` if there is no
+    /// change. A change that `set_text` or `clear_if_owned` made is also reported.
+    fn changed(&mut self) -> Option<ClipboardChange>;
+    /// Replaces the clipboard with plain text (CLIP-8). With `concealed`, also
+    /// sets the concealed mark of the platform (CLIP-7).
+    fn set_text(&mut self, text: &str, concealed: bool) -> Result<(), PlatformError>;
+    /// Removes the clipboard content if it is still the last text from
+    /// `set_text`. Else does nothing, for example after a copy by the user
+    /// (CLIP-7, CLIP-11).
+    fn clear_if_owned(&mut self);
 }
 
 /// Injects input on the target (IN-11, FLOW-5).

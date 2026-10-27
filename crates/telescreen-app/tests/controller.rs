@@ -11,7 +11,7 @@ use serde_json::json;
 use telescreen_app::controller::{
     Controller, Job, JobId, JobOutput, JobPort, Labels, NetPort, Ports,
 };
-use telescreen_core::clipboard::ClipboardItem;
+use telescreen_core::clipboard::{ClipboardChange, ClipboardItem};
 use telescreen_core::config::Config;
 use telescreen_core::driver::{OperationKind, Outcome};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
@@ -95,9 +95,15 @@ struct Log {
     /// Injected events and focus holder calls, in sequence (FLOW-23).
     target: Vec<String>,
     /// Local clipboard changes that the next `changed` call reports.
-    clip_pending: Vec<ClipboardItem>,
-    /// Texts that the controller put on the clipboard.
-    clip_set: Vec<String>,
+    clip_pending: Vec<ClipboardChange>,
+    /// Texts and concealed marks that the controller put on the clipboard.
+    clip_set: Vec<(String, bool)>,
+    /// The clipboard is between `open` and `close`.
+    clip_open: bool,
+    /// The clipboard still holds the last text from `set_text` (CLIP-11).
+    clip_own: bool,
+    /// `open`, `close`, and `clear` (a `clear_if_owned` that removed a text).
+    clip_calls: Vec<&'static str>,
 }
 
 type Shared = Rc<RefCell<Log>>;
@@ -168,19 +174,46 @@ impl Injector for Inject {
 
 struct Clip(Shared);
 impl Clipboard for Clip {
-    fn changed(&mut self) -> Option<ClipboardItem> {
-        // A real clipboard reports only its latest content.
-        self.0.borrow_mut().clip_pending.drain(..).next_back()
-    }
-    fn set_text(&mut self, text: &str) -> Result<(), PlatformError> {
+    fn open(&mut self) -> Result<(), PlatformError> {
         let mut log = self.0.borrow_mut();
-        log.clip_set.push(text.into());
-        // The platform then reports the change that the app made (CLIP-4).
-        log.clip_pending.push(ClipboardItem {
-            text: text.into(),
-            concealed: false,
-        });
+        assert!(!log.clip_open, "open twice");
+        log.clip_open = true;
+        // The current content is the baseline (CLIP-3).
+        log.clip_pending.clear();
+        log.clip_calls.push("open");
         Ok(())
+    }
+    fn close(&mut self) {
+        let mut log = self.0.borrow_mut();
+        assert!(log.clip_open, "close while closed");
+        log.clip_open = false;
+        log.clip_calls.push("close");
+    }
+    fn changed(&mut self) -> Option<ClipboardChange> {
+        let mut log = self.0.borrow_mut();
+        assert!(log.clip_open, "a read while closed (CLIP-1)");
+        // A real clipboard reports only its latest content.
+        log.clip_pending.drain(..).next_back()
+    }
+    fn set_text(&mut self, text: &str, concealed: bool) -> Result<(), PlatformError> {
+        let mut log = self.0.borrow_mut();
+        assert!(log.clip_open, "a write while closed");
+        log.clip_set.push((text.into(), concealed));
+        log.clip_own = true;
+        // The platform then reports the change that the app made (CLIP-4).
+        log.clip_pending.push(ClipboardChange::Text(ClipboardItem {
+            text: text.into(),
+            concealed,
+        }));
+        Ok(())
+    }
+    fn clear_if_owned(&mut self) {
+        let mut log = self.0.borrow_mut();
+        assert!(log.clip_open, "a clear while closed");
+        if std::mem::take(&mut log.clip_own) {
+            log.clip_calls.push("clear");
+            log.clip_pending.push(ClipboardChange::Cleared);
+        }
     }
 }
 
@@ -1105,11 +1138,29 @@ fn adr0007_controller_sends_the_heartbeat() {
     assert_eq!(sent(&w), 2);
 }
 
+/// The user copies on this peer.
 fn copy(peer: &Peer, text: &str, concealed: bool) {
-    peer.log.borrow_mut().clip_pending.push(ClipboardItem {
+    let mut log = peer.log.borrow_mut();
+    log.clip_own = false;
+    log.clip_pending.push(ClipboardChange::Text(ClipboardItem {
         text: text.into(),
         concealed,
-    });
+    }));
+}
+
+/// A password manager on this peer clears its clipboard.
+fn clear(peer: &Peer) {
+    let mut log = peer.log.borrow_mut();
+    log.clip_own = false;
+    log.clip_pending.push(ClipboardChange::Cleared);
+}
+
+/// Runs both peers once and delivers the messages.
+fn settle(w: &mut World) {
+    w.mac.controller.tick(w.now);
+    w.pump();
+    w.pc1.controller.tick(w.now);
+    w.pump();
 }
 
 #[test]
@@ -1129,11 +1180,11 @@ fn clip2_ac30_text_goes_in_both_directions() {
     copy(&w.mac, "hello", false);
     w.mac.controller.tick(w.now);
     w.pump();
-    assert_eq!(w.pc1.log.borrow().clip_set, ["hello"]);
+    assert_eq!(w.pc1.log.borrow().clip_set, [("hello".into(), false)]);
     copy(&w.pc1, "back", false);
     w.pc1.controller.tick(w.now);
     w.pump();
-    assert_eq!(w.mac.log.borrow().clip_set, ["back"]);
+    assert_eq!(w.mac.log.borrow().clip_set, [("back".into(), false)]);
 }
 
 #[test]
@@ -1198,13 +1249,120 @@ fn clip4_ac33_no_echo() {
 }
 
 #[test]
-fn clip7_ac34_concealed_text_is_not_sent() {
+fn clip7_ac34_a_concealed_text_is_sent_with_the_mark() {
     let mut w = World::new();
     w.advance_to_forwarding();
     copy(&w.mac, "hunter2", true);
+    settle(&mut w);
+    assert_eq!(w.pc1.log.borrow().clip_set, [("hunter2".into(), true)]);
+}
+
+#[test]
+fn clip7_ac34_the_other_peer_clears_when_the_source_clears() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    copy(&w.mac, "hunter2", true);
+    settle(&mut w);
+    clear(&w.mac);
+    settle(&mut w);
+    assert_eq!(w.pc1.log.borrow().clip_calls, ["open", "clear"]);
+    assert!(w.pc1.log.borrow().clip_open, "the session continues");
+}
+
+#[test]
+fn clip7_a_copy_by_the_user_is_not_cleared() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    copy(&w.mac, "hunter2", true);
+    settle(&mut w);
+    copy(&w.pc1, "mine", false);
+    clear(&w.mac);
+    settle(&mut w);
+    assert!(!w.pc1.log.borrow().clip_calls.contains(&"clear"));
+}
+
+#[test]
+fn clip7_no_clear_for_a_text_without_the_mark() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    copy(&w.mac, "a", false);
+    settle(&mut w);
+    clear(&w.mac);
+    settle(&mut w);
+    assert!(!w.pc1.log.borrow().clip_calls.contains(&"clear"));
+}
+
+#[test]
+fn clip11_ac35_the_session_end_clears_the_received_text() {
+    for end in ["release shortcut", "stop on the target", "switch off"] {
+        let mut w = World::new();
+        w.advance_to_forwarding();
+        copy(&w.mac, "a", false);
+        settle(&mut w);
+        match end {
+            "release shortcut" => w.mac.controller.on_captured(CapturedEvent::ReleaseShortcut),
+            "stop on the target" => {
+                let session = w.pc1.controller.control_screen().incoming[0].session;
+                w.pc1.controller.on_intent(Intent::StopSession { session });
+            }
+            _ => w
+                .pc1
+                .controller
+                .on_intent(Intent::SetClipboard { on: false }),
+        }
+        settle(&mut w);
+        assert_eq!(
+            w.pc1.log.borrow().clip_calls,
+            ["open", "clear", "close"],
+            "{end}"
+        );
+        assert!(!w.pc1.log.borrow().clip_open, "{end}");
+    }
+}
+
+#[test]
+fn clip11_the_source_also_clears_and_closes() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    copy(&w.pc1, "from pc1", false);
+    settle(&mut w);
+    assert_eq!(w.mac.log.borrow().clip_set, [("from pc1".into(), false)]);
+    w.mac.controller.on_intent(Intent::EndSession);
+    settle(&mut w);
+    assert_eq!(w.mac.log.borrow().clip_calls, ["open", "clear", "close"]);
+}
+
+#[test]
+fn clip11_ac35_a_copy_by_the_user_stays_at_the_end() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    copy(&w.mac, "a", false);
+    settle(&mut w);
+    copy(&w.pc1, "mine", false);
+    w.mac.controller.on_captured(CapturedEvent::ReleaseShortcut);
+    settle(&mut w);
+    assert_eq!(w.pc1.log.borrow().clip_calls, ["open", "close"]);
+}
+
+#[test]
+fn clip11_shutdown_clears_with_no_tick() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    copy(&w.mac, "a", false);
+    settle(&mut w);
+    w.pc1.controller.shutdown();
+    assert_eq!(w.pc1.log.borrow().clip_calls, ["open", "clear", "close"]);
+}
+
+#[test]
+fn clip2_a_text_that_arrives_before_a_tick_is_applied() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    // pc1 did not tick since forwarding started.
+    copy(&w.mac, "early", false);
     w.mac.controller.tick(w.now);
     w.pump();
-    assert!(w.pc1.log.borrow().clip_set.is_empty());
+    assert_eq!(w.pc1.log.borrow().clip_set, [("early".into(), false)]);
 }
 
 #[test]
@@ -1228,16 +1386,28 @@ fn clip1_no_clipboard_read_without_the_switch_or_a_session() {
     let mut w = World::new();
     copy(&w.mac, "before", false);
     w.mac.controller.tick(w.now);
-    assert_eq!(w.mac.log.borrow().clip_pending.len(), 1, "no session");
+    assert!(w.mac.log.borrow().clip_calls.is_empty(), "no session");
 
     w.advance_to_forwarding();
+    w.mac.controller.tick(w.now);
+    assert_eq!(w.mac.log.borrow().clip_calls, ["open"]);
     w.mac
         .controller
         .on_intent(Intent::SetClipboard { on: false });
+    w.mac.controller.tick(w.now);
+    assert_eq!(w.mac.log.borrow().clip_calls, ["open", "close"]);
     copy(&w.mac, "off", false);
     w.mac.controller.tick(w.now);
+    assert!(!w.mac.log.borrow().clip_open, "the switch is off");
+
+    w.mac
+        .controller
+        .on_intent(Intent::SetClipboard { on: true });
+    w.mac.controller.tick(w.now);
+    assert_eq!(w.mac.log.borrow().clip_calls, ["open", "close", "open"]);
+    w.pump();
     assert!(
-        !w.mac.log.borrow().clip_pending.is_empty(),
-        "the switch is off"
+        w.pc1.log.borrow().clip_set.is_empty(),
+        "the copy while off is the new baseline (CLIP-3)"
     );
 }

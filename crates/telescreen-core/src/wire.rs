@@ -21,6 +21,7 @@
 //! KeyboardAway{session} ────────▶          hold keyboard focus (FLOW-23)
 //! KeyboardBack{session} ────────▶          release keyboard focus holder
 //! ClipboardText{session, text} ◀▶          sync text while forwarding (CLIP-2)
+//! ClipboardClear{session}     ◀▶          the sent concealed text went away (CLIP-7)
 //! End{session, reason}  ◀──────▶  End{session, reason}
 //! Heartbeat ◀──────────────────▶ Heartbeat (each second; the transport owns it)
 //! ```
@@ -32,7 +33,7 @@ use crate::input::InputEvent;
 use crate::pointer::Normalized;
 
 /// The wire protocol version. A peer refuses a different version.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// The maximum size of one reliable frame payload.
 pub const MAX_FRAME: usize = crate::clipboard::MAX_TEXT + 4 * 1024;
@@ -73,10 +74,16 @@ pub enum Message {
     KeyboardBack {
         session: SessionId,
     },
-    /// Plain text in both directions while forwarding (CLIP-2).
+    /// Plain text in both directions while forwarding (CLIP-2). `concealed` is the
+    /// concealed mark of a password manager (CLIP-7).
     ClipboardText {
         session: SessionId,
         text: String,
+        concealed: bool,
+    },
+    /// The concealed text that the sender sent went off its clipboard (CLIP-7).
+    ClipboardClear {
+        session: SessionId,
     },
 
     // Target to source.
