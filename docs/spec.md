@@ -22,7 +22,7 @@ v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user,
 | --- | --- |
 | v0.1.0 | Display handoff, confirmation prompt with the hint, and keyboard and mouse forwarding, in both directions: macOS to Linux, and Linux to macOS. |
 | v0.2.0 | Opt-in text clipboard sync. It syncs only in an active, authenticated session, with no loops between the peers, and it sends nothing after the user disables it or after a disconnect. |
-| v0.3.0 | Hand back, FLOW-24, the verification model, and the operation drivers (section 10; user, 2026-10-27). Until v0.3.0, FLOW-6, FLOW-8, FLOW-10, FLOW-21, UI-5, and ADR 0002 apply as written. v0.3.0 changes them to the verification model. |
+| v0.3.0 | Hand back, FLOW-24, the verification model, and the operation drivers (section 10; user, 2026-10-27). |
 | v0.4.0 (candidate) | Separate clipboard stream: image clipboard (PNG) and texts larger than 256 KiB (CLIP-6). An image is sent only when the other peer pastes, with a "Pasting from <label>…" overlay. |
 
 ### 2.2 Not part of v0.1.0
@@ -52,29 +52,29 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **FLOW-3** Make the candidate targets: the local `handoff` keys that are also computers with the same device `id`. Show a candidate that is offline, that has no permission, or that has no `input-target` as unavailable, with the reason.
 - **FLOW-4** When the portal moves to a different display, or the display topology changes, evaluate `portal-match` again. The previous device binding and its coordinates must not continue to apply.
 
-### 4.2 Handoff and confirmation
+### 4.2 Handoff and verification
 
 - **FLOW-5** After the user selects a target, the target resolves its local `input-target` by the shared device `id`, confirms that it can inject input, and gives an exclusive lease for that device to this session.
-- **FLOW-6** The source stops any old input stream and releases all held keys and buttons. Then it runs the handoff `steps`, and `verify` if it is present, on the source computer.
-- **FLOW-7** After the handoff, the target shows the prompt on its input-target display (ADR 0002). The prompt shows the `hint` of the target computer, if it is present, as plain text.
-- **FLOW-8** The user confirms with the confirmation key (Return. In v0.1.0 the key is fixed; a later version makes it configurable, user, 2026-10-27), or with a click in the portal. The source accepts the confirmation only while the target reports that the prompt is visible, and the portal has the window focus. At other times the key is a normal key.
-- **FLOW-9** The source suppresses the confirmation key and the confirmation click. It does not forward them. The click on the switch button must not go to the target.
-- **FLOW-10** Forwarding starts only after the confirmation, and only if the display token of the target is still valid. After the confirmation, the UI shows the video input as confirmed.
-- **FLOW-21** From the handoff until the confirmation or the timeout of FLOW-11, the portal stays fullscreen and fixed in place, and it keeps the window focus. It cannot be switched away (user, 2026-10-27). On macOS the source suppresses the gestures and shortcuts of IN-10 and the clicks out of the portal in this time, and it activates the portal again if it loses the focus. The confirmation key and clicks in the portal still go to the portal. On Linux the portal inhibits the compositor shortcuts in this time. A Wayland client cannot take the focus back, so a click on a different output can still move the focus.
-- **FLOW-11** If there is no confirmation in 60 seconds (fixed in v0.1.0; configurable in a later version, user, 2026-10-27), cancel the wait. The target removes the prompt. The UI shows the video input as unknown. Do not switch the video input back.
-- **FLOW-12** If a handoff step fails, or `verify` is false: do not start forwarding, do not retry automatically, and do not claim a rollback. After a partial success, show the video input as unknown.
+- **FLOW-6** The source stops any old input stream and releases all held keys and buttons. Then it runs the handoff `steps` on the source computer. When the steps succeed, the target verifies the handoff as the destination (VER-1).
+- **FLOW-7** With the `prompt` verifier, the target shows the prompt on its input-target display, with the `hint` of the target computer as plain text (VER-5).
+- **FLOW-8** When the verifier of the target asks for an acknowledgement, the user acknowledges in the portal: the acknowledgement key (Return. In v0.3.0 the key is fixed; a later version makes it configurable, user, 2026-10-27), or a click in the portal (VER-4). The source accepts it only while the target reports that its verifier waits for an acknowledgement, and the portal has the window focus. At other times the key is a normal key.
+- **FLOW-9** The source suppresses the acknowledgement key and the acknowledgement click. It does not forward them. The click on the switch button must not go to the target.
+- **FLOW-10** Forwarding starts only after the verifier of the target answers ok, or after the steps if the target has no `verify` (VER-2), and only if the display token of the target is still valid. The UI shows the device state that the target reports (VER-6).
+- **FLOW-21** From the handoff until the verification ends (FLOW-10, FLOW-11), the portal stays fullscreen and fixed in place, and it keeps the window focus. It cannot be switched away (user, 2026-10-27). On macOS the source suppresses the gestures and shortcuts of IN-10 and the clicks out of the portal in this time, and it activates the portal again if it loses the focus. The acknowledgement key and clicks in the portal still go to the portal. On Linux the portal inhibits the compositor shortcuts in this time. A Wayland client cannot take the focus back, so a click on a different output can still move the focus.
+- **FLOW-11** If the verifier answers not ok (for example the `prompt` verifier after 60 seconds with no acknowledgement, VER-5), or the `verify` operation fails, cancel the wait. The target removes the window of its verifier. The device state is unknown (VER-6). Do not switch the video input back.
+- **FLOW-12** If a handoff step fails: do not start forwarding, do not retry automatically, and do not claim a rollback. After a partial success, the device state is unknown.
 
 ### 4.3 Forwarding and end
 
 - **FLOW-13** While forwarding, the source captures, suppresses, and forwards its input to the target by two rules. Pointer motion, buttons, scroll, and gestures follow the cursor: they go to the target while the cursor is in the portal (FLOW-20). Keys follow the keyboard focus (FLOW-22). The source must not need window focus events from the target.
-- **FLOW-14** Switch of the controlled computer: the cursor can leave the portal at each time (FLOW-20), and the user can click and type on the source. This is a seamless switch (user, 2026-10-27, ADR 0003). The session has no pause state: it stays in forwarding until it ends. Only the routes of single events change. The target display does not change, and no new confirmation is necessary.
+- **FLOW-14** Switch of the controlled computer: the cursor can leave the portal at each time (FLOW-20), and the user can click and type on the source. This is a seamless switch (user, 2026-10-27, ADR 0003). The session has no pause state: it stays in forwarding until it ends. Only the routes of single events change. The target display does not change, and no new acknowledgement is necessary.
 - **FLOW-15** Portal edges with no adjacent local display stop the pointer.
 - **FLOW-20** The cursor of the source is always free: the source does not freeze or lock it, and pointer motion is never suppressed (user, 2026-10-27). Only pointer input while the cursor is in the portal area goes to the target. Each key and button up goes where its down went (IN-3).
 - **FLOW-22** The keyboard focus follows clicks, as on one computer with more displays (user, 2026-10-27). Keys go to the target while the portal window has the native keyboard focus of the source, also when the cursor is out of the portal. A click in the portal gives the portal the keyboard focus. The click also goes to the target (user, 2026-10-27). A click on a different window of the source takes the keyboard focus away from the portal by the normal OS rules. Moving the cursor alone does not change the keyboard focus.
 - **FLOW-23** At each time, at most one input field on the two computers shows the keyboard focus (user, 2026-10-27: two blinking text cursors are incorrect behavior). When the portal loses the keyboard focus, the source sends `KeyboardAway`. The target then takes the keyboard focus from its applications with a focus holder that shows nothing (UI-7). When the portal gets the keyboard focus again, the source sends `KeyboardBack` before the click that caused it. The target removes the focus holder before it injects that click. At the session end, the target removes the focus holder.
-- **FLOW-16** These events end the session: the release shortcut, the safety exit, a disconnect (heartbeat timeout or a closed connection), "Stop this session" on the target, "Control from here" on the target (FLOW-17), lease expiry, removal of the portal display, and revocation of a permission. Then the source stops suppression and restores the key state. The target releases all held keys and buttons. If the video input is not confirmed, show it as unknown. Do not claim an automatic recovery.
-- **FLOW-17** The target shows "Controlled by <source label>" with two actions (user, 2026-10-27): "Stop this session" ends the session. "Control from here" ends the session, then starts a session in the other direction, with this computer as the source: a new connection that replaces the old one.
-- **FLOW-18** A session end does not switch the video input back. A switch back needs an explicit handoff route. The user should be able to start the switch back from a display of the source that the handoff does not change (for example the built-in display).
+- **FLOW-16** These events end the session: a hand back (HB-1), the safety exit, a disconnect (heartbeat timeout or a closed connection), "Disconnect" on the target, "Control from here" on the target (FLOW-17), lease expiry, removal of the portal display, and revocation of a permission. Then the source stops suppression and restores the key state. The target releases all held keys and buttons. If the device state is not confirmed, show it as unknown. Do not claim an automatic recovery.
+- **FLOW-17** The target shows "Controlled by <source label>" with three actions (user, 2026-10-27): "Hand back" (the main action, HB-2), "Control from here", and "Disconnect". "Disconnect" ends the session with no switch. "Control from here" ends the session, then starts a session in the other direction, with this computer as the source: a new connection that replaces the old one.
+- **FLOW-18** Only a hand back (section 4.6) switches the device back. The other ends of FLOW-16 do not switch the video input. A different switch needs an explicit handoff route.
 - **FLOW-24** When a computer grants a session as the target, it closes its own portal on the input-target display of that session (user, 2026-10-27). Then the display does not show two portals, and the user knows which computer is the target. Portals on other displays stay open. If the closed portal is in a session as a source, that session ends as for each closed portal. There is no special rule for three or more computers, and nobody confirms this end (user, 2026-10-27). Example: A has a portal on display D, and it is the source of a session to C. The user switches D to B by hand, and requests a session to A from B's portal on D. A grants it and closes its portal on D, so the session A to C ends. There is no nested forwarding. The control window of A shows "Session ended: <B> took this display" (user, 2026-10-27).
   - With two computers, B is C. Then the request has the same result as "Control from here" (FLOW-17): the old session ends, and the new session starts.
 - **FLOW-19** If the portal display disappears from the source, stop forwarding and restore the UI. Do not continue to suppress input in a window that moved to a different display.
@@ -92,7 +92,27 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **CLIP-10** A paste on the receiving peer needs no extra authentication (user, 2026-10-27). Reason: the peers are paired (ADR 0004), and the user confirmed the session at the prompt. Also, a pushed text is already on the local clipboard, so Telescreen cannot see the paste.
 - **CLIP-11** When the session ends, for each cause, a peer clears its clipboard if it still holds a text that it set from the other peer (user, 2026-10-27). This includes texts with no concealed mark. Reason: the connection ends, and the text must not stay. The peer does the same when its switch goes off (Claude decides, delegated by the user, 2026-10-27). This is local: the peer sends nothing (CLIP-5). If the app stops unexpectedly, the peer cannot clear. On Wayland, the text also goes off the clipboard when Telescreen quits, because Telescreen provides it.
 - **CLIP-12** Only the clipboard selection syncs. The Linux primary selection (select and middle-click paste) does not sync (Claude decides, delegated by the user, 2026-10-27). Reason: macOS has no primary selection.
-- **CLIP-8** The clipboard is a platform capability behind an interface. macOS uses `NSPasteboard`. Linux uses the data-control protocol on its own Wayland connection. v0.2.0 uses `zwlr-data-control-unstable-v1`; `ext-data-control-v1` can come later. If the compositor does not have it (for example GNOME), the capability is missing. Then the control window does not show the switch, and the app shows a notice with the cause at start (Claude decides, delegated by the user, 2026-10-27). The input callbacks never read the clipboard (IN-2).
+- **CLIP-8** The clipboard is a platform capability behind an interface. macOS uses `NSPasteboard`. Linux uses the data-control protocol on its own Wayland connection. v0.2.0 uses `zwlr-data-control-unstable-v1`; `ext-data-control-v1` can come later. If the compositor does not have it (for example GNOME), the capability is missing. Then the control window does not show the switch, and it shows a notice with the cause from the start (Claude decides, delegated by the user, 2026-10-27). The input callbacks never read the clipboard (IN-2).
+
+### 4.5 Verification (v0.3.0)
+
+ADR 0009. The **destination** is the computer that a handoff switches the device to.
+
+- **VER-1** `verify` is in the device section of the destination. The destination runs it after the steps of each handoff to it, also of a hand back. A handoff route has no `verify`. The computer that runs the steps tells the destination over the network when the steps succeed.
+- **VER-2** No `verify` means no check (user, 2026-10-27). Forwarding starts when the steps succeed, and the device state is unverified.
+- **VER-3** A verifier talks with the core in JSON lines (`docs/config.md`). It can show text on the switched display (`{"show":…}`) and ask for an acknowledgement of the user (`{"want":"ack"}`). The core answers `{"ack":true}` when the user acknowledges. The verifier answers ok or not ok. It does not know how the user acknowledged. The purpose is to make sure that a user sees the switched display (user, 2026-10-27).
+- **VER-4** The core decides which user actions are an acknowledgement (user, 2026-10-27). If the computer that started the handoff has a portal: Return, or a click in that portal, sent over the network (FLOW-8). Else, on the destination: Return, or a click on the window of the verifier. A hand back always uses the actions on the destination, also when the source requested it: the session already ended, and the user then uses the keyboard of the destination.
+- **VER-5** The built-in `prompt` verifier shows the prompt with the `hint` of the destination in its own window on the switched display (UI-5), asks for an acknowledgement, and answers ok. After 60 seconds with no acknowledgement (fixed in v0.3.0), it answers not ok. It does not use the portal, because the portal can be gone.
+- **VER-6** The device state is per device on the destination, and it does not depend on a session: confirmed (the verifier answered ok), unverified (no `verify`), or unknown (a failed or timed-out verification, or a partial handoff). For an unknown device, the device list shows "It is back". The user presses it to set the state to confirmed. The source of a session shows the state that the target reports (UI-4).
+- **VER-7** The protocol has no other user input. A verifier that needs other input (for example the state of a Bluetooth keyboard) reads it itself on the destination (user, 2026-10-27).
+
+### 4.6 Hand back (v0.3.0)
+
+- **HB-1** A hand back switches the device of a session back to the source (user, 2026-10-27). It is not a special flow, but three steps: the session ends as for "Disconnect"; the target runs its own `handoff.<source>` route for the device, as a handoff with no portal and no forwarding; then the source verifies as the destination (VER-1). It covers one device: the device of the session. FLOW-12 applies to the steps.
+- **HB-2** On the target, each incoming session has "Hand back" as the main action (FLOW-17), in the control window and in the menu of the status icon (UI-4). If the target has no `handoff.<source>` route for the device, the action stays in its place, is disabled, and shows the cause, for example "No route back to <source> in this config" (user, 2026-10-27).
+- **HB-3** The source can also start a hand back (ADR 0010): it sends a request, and the target runs its own `handoff.<source>` route. Only the source of an active, authenticated session can request it, and it causes only the route back to the source. The triggers on the source are the hand back shortcut (IN-7) and a portal that leaves fullscreen (UI-3). The source has no "Hand back" button: in normal use, no window of the source is visible while the display shows the target.
+- **HB-4** If the target has no route back when the source requests a hand back, the session ends, and the target shows a notice that the user must switch the display by hand. The target shows it, because the display shows the target. The source adds the same notice to its control window.
+- **HB-5** The safety exit (IN-8) only ends the session. It does not start a hand back.
 
 ## 5. Input
 
@@ -102,8 +122,8 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **IN-4** Both peers release all held keys and buttons on a session end. The target must release them on a heartbeat timeout by itself; it must not wait for key-up events from the source.
 - **IN-5** Keys go by physical key identity, not by the character. The input method of the source must not change the key (spike 1). Modifier keys go by physical key: Command to Super, Option to Alt, Control to Control.
 - **IN-6** Do not remap shortcuts. The `hint` tells the user the shortcuts of the target.
-- **IN-7** The release shortcut (macOS: Control+Option+Command+Escape. Linux: Control+Alt+Shift+Escape, user, 2026-10-27. Fixed in v0.1.0; configurable in a later version) ends the session. It is never forwarded.
-- **IN-8** The safety exit (Escape 10 times in 5 seconds) ends suppression and the session. The input callback counts the presses itself, with no dependency on the main thread, the UI, or the network. Escape is still forwarded.
+- **IN-7** The hand back shortcut (macOS: Control+Option+Command+Escape. Linux: Control+Alt+Shift+Escape, user, 2026-10-27. Fixed in v0.3.0; configurable in a later version) starts a hand back (HB-3). It is never forwarded.
+- **IN-8** The safety exit (Escape 10 times in 5 seconds) ends suppression and the session, with no hand back (HB-5). The input callback counts the presses itself, with no dependency on the main thread, the UI, or the network. Escape is still forwarded.
 - **IN-9** A watchdog that is independent of input events must stop suppression when the main loop does not respond for a few seconds, and when a suppression deadline passes (spike 2).
 - **IN-10** While forwarding on macOS, suppress all gestures and shortcuts that switch Spaces or applications, or that open Mission Control, by the rules of FLOW-13: shortcuts while the portal has the keyboard focus, and gestures while the cursor is in the portal. Do not forward gestures (ADR 0003). At other times, they go to macOS.
 - **IN-11** Pointer position: the source maps the pointer position in the portal, normalized to the portal size, to the input-target display of the target. The backends handle scale, rotation, negative origins, and pixel coordinates. The pointer must not leave the input-target display on the target.
@@ -114,15 +134,15 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 
 - **UI-1** The portal is borderless and covers its display. On macOS it is a native fullscreen Space, above the menu bar level (window level 26), so the menu bar and the title bar do not show at the top edge (ADR 0003, spike 1).
 - **UI-2** While the portal has the focus, it allows only Roman input sources, and macOS restores the previous input source after it (spike 1).
-- **UI-3** If the portal leaves fullscreen (for example a drag in Mission Control), detect it. Then the source starts a hand back (user, 2026-10-27; section 10). There is no pause state (FLOW-14). v0.1.0 and v0.2.0 do not detect it (user, 2026-10-27): the session continues.
-- **UI-4** The portal shows the candidate targets, the state of the session (waiting for confirmation, forwarding, ended), and the video input state (confirmed, unverified, unknown).
+- **UI-3** If the portal leaves fullscreen (for example a drag in Mission Control), detect it. Then the source requests a hand back (HB-3). There is no pause state (FLOW-14).
+- **UI-4** The portal shows the candidate targets, the state of the session (waiting for the verification, forwarding, ended), and the device state (confirmed, unverified, unknown; VER-6).
   - From v0.3.0, the state also shows where the user can see it while the display shows the target (user, 2026-10-27). With one display, the source is then not visible, so the target must show it:
-    - The control window of each peer shows the session state and the video input state: the source in a "current session" part, the target in each row of the incoming sessions.
+    - The control window of each peer shows the session state and the device state: the source in a "current session" part, the target in each row of the incoming sessions.
     - Each peer has a status icon: on macOS in the menu bar (`NSStatusItem`), on Linux as a StatusNotifierItem over D-Bus (not the X11 tray). The target icon shows who controls it and the state, for example "Controlled by <source> · forwarding". The source icon shows which target it controls.
     - The icon menu opens the control window. On the target, it also has the actions of each incoming session: "Hand back", "Control from here", and "Disconnect" (Claude decides, delegated by the user, 2026-10-27).
     - A StatusNotifierItem is visible only with a host (KDE, or a bar such as waybar; GNOME needs the AppIndicator extension). Without a host, only the control window shows the state.
-- **UI-5** The prompt on the target is an overlay on the input-target display. On Linux use layer-shell where the compositor has it; else a normal fullscreen window.
-- **UI-6** On Linux as the source, the portal is a fullscreen window. While forwarding, it inhibits compositor shortcuts (ADR 0006). It does not lock the pointer (FLOW-20). The keyboard focus is the native focus of the portal window (FLOW-22). When the portal loses it, the source sends `KeyboardAway` and applies IN-13. The shortcut inhibit is decided (user, 2026-10-27). When the portal opens, it requests the inhibit one time, so that a compositor that asks the user for permission asks then, and not after the handoff. Then it releases the inhibit, and it requests it again for the confirmation wait (FLOW-21) and for forwarding. If the compositor refuses, the portal shows a notice when it opens. niri asks for no permission. Not verified: whether GNOME keeps the permission after the release.
+- **UI-5** The `prompt` verifier (VER-5) shows its window on the switched display of the destination. On macOS it is a window above the fullscreen level. On Linux it is a layer-shell overlay where the compositor has it; else a normal fullscreen window.
+- **UI-6** On Linux as the source, the portal is a fullscreen window. While forwarding, it inhibits compositor shortcuts (ADR 0006). It does not lock the pointer (FLOW-20). The keyboard focus is the native focus of the portal window (FLOW-22). When the portal loses it, the source sends `KeyboardAway` and applies IN-13. The shortcut inhibit is decided (user, 2026-10-27). When the portal opens, it requests the inhibit one time, so that a compositor that asks the user for permission asks then, and not after the handoff. Then it releases the inhibit, and it requests it again for the verification wait (FLOW-21) and for forwarding. If the compositor refuses, the portal shows a notice when it opens. niri asks for no permission. Not verified: whether GNOME keeps the permission after the release.
 - **UI-7** The focus holder on the target (FLOW-23) is a platform capability behind an interface, so that more backends can come later. It shows nothing and does not take pointer input. On Linux it is a layer-shell surface of one pixel with exclusive keyboard interactivity and an empty input region, on the input-target output. On macOS it is a transparent Telescreen window that becomes the key window; when it is removed, the application that was frontmost before is activated again. If the target has no focus holder backend (for example GNOME, which has no layer-shell), the target accepts the session (user, 2026-10-27). It sends one desktop notification at the session start: this computer cannot hide its text cursor, so the cursor can still blink here when the source has the keyboard focus, but the keys do not come here. The row of the session in the control window shows the same warning while the session runs. Later losses of the keyboard focus give no notification. On GNOME, an app cannot place a window, keep it on top, or make an overlay; only a GNOME Shell extension can. GNOME support is a later goal (user, 2026-10-27); see section 10.
 
 ## 7. Network and security
@@ -145,7 +165,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 | Capture and suppress | CGEventTap at the HID location (Accessibility, Input Monitoring) | Window input of the portal + keyboard shortcuts inhibit |
 | Pointer injection | `CGEventPost` | wlroots virtual pointer, absolute motion on the input-target output |
 | Key injection | `CGEventPost` | uinput keyboard (the compositor keymap applies) |
-| Prompt overlay | AppKit window above the fullscreen level | layer-shell overlay |
+| Prompt window (VER-5) | AppKit window above the fullscreen level | layer-shell overlay |
 | Focus holder (UI-7) | transparent key window | layer-shell surface, exclusive keyboard |
 | Text clipboard (CLIP-8) | `NSPasteboard` | data-control protocol |
 | Network | in process (ADR 0008) | in process |
@@ -175,17 +195,17 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-2 | Two Linux computers share a second display. The Mac does not connect to it | The Mac is not a candidate for the second device |
 | AC-3 | Select the Linux computer in the portal on the external display | The handoff runs on the Mac. The display shows the Linux computer. The prompt shows on the input-target display with the hint |
 | AC-4 | Click the switch button | The click does not go to the target |
-| AC-5 | Press the confirmation key in the focused portal while the prompt shows | Forwarding starts. The key does not go to the target. The video input shows as confirmed |
-| AC-6 | Press the confirmation key with no prompt | It is a normal key. Forwarding does not start |
-| AC-7 | No confirmation in the timeout | The wait stops. The prompt goes away. The video input shows as unknown. It does not switch back |
+| AC-5 | Press Return in the focused portal while the prompt shows | Forwarding starts. The key does not go to the target. The device state is confirmed |
+| AC-6 | Press Return with no prompt | It is a normal key. Forwarding does not start |
+| AC-7 | No acknowledgement in 60 seconds | The wait stops. The prompt goes away. The device state is unknown. It does not switch back |
 | AC-8 | The portal moves to a different display | `portal-match` runs again. The old binding and coordinates do not apply |
 | AC-9 | `portal-match` false / more than one true / timeout | No match / ambiguous / error. No device is selected arbitrarily |
-| AC-10 | A handoff step fails, or `verify` is false | Forwarding does not start. No retry. No rollback claim |
+| AC-10 | A handoff step fails, or the verifier answers not ok | Forwarding does not start. No retry. No rollback claim |
 | AC-11 | The pointer leaves the portal to the built-in display, then comes back, with no click | Pointer input is local while out; keys still go to the target; the session stays in forwarding. No key or button stays pressed on the target |
 | AC-12 | Resolution, scale, rotation, negative coordinates, different aspect ratios | The target pointer position is correct. Out-of-bounds behavior is defined |
 | AC-13 | Ordinary keys, modifier keys, and shortcuts | They have an effect on the target and not on the source |
 | AC-14 | Space swipes, Mission Control, Command+Tab while forwarding on macOS | They do not happen on the source and do not go to the target |
-| AC-15 | Release shortcut | The session ends. Local input comes back |
+| AC-15 | Hand back shortcut on the source | The session ends. Local input comes back. The target runs its route back, and the source shows the prompt (HB-3) |
 | AC-16 | Escape 10 times in 5 seconds | Suppression and the session end, also when the main loop does not respond |
 | AC-17 | System-reserved shortcuts, missing permission, Secure Event Input | Telescreen reports the limit. It does not claim capture |
 | AC-18 | Disconnect, process crash, target hang, queue overflow | Both sides release all input state. Local control comes back |
@@ -193,10 +213,10 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-20 | Two sources try to control the same target device | The lease allows only one session |
 | AC-21 | A peer with an unknown fingerprint dials, or is dialed | The connection is refused on both sides |
 | AC-22 | Linux is the source and macOS is the target | AC-3 to AC-18 pass in this direction, with the Linux exits (shortcut inhibit) |
-| AC-23 | The target selects "Stop this session" or "Control from here" | The session ends on both sides. With "Control from here", the session in the other direction starts |
+| AC-23 | The target selects "Disconnect" or "Control from here" | The session ends on both sides. With "Control from here", the session in the other direction starts |
 | AC-24 | A generic USB device | The user can hand it off from the device list. It does not need to be a display |
 | AC-25 | The installed macOS app connects on the LAN | The connection works (Local Network privacy) |
-| AC-26 | While the source waits for the confirmation, try to switch the Space or the application, or click a different display | The portal stays fullscreen and keeps the focus (FLOW-21) |
+| AC-26 | While the source waits for the acknowledgement, try to switch the Space or the application, or click a different display | The portal stays fullscreen and keeps the focus (FLOW-21) |
 | AC-27 | Type in a field on the target, click a field on the source, type, then click the field on the target again | After each click, only the clicked field shows the keyboard focus, and the keys go there (FLOW-22, FLOW-23). The click in the portal reaches the target |
 | AC-28 | Hold Shift in the portal, then lose the keyboard focus without a key up (Linux: a compositor shortcut that cannot be inhibited) | The target releases Shift (IN-13). The session continues |
 | AC-29 | A target with no focus holder backend | The session starts. One desktop notification and a warning in the control window (UI-7) |
@@ -206,6 +226,13 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-33 | Copy on one peer | The other peer does not send the same text back (CLIP-4) |
 | AC-34 | Copy a password from a password manager, then wait until the password manager clears its clipboard | The password arrives with the concealed mark; then the other peer clears it (CLIP-7) |
 | AC-35 | Copy text on one peer. End the session, or turn the switch off on the other peer | The other peer clears its clipboard. If the user copied something else there before, it stays (CLIP-11) |
+
+| AC-36 | The target selects "Hand back" | The session ends. The target runs its route to the source. The source shows the prompt on the display; Return on the keyboard of the source acknowledges it. The device state is confirmed (HB-1, VER-4) |
+| AC-37 | The target has no route back to the source | "Hand back" is disabled and shows the cause. The hand back shortcut ends the session, and the target shows the notice to switch by hand (HB-2, HB-4) |
+| AC-38 | The portal leaves fullscreen while forwarding | The source requests a hand back (UI-3) |
+| AC-39 | The device of the target has no `verify` | Forwarding starts after the steps. The device state is unverified (VER-2) |
+| AC-40 | The verification fails or times out | The device state is unknown on the destination. "It is back" sets it to confirmed (VER-6) |
+| AC-41 | Three peers: A has a portal on display D and a session to C. The user switches D to B by hand, then requests a session to A from B | A closes its portal on D. The session A to C ends. A shows "Session ended: <B> took this display" (FLOW-24) |
 
 Performance: measure p50, p95, and p99 of capture to injection, event loss, and idle CPU/GPU. A network latency number must state how it was measured (round trip on one clock, or the clock synchronization method). There is no hard threshold yet.
 
@@ -217,12 +244,6 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Which special shortcuts to support beyond IN-5, and the per-platform list of shortcuts that cannot be captured.
 - The effect of Wi-Fi delay spikes (spike 4: p99 about 85 ms) on the pointer in real use. Measure it in the product.
 - Minimum OS versions for each package. macOS: 27.0 for v0.1.0, the only tested version (user, 2026-10-27). Linux: open.
-- Hand back (user, 2026-10-27). These points are decided:
-  - The name is "Hand back". It reverses each device that the session handed off.
-  - The target runs its own `handoff.<source>` route. If the target has no such route, the action is not available. The button stays in its place, is disabled, and shows the cause, for example "No route back to <source> in this config" (user, 2026-10-27).
-  - After the switch, the source runs its own `verify` of the device (see the verification model below).
-  - The target row shows three actions: "Hand back" (the main action), "Control from here", and "Disconnect". "Disconnect" is the new label of "Stop this session". The end reason stays `TargetStopped`.
-  - The action is only on the target. In normal use, no window of the source is visible while the display shows the target. FLOW-18 must change: its last sentence assumes such a window.
 - Operation drivers (user, 2026-10-27; to apply to `docs/config.md`, the schema, the validator, and the contract tests):
   - A driver defines how Telescreen reads the result of a program. It does not define which program runs. The user writes the whole command, also the program.
   - `command` is a string or a list, as in Docker Compose. A string is split by shell rules, but no shell runs it. A list is used as it is. For a pipe or other shell features, write the shell explicitly, for example `[/bin/sh, -c, "a | b"]`.
@@ -231,20 +252,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
   - `open` on macOS starts an app through Launch Services and returns at once. The output of the app does not come back. Use the executable in the app bundle, or `open --stdout`.
   - A program name with no path is found in the search path (user, 2026-10-27). If the computer section of the config has `path` (a list of directories), use it. Else read `PATH` from the login shell of the user one time at the start. An app that macOS starts from Finder or `open` has only the system directories in its own `PATH`.
   - No `verify` means no check (user, 2026-10-27). Then forwarding starts when the steps succeed, and the video input shows "unverified". The example configs must add an explicit prompt to keep the current behavior.
-- Verification model (user, 2026-10-27; it replaces ADR 0002 in part and needs a new ADR):
-  - `verify` is in the device section of the destination computer, the computer that the device switches to. The destination runs it. The route of the computer that runs the steps has no `verify`.
-  - A verifier talks with the core in JSON lines. It can show text on the switched display (`{"show":…}`) and ask for an acknowledgement of the user (`{"want":"ack"}`). The core replies `{"ack":true}` when the user acknowledges. The purpose is to make sure that a user sees the switched display (user, 2026-10-27). The verifier does not know how the user acknowledged. It replies with ok or not ok.
-  - The core decides which user actions are an acknowledgement (user, 2026-10-27). In the portal of the computer that started the handoff (through the network), if that computer has a portal: Return, or a click in the portal. Else, on the destination: Return, or a click on the prompt window. A hand back always uses the actions on the destination, also when the source requested it (user, 2026-10-27): the session already ended, and the user then uses the keyboard of the destination.
-  - The protocol has no other user input. A verifier that needs other input (for example the state of a Bluetooth keyboard) reads it itself on the destination (user, 2026-10-27).
-  - The built-in `prompt` verifier is one verifier with this protocol. It shows the prompt with the hint, asks for an acknowledgement, and replies ok. After 60 seconds with no acknowledgement, it replies not ok.
-  - A failed or timed-out verification makes the state of the device "unknown" on the destination. The device list shows "It is back" for that device. The user can press it to set the state to confirmed. This state does not depend on a session.
-- Hand back (user, 2026-10-27) is not a special flow. It is three steps: the session ends as for "Disconnect"; the target runs its own `handoff.<source>` route as a handoff with no portal and no forwarding; then the source runs its own `verify` of the device.
-- Hand back scope: one device (the device of the session). The device state model is per device, so device groups can come later.
 - A window that does not depend on the portal (a hub) is a different topic.
-- The source can also start a hand back (user, 2026-10-27). It sends a request, and the target runs its own `handoff.<source>` route. This changes the rule of `docs/config.md` that no computer gives the execution to another computer. Only the peer of an active, authenticated session can request it, and it can only cause the route back to itself. Record this in a new ADR.
-  - Triggers on the source: the portal leaves fullscreen (UI-3), and the shortcut that was the release shortcut (IN-7). Its new name is the hand back shortcut. The safety exit (IN-8) does not change: it only ends the session.
-  - If the target has no route to the source, the session ends, and the target shows a notice that the user must switch the display by hand. The target shows it, because the display shows the target. The source also adds the notice to its control window.
-  - The built-in `prompt` verifier has its own window on the switched display. It does not use the portal, because the portal can be gone.
 
 Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:
 

@@ -42,13 +42,29 @@ _Avoid_: source (this word is the session role), signal source, channel
 The operation that switches a device to a different computer, by the steps in the config.
 _Avoid_: switch (as a noun), takeover
 
-**Confirmation**:
-The key press (or click) on the source in the portal that accepts the prompt on the target after a handoff. Forwarding starts only after it.
-_Avoid_: verify (the config operation), approval
+**Destination**:
+The computer that a handoff switches a device to. It verifies the handoff.
+_Avoid_: receiver, new owner
+
+**Hand back**:
+A handoff of the device of a session back to the source: the session ends, the target runs its own route to the source, and the source verifies.
+_Avoid_: switch back, revert, rollback
+
+**Verifier**:
+The program that the destination runs after a handoff to check that the device arrived, for example that a user sees the switched display.
+_Avoid_: checker, arrival
+
+**Acknowledgement**:
+The user action (Return or a click) that answers a verifier that asks for one.
+_Avoid_: confirmation, approval
 
 **Prompt**:
-The message that the target shows on the input-target display after a handoff, with its optional hint.
+The built-in verifier: the message on the switched display, with the hint, that asks for an acknowledgement.
 _Avoid_: dialog, popup
+
+**Device state**:
+What the destination knows about a device after a handoff: confirmed, unverified, or unknown.
+_Avoid_: video input state
 
 **Hint**:
 The plain text of a computer in the config that its prompt shows, for example its copy/paste shortcuts.
@@ -61,7 +77,7 @@ The fullscreen window on the source that stands for the target. While the pointe
 _Avoid_: viewer, remote window
 
 **Session**:
-The authenticated relation between one source and one target for one device, from the confirmation to its end.
+The authenticated relation between one source and one target for one device, from the lease grant to its end.
 _Avoid_: connection (that is the transport)
 
 **Lease**:
@@ -88,9 +104,9 @@ _Avoid_: dummy window, fake focus
 The state in which the source captures, suppresses, and sends its input to the target.
 _Avoid_: streaming, sharing
 
-**Release shortcut**:
-The key combination that ends the session from the source. It is never forwarded.
-_Avoid_: release chord, hotkey
+**Hand back shortcut**:
+The key combination on the source that starts a hand back. It is never forwarded.
+_Avoid_: release shortcut, release chord, hotkey
 
 **Safety exit**:
 Escape pressed 10 times in 5 seconds. It ends suppression also when the rest of the program does not respond.

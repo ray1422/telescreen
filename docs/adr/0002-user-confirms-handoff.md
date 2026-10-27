@@ -1,8 +1,10 @@
 ---
-status: accepted
+status: superseded in part by 0009
 ---
 
 # The user confirms a handoff with a key on the source computer
+
+From v0.3.0, ADR 0009 replaces where the check runs and what shows the prompt: the destination runs its `verify`, and the prompt is the built-in `prompt` verifier. The acknowledgement in the portal of the source stays.
 
 A handoff runs an external command that switches the video input. Often the computer cannot read the video input back (see `docs/hardware.md`). Thus forwarding does not start when the handoff command completes. The receiving computer shows a prompt ("Press <key> to take control") on its input-target display. The user sees the prompt only if the display shows the receiving computer. The portal window on the source computer stays open and keeps the window focus. Thus the user presses the confirmation key on the source keyboard, and the portal receives it as a normal window key event. Only then does the source computer start to capture and forward input.
 

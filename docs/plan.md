@@ -48,10 +48,24 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M9 | `clipboard`: v0.2.0 text clipboard | The v0.2.0 conditions in spec section 2.1 pass on both directions (internal milestone, no tag) | code done (2026-10-27): core sync rules, NSPasteboard, wlr data-control; the backend starts on niri; the copy and paste test with the user did not run. CLIP-7 (concealed items with the mark, clear when the source clears) and CLIP-11 (clear at the session end and at switch off) code done (2026-10-27), automated tests pass on macOS and Linux; the user tested the copy and paste on the hardware with no failure (2026-10-27). done on the hardware |
 | M10 | `pointer-dedup`: fix of the Alt+Tab bug (docs/test-plan.md section 6). The source sends a pointer datagram only if the position changed, and always when forwarding starts or the cursor enters the portal | An acceptance test: keys with no pointer motion send no pointer datagram; Alt+Tab on niri keeps its selection | code done, the acceptance test passes on macOS and Linux; the Alt+Tab check on niri waits for the user |
 | M11 | `prompt-lost`: the prompt went away before the confirmation (user, 2026-10-27; not reproduced). One Linux to Mac session in the log ended with a heartbeat timeout after the prompt showed. The user thinks that a click out of the portal, or display sleep, can be the cause | A repro with the logs of both peers, then a decision with the user | not started |
-| M12 | `hand-back`: v0.3.0. "Hand back" on the target, FLOW-24, the change of FLOW-18, the label "Disconnect", the verification model, and the operation drivers (spec section 10). The first release: tag `v0.3.0` (ask the user first) | The open points of hand back in spec section 10 are decided; acceptance tests pass, also with three peers for FLOW-24; a third real peer (headless sway in a container on the Linux computer, stub display helper, debug protocol) passes FLOW-24 (user, 2026-10-27); the hardware test passes in both directions | design open |
+| M12 | `hand-back`: v0.3.0. "Hand back" on the target, FLOW-24, the change of FLOW-18, the label "Disconnect", the verification model, and the operation drivers (spec section 10). The first release: tag `v0.3.0` (ask the user first) | The open points of hand back in spec section 10 are decided; acceptance tests pass, also with three peers for FLOW-24; a third real peer (headless sway in a container on the Linux computer, stub display helper, debug protocol) passes FLOW-24 (user, 2026-10-27); the hardware test passes in both directions | decided in spec sections 4.5 and 4.6 (ADR 0009, ADR 0010); the config contract is open |
 | M13 | `clip-stream`: v0.4.0 separate clipboard stream (spec section 2.1). It sends images (PNG) and texts larger than 256 KiB (CLIP-6) (user, 2026-10-27) | To be specified | not started |
 | M14 | `pointer-smooth`: the pointer on the target feels slow and not smooth (user, 2026-10-27; docs/test-plan.md section 6) | The loss, the latency, and the datagram interval are measured on the hardware; a fix is decided with the user and passes the same measurement | not started |
 | M15 | `scroll-speed`: the scroll speed is adjustable (user, 2026-10-27) | To be specified with the user: where the setting is (config or control window), and on which peer | not started |
+
+### M12 steps
+
+Each step is one commit or more. Claude writes the tests first; Codex implements steps c to f.
+
+| Step | Content | Status |
+| --- | --- | --- |
+| a | Spec sections 4.5 and 4.6, ADR 0009, ADR 0010, the glossary | done |
+| b | The config contract: `docs/config.md`, the schema, the validator, the contract tests, the Rust config parser, and the example configs, in one change | open points to ask the user |
+| c | The driver runtime: `exec`, `command`, the search path | not started |
+| d | The verifier runtime (JSON lines, `prompt`) and the device state on the destination | not started |
+| e | Hand back on the wire and in the flows (HB-1 to HB-5, FLOW-17, FLOW-24) | not started |
+| f | The status icons (UI-4): macOS `NSStatusItem`, Linux StatusNotifierItem | not started |
+| g | The third peer for FLOW-24 (headless sway in a container) | not started |
 
 ## Not scheduled
 
