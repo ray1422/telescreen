@@ -106,3 +106,9 @@ Repeat the table of part 3 with the roles reversed: the portal on Linux (a fulls
   - The Linux injector sends each datagram as `motion_absolute` of the virtual pointer. Nothing removes a duplicate position, so niri gets a pointer motion for each key.
   - Proposed fix: the source controller sends a pointer datagram only if the position changed. It always sends one when forwarding starts and when the cursor enters the portal. The pointer channel is not reliable: if the last datagram is lost, the target pointer stays at the old position until the next motion.
 - Not reproduced: once, the prompt went away before the confirmation. The user thinks that a click out of the portal, or display sleep, can be the cause. In the Mac log, one Linux to Mac session ended with "heartbeat timeout" after the prompt showed. A disconnect ends the session, and then the prompt goes away (FLOW-16). The cause is not known. See milestone M11 in `docs/plan.md`.
+
+### 2026-10-27, text clipboard (protocol 4), Mac and Linux, niri
+
+- Pass (user report): the text clipboard works. The user did not report a failure in the copy and paste steps of AC-30 to AC-35.
+- Open (user report): the pointer on the target feels slow and not smooth. The user thinks that many pointer datagrams are lost. Not measured: the loss rate and the latency are not known. First measure the loss, the latency (p50, p95, p99), and the interval between datagrams on both peers. Then decide a fix. One candidate is prediction of the pointer position from its recent motion. See milestone M14 in `docs/plan.md`.
+- Open (user request): the scroll speed must be adjustable. See milestone M15 in `docs/plan.md`.
