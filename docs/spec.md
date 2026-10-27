@@ -16,6 +16,8 @@ Example setup: a MacBook with a built-in display and an external display. A Linu
 
 Versions follow Semantic Versioning. There is no stable release, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version.
 
+v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user, 2026-10-27). The first release is v0.3.0.
+
 | Version | Content |
 | --- | --- |
 | v0.1.0 | Display handoff, confirmation prompt with the hint, and keyboard and mouse forwarding, in both directions: macOS to Linux, and Linux to macOS. |
@@ -230,7 +232,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Verification model (user, 2026-10-27; it replaces ADR 0002 in part and needs a new ADR):
   - `verify` is in the device section of the destination computer, the computer that the device switches to. The destination runs it. The route of the computer that runs the steps has no `verify`.
   - A verifier talks with the core in JSON lines. It can show text on the switched display (`{"show":…}`) and ask for an acknowledgement of the user (`{"want":"ack"}`). The core replies `{"ack":true}` when the user acknowledges. The purpose is to make sure that a user sees the switched display (user, 2026-10-27). The verifier does not know how the user acknowledged. It replies with ok or not ok.
-  - The core decides which user actions are an acknowledgement (user, 2026-10-27). In the portal of the computer that started the handoff (through the network), if that computer has a portal: Return, or a click in the portal. Else, on the destination: Return, or a click on the prompt window.
+  - The core decides which user actions are an acknowledgement (user, 2026-10-27). In the portal of the computer that started the handoff (through the network), if that computer has a portal: Return, or a click in the portal. Else, on the destination: Return, or a click on the prompt window. A hand back always uses the actions on the destination, also when the source requested it (user, 2026-10-27): the session already ended, and the user then uses the keyboard of the destination.
   - The protocol has no other user input. A verifier that needs other input (for example the state of a Bluetooth keyboard) reads it itself on the destination (user, 2026-10-27).
   - The built-in `prompt` verifier is one verifier with this protocol. It shows the prompt with the hint, asks for an acknowledgement, and replies ok. After 60 seconds with no acknowledgement, it replies not ok.
   - A failed or timed-out verification makes the state of the device "unknown" on the destination. The device list shows "It is back" for that device. The user can press it to set the state to confirmed. This state does not depend on a session.
