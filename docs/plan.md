@@ -53,6 +53,13 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M14 | `pointer-smooth`: the pointer on the target feels slow and not smooth (user, 2026-10-27; docs/test-plan.md section 6) | The loss, the latency, and the datagram interval are measured on the hardware; a fix is decided with the user and passes the same measurement | not started |
 | M15 | `scroll-speed`: the scroll speed is adjustable (user, 2026-10-27) | To be specified with the user: where the setting is (config or control window), and on which peer | not started |
 
+## Not scheduled
+
+The user plans a new design of the UI later (user, 2026-10-27). Pure UI changes and the pairing are not scheduled until then:
+
+- The heading of the control window: "This computer: <label>", so that it does not look like an option.
+- A pairing UI. Until then, pairing stays manual with `telescreen trust` (ADR 0004).
+
 ## Rules for each milestone
 
 - Write the acceptance tests first, with spec IDs in the test names or comments.
