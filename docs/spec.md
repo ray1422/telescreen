@@ -202,3 +202,12 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Which special shortcuts to support beyond IN-5, and the per-platform list of shortcuts that cannot be captured.
 - The effect of Wi-Fi delay spikes (spike 4: p99 about 85 ms) on the pointer in real use. Measure it in the product.
 - Minimum OS versions for each package. macOS: 27.0 for v0.1.0, the only tested version (user, 2026-10-27). Linux: open.
+
+The implementation made these decisions without the user (Claude, 2026-10-27). The user must confirm or change each one:
+
+- Tentative items in the requirements: CLIP-3, CLIP-6, CLIP-7, UI-3, UI-6 (shortcut inhibit), and the `NoFocusHold` refusal in UI-7.
+- The end reason of "Stop this session" on the target (FLOW-17) is `TargetStopped`, with the text "the target stopped the session". It is different from `TargetDisconnected` ("disconnected on the target", AC-18), because the two tests need different texts.
+- "Control from here" (FLOW-17) needs a device match for the display. If no device matches, the target shows a notice and does not start a handoff.
+- CLIP-8: v0.2.0 uses only `zwlr-data-control-unstable-v1`. `ext-data-control-v1` needs a staging feature of `wayland-protocols` and can come later.
+- The Linux clipboard backend reads an offer for at most 1 second. A text larger than 256 KiB is cut to its longest valid UTF-8 prefix, so that the core rejects it as too large (CLIP-6).
+- The controller does not read the clipboard while the switch is off or while no session can sync (CLIP-2). The Linux data-control thread still receives the data of each copy in the background. To stop this, the `Clipboard` trait needs a call that starts and stops the reads. Open: do this or not.
