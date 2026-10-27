@@ -72,7 +72,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **FLOW-16** These events end the session: the release shortcut, the safety exit, a disconnect (heartbeat timeout or a closed connection), "Stop this session" on the target, "Control from here" on the target (FLOW-17), lease expiry, removal of the portal display, and revocation of a permission. Then the source stops suppression and restores the key state. The target releases all held keys and buttons. If the video input is not confirmed, show it as unknown. Do not claim an automatic recovery.
 - **FLOW-17** The target shows "Controlled by <source label>" with two actions (user, 2026-10-27): "Stop this session" ends the session. "Control from here" ends the session, then starts a session in the other direction, with this computer as the source: a new connection that replaces the old one.
 - **FLOW-18** A session end does not switch the video input back. A switch back needs an explicit handoff route. The user should be able to start the switch back from a display of the source that the handoff does not change (for example the built-in display).
-- **FLOW-24** When a computer grants a session as the target, it closes its own portal on the input-target display of that session (user, 2026-10-27). Then the display does not show two portals, and the user knows which computer is the target. Portals on other displays stay open. Open: what happens if that portal is in a session as a source at that time (section 10).
+- **FLOW-24** When a computer grants a session as the target, it closes its own portal on the input-target display of that session (user, 2026-10-27). Then the display does not show two portals, and the user knows which computer is the target. Portals on other displays stay open. If that portal is in a session as a source at that time, see section 10.
 - **FLOW-19** If the portal display disappears from the source, stop forwarding and restore the UI. Do not continue to suppress input in a window that moved to a different display.
 
 ### 4.4 Text clipboard (v0.2.0)
@@ -203,7 +203,11 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Which special shortcuts to support beyond IN-5, and the per-platform list of shortcuts that cannot be captured.
 - The effect of Wi-Fi delay spikes (spike 4: p99 about 85 ms) on the pointer in real use. Measure it in the product.
 - Minimum OS versions for each package. macOS: 27.0 for v0.1.0, the only tested version (user, 2026-10-27). Linux: open.
-- FLOW-24 conflict: the portal on the input-target display is in a session as a source when a new session request comes. Proposal: end the old session as for "Control from here", then grant the new one. Alternative: refuse the request. The user will decide.
+- FLOW-24 conflict: computer A has a portal on display D, and the portal is in a session as the source to computer B. Then computer C requests a session to A on D. Decided (user, 2026-10-27): no nested forwarding (C to A to B). The user's proposal, to confirm:
+  - If C has a route to B on the same device, C's portal asks the user: connect to B directly, or end the session A to B (hand back to A) and then connect to A.
+  - If C has no such route, only the second choice is available.
+  - With two computers, C is B. Then the request has the same result as "Control from here" (FLOW-17): the old session ends, and the new session starts.
+  - This needs three computers to test (AC-20).
 - Hand back (user, 2026-10-27). These points are decided:
   - The name is "Hand back". It reverses each device that the session handed off.
   - The target runs its own `handoff.<source>` route. If the target has no such route, the action is not available.
