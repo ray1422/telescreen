@@ -95,3 +95,13 @@ Repeat the table of part 3 with the roles reversed: the portal on Linux (a fulls
 - AC-24: needs a USB switch. Not possible with this hardware.
 - AC-25: install the app from a downloaded dmg (with `com.apple.quarantine`), drag it to Applications, and start it. Expected: macOS shows the Local Network prompt, and after the user allows it, the connection works. A local build does not test this path (ADR 0008).
 - Performance (spec section 9): not measured in v0.1.0 yet.
+
+## 6. Results
+
+### 2026-10-27, Mac to Linux, niri
+
+- Not tested: the release shortcut (3.11). The user skipped it.
+- Fail (open bug): Alt+Tab on niri while forwarding. The niri window switcher selects the window under the pointer, although the user did not move the mouse.
+  - Cause: the macOS capture reports the cursor position on each event, also on key events (`telescreen-platform-macos/src/capture.rs`, `handle`). While forwarding, each key thus sends a pointer datagram with the same position.
+  - The Linux injector sends each datagram as `motion_absolute` of the virtual pointer. Nothing removes a duplicate position, so niri gets a pointer motion for each key.
+  - Proposed fix: the source controller sends a pointer datagram only if the position changed. It always sends one when forwarding starts and when the cursor enters the portal. The pointer channel is not reliable: if the last datagram is lost, the target pointer stays at the old position until the next motion.
