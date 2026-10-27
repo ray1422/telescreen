@@ -20,7 +20,7 @@ Versions follow Semantic Versioning. There is no stable release, so all versions
 | --- | --- |
 | v0.1.0 | Display handoff, confirmation prompt with the hint, and keyboard and mouse forwarding, in both directions: macOS to Linux, and Linux to macOS. |
 | v0.2.0 | Opt-in text clipboard sync. It syncs only in an active, authenticated session, with no loops between the peers, and it sends nothing after the user disables it or after a disconnect. |
-| v0.3.0 | Hand back (spec section 10) and FLOW-24. |
+| v0.3.0 | Hand back, FLOW-24, the verification model, and the operation drivers (section 10; user, 2026-10-27). Until v0.3.0, FLOW-6, FLOW-8, FLOW-10, FLOW-21, UI-5, and ADR 0002 apply as written. v0.3.0 changes them to the verification model. |
 | v0.4.0 (candidate) | Separate clipboard stream: image clipboard (PNG) and texts larger than 256 KiB (CLIP-6). An image is sent only when the other peer pastes, with a "Pasting from <label>…" overlay. |
 
 ### 2.2 Not part of v0.1.0
