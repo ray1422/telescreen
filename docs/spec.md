@@ -111,7 +111,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 
 - **UI-1** The portal is borderless and covers its display. On macOS it is a native fullscreen Space, above the menu bar level (window level 26), so the menu bar and the title bar do not show at the top edge (ADR 0003, spike 1).
 - **UI-2** While the portal has the focus, it allows only Roman input sources, and macOS restores the previous input source after it (spike 1).
-- **UI-3** If the portal leaves fullscreen (for example a drag in Mission Control), detect it and end the session (there is no pause state, FLOW-14). Tentative (proposed by Claude, not confirmed by the user): enter fullscreen again.
+- **UI-3** If the portal leaves fullscreen (for example a drag in Mission Control), detect it. Then the source starts a hand back (user, 2026-10-27; section 10). There is no pause state (FLOW-14).
 - **UI-4** The portal shows the candidate targets, the state of the session (waiting for confirmation, forwarding, ended), and the video input state (confirmed, unverified, unknown).
 - **UI-5** The prompt on the target is an overlay on the input-target display. On Linux use layer-shell where the compositor has it; else a normal fullscreen window.
 - **UI-6** On Linux as the source, the portal is a fullscreen window. While forwarding, it inhibits compositor shortcuts (ADR 0006). It does not lock the pointer (FLOW-20). The keyboard focus is the native focus of the portal window (FLOW-22). When the portal loses it, the source sends `KeyboardAway` and applies IN-13. The shortcut inhibit is tentative (proposed by Claude; the user asked about portability and did not reject it).
@@ -231,6 +231,10 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Hand back (user, 2026-10-27) is not a special flow. It is three steps: the session ends as for "Disconnect"; the target runs its own `handoff.<source>` route as a handoff with no portal and no forwarding; then the source runs its own `verify` of the device.
 - Hand back scope: one device (the device of the session). The device state model is per device, so device groups can come later.
 - A window that does not depend on the portal (a hub) is a different topic.
+- The source can also start a hand back (user, 2026-10-27). It sends a request, and the target runs its own `handoff.<source>` route. This changes the rule of `docs/config.md` that no computer gives the execution to another computer. Only the peer of an active, authenticated session can request it, and it can only cause the route back to itself. Record this in a new ADR.
+  - Triggers on the source: the portal leaves fullscreen (UI-3), and the shortcut that was the release shortcut (IN-7). Its new name is the hand back shortcut. The safety exit (IN-8) does not change: it only ends the session.
+  - If the target has no route to the source, the session ends, and the target shows a notice that the user must switch the display by hand. The target shows it, because the display shows the target. The source also adds the notice to its control window.
+  - The built-in `prompt` verifier has its own window on the switched display. It does not use the portal, because the portal can be gone.
 
 The implementation made these decisions without the user (Claude, 2026-10-27). The user must confirm or change each one:
 
