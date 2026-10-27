@@ -211,7 +211,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Hand back (user, 2026-10-27). These points are decided:
   - The name is "Hand back". It reverses each device that the session handed off.
   - The target runs its own `handoff.<source>` route. If the target has no such route, the action is not available.
-  - After the switch, the source shows a prompt in its portal, and the user confirms with a key on the source.
+  - After the switch, the source runs its own `verify` of the device (see the verification model below).
   - The target row shows three actions: "Hand back" (the main action), "Control from here", and "Disconnect". "Disconnect" is the new label of "Stop this session". The end reason stays `TargetStopped`.
   - The action is only on the target. In normal use, no window of the source is visible while the display shows the target. FLOW-18 must change: its last sentence assumes such a window.
 - Operation drivers (user, 2026-10-27; to apply to `docs/config.md`, the schema, the validator, and the contract tests):
@@ -222,11 +222,15 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
   - `open` on macOS starts an app through Launch Services and returns at once. The output of the app does not come back. Use the executable in the app bundle, or `open --stdout`.
   - Open: how a program name with no path is found. An app that macOS starts from Finder or `open` has only the system directories in `PATH`.
   - No `verify` means no check (user, 2026-10-27). Then forwarding starts when the steps succeed, and the video input shows "unverified". The example configs must add an explicit prompt to keep the current behavior.
-- Hand back, open points:
-  - Scope: v0.3.0 (Claude keeps the version numbers; the user names milestones, 2026-10-27).
-  - A session hands off exactly one device now. More devices in one session need a state for each device. On a partial failure, the user's proposal is: the session stays open, the failed devices show "unknown", and the user can mark a device as back on the source.
-  - The confirmation can become a kind of `verify` (proposal: `verify: prompt`, "show on the computer that now has the device, press the key on the computer that has the keyboard").
-  - The window model: the source has a control window and a separate portal window. A future window that does not depend on the portal (a hub) is a different topic.
+- Verification model (user, 2026-10-27; it replaces ADR 0002 in part and needs a new ADR):
+  - `verify` is in the device section of the destination computer, the computer that the device switches to. The destination runs it. The route of the computer that runs the steps has no `verify`.
+  - A verifier talks with the core in JSON lines. It can show text on the switched display and ask for one key of the user. The core sends the key to it. The verifier does not know where the key came from. It replies with ok or not ok.
+  - The key comes from the portal of the computer that started the handoff, through the network, if that computer has a portal. Else it comes from the local keyboard of the destination.
+  - The built-in `prompt` verifier is one verifier with this protocol. It shows the prompt with the hint, asks for Return, and replies ok. After 60 seconds with no key, it replies not ok.
+  - A failed or timed-out verification makes the state of the device "unknown" on the destination. The device list shows "It is back" for that device. The user can press it to set the state to confirmed. This state does not depend on a session.
+- Hand back (user, 2026-10-27) is not a special flow. It is three steps: the session ends as for "Disconnect"; the target runs its own `handoff.<source>` route as a handoff with no portal and no forwarding; then the source runs its own `verify` of the device.
+- Hand back scope: one device (the device of the session). The device state model is per device, so device groups can come later.
+- A window that does not depend on the portal (a hub) is a different topic.
 
 The implementation made these decisions without the user (Claude, 2026-10-27). The user must confirm or change each one:
 
