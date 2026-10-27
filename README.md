@@ -2,7 +2,11 @@
 
 Telescreen coordinates device switching and keyboard/mouse forwarding through a portal window. It is for environments that have more than one computer and physical connections.
 
-Status: v0.1.0 is in development. The code builds and the automated tests pass. The hardware acceptance tests (`docs/spec.md` section 9) did not run yet, so no platform is supported yet (section 8.2).
+Status: in development. There is no release yet. The first release is v0.3.0 (`docs/spec.md` section 2.1).
+
+- The code of the internal milestones v0.1.0 (handoff and keyboard and mouse forwarding, macOS and Linux in both directions) and v0.2.0 (text clipboard) is complete. The automated tests pass on macOS and on Linux (niri).
+- Hardware tests on one Mac and one Linux computer with niri: a session reaches forwarding in both directions, and the text clipboard tests pass. The acceptance tests of `docs/spec.md` section 9 did not all run, and one bug is open (`docs/test-plan.md` section 6). Thus no platform is supported yet (section 8.2).
+- In progress for v0.3.0: hand back, the verification model, and the operation drivers (`docs/plan.md`).
 
 - [Specification and acceptance criteria](docs/spec.md)
 - [Glossary](GLOSSARY.md)
