@@ -217,7 +217,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Minimum OS versions for each package. macOS: 27.0 for v0.1.0, the only tested version (user, 2026-10-27). Linux: open.
 - Hand back (user, 2026-10-27). These points are decided:
   - The name is "Hand back". It reverses each device that the session handed off.
-  - The target runs its own `handoff.<source>` route. If the target has no such route, the action is not available.
+  - The target runs its own `handoff.<source>` route. If the target has no such route, the action is not available. The button stays in its place, is disabled, and shows the cause, for example "No route back to <source> in this config" (user, 2026-10-27).
   - After the switch, the source runs its own `verify` of the device (see the verification model below).
   - The target row shows three actions: "Hand back" (the main action), "Control from here", and "Disconnect". "Disconnect" is the new label of "Stop this session". The end reason stays `TargetStopped`.
   - The action is only on the target. In normal use, no window of the source is visible while the display shows the target. FLOW-18 must change: its last sentence assumes such a window.
