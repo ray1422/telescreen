@@ -214,6 +214,14 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
   - After the switch, the source shows a prompt in its portal, and the user confirms with a key on the source.
   - The target row shows three actions: "Hand back" (the main action), "Control from here", and "Disconnect". "Disconnect" is the new label of "Stop this session". The end reason stays `TargetStopped`.
   - The action is only on the target. In normal use, no window of the source is visible while the display shows the target. FLOW-18 must change: its last sentence assumes such a window.
+- Operation drivers (user, 2026-10-27; to apply to `docs/config.md`, the schema, the validator, and the contract tests):
+  - A driver defines how Telescreen reads the result of a program. It does not define which program runs. The user writes the whole command, also the program.
+  - `command` is a string or a list, as in Docker Compose. A string is split by shell rules, but no shell runs it. A list is used as it is. For a pipe or other shell features, write the shell explicitly, for example `[/bin/sh, -c, "a | b"]`.
+  - Steps run in order and stop at the first error (as now).
+  - Drivers: `exec` (exit code 0 is success or true), `command` (protocol 1, JSON), and drivers for the output format of one tool, for example `betterDisplay` (JSON on stdout) and `ddcutil` (text). A tool driver can compare a value with `expect`.
+  - `open` on macOS starts an app through Launch Services and returns at once. The output of the app does not come back. Use the executable in the app bundle, or `open --stdout`.
+  - Open: how a program name with no path is found. An app that macOS starts from Finder or `open` has only the system directories in `PATH`.
+  - No `verify` means no check (user, 2026-10-27). Then forwarding starts when the steps succeed, and the video input shows "unverified". The example configs must add an explicit prompt to keep the current behavior.
 - Hand back, open points:
   - Scope: v0.3.0 (Claude keeps the version numbers; the user names milestones, 2026-10-27).
   - A session hands off exactly one device now. More devices in one session need a state for each device. On a partial failure, the user's proposal is: the session stays open, the failed devices show "unknown", and the user can mark a device as back on the source.
