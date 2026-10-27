@@ -8,6 +8,8 @@ Status: in development. There is no release yet. The first release is v0.3.0 (`d
 - Hardware tests on one Mac and one Linux computer with niri: a session reaches forwarding in both directions, and the text clipboard tests pass. The acceptance tests of `docs/spec.md` section 9 did not all run, and one bug is open (`docs/test-plan.md` section 6). Thus no platform is supported yet (section 8.2).
 - In progress for v0.3.0: hand back, the verification model, and the operation drivers (`docs/plan.md`).
 
+Documents:
+
 - [Specification and acceptance criteria](docs/spec.md)
 - [Glossary](GLOSSARY.md)
 - [Decisions](docs/adr/)
