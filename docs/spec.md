@@ -20,7 +20,8 @@ Versions follow Semantic Versioning. There is no stable release, so all versions
 | --- | --- |
 | v0.1.0 | Display handoff, confirmation prompt with the hint, and keyboard and mouse forwarding, in both directions: macOS to Linux, and Linux to macOS. |
 | v0.2.0 | Opt-in text clipboard sync. It syncs only in an active, authenticated session, with no loops between the peers, and it sends nothing after the user disables it or after a disconnect. |
-| v0.3.0 (candidate) | Image clipboard (PNG), sent only when the other peer pastes, with a "Pasting from <label>…" overlay. |
+| v0.3.0 | Hand back (spec section 10) and FLOW-24. |
+| v0.4.0 (candidate) | Image clipboard (PNG), sent only when the other peer pastes, with a "Pasting from <label>…" overlay. |
 
 ### 2.2 Not part of v0.1.0
 
@@ -215,7 +216,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
   - The target row shows three actions: "Hand back" (the main action), "Control from here", and "Disconnect". "Disconnect" is the new label of "Stop this session". The end reason stays `TargetStopped`.
   - The action is only on the target. In normal use, no window of the source is visible while the display shows the target. FLOW-18 must change: its last sentence assumes such a window.
 - Hand back, open points:
-  - Scope: v0.1.0 or a later version.
+  - Scope: v0.3.0 (Claude keeps the version numbers; the user names milestones, 2026-10-27).
   - A session hands off exactly one device now. More devices in one session need a state for each device. On a partial failure, the user's proposal is: the session stays open, the failed devices show "unknown", and the user can mark a device as back on the source.
   - The confirmation can become a kind of `verify` (proposal: `verify: prompt`, "show on the computer that now has the device, press the key on the computer that has the keyboard").
   - The window model: the source has a control window and a separate portal window. A future window that does not depend on the portal (a hub) is a different topic.
