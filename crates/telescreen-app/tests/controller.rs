@@ -2242,3 +2242,64 @@ fn flow24_a_portal_on_another_display_stays_open() {
     assert!(w.mac.controller.has_portal());
     assert_eq!(w.mac.controller.control_screen().incoming.len(), 1);
 }
+
+#[test]
+fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
+    let mut w = World::new();
+    let pc1 = ComputerId::from("pc1");
+    let dials = |w: &World| {
+        w.mac
+            .log
+            .borrow()
+            .net
+            .iter()
+            .filter(|c| matches!(c, NetCommand::Dial { .. }))
+            .count()
+    };
+    w.open_portal();
+    let candidate = |w: &World| {
+        let screen = w.mac.controller.portal_screen().unwrap();
+        (screen.candidates[0].unavailable.clone(), screen.can_refresh)
+    };
+    assert_eq!(candidate(&w), (None, false), "connected");
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(dials(&w), 0, "a connected candidate needs no dial");
+
+    w.mac.controller.on_net(
+        NetEvent::Disconnected {
+            peer: pc1.clone(),
+            reason: "test".into(),
+        },
+        w.now,
+    );
+    assert_eq!(candidate(&w), (Some("offline".into()), true));
+    assert_eq!(dials(&w), 0, "no automatic dial");
+
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(dials(&w), 1);
+    assert_eq!(candidate(&w), (Some("connecting".into()), false));
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(dials(&w), 1, "one dial at a time");
+
+    w.mac.controller.on_net(
+        NetEvent::DialFailed {
+            peer: pc1.clone(),
+            reason: "test".into(),
+        },
+        w.now,
+    );
+    assert_eq!(candidate(&w), (Some("offline".into()), true));
+    w.mac.log.borrow_mut().net.clear();
+
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(dials(&w), 1, "the user can try again");
+    w.pump();
+    assert_eq!(candidate(&w), (None, false));
+}
+
+#[test]
+fn net10_refresh_without_a_portal_does_not_dial() {
+    let mut w = World::new();
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert!(w.mac.log.borrow().net.is_empty());
+}

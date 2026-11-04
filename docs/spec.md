@@ -171,6 +171,7 @@ ADR 0009. The **destination** is the computer that a handoff switches the device
   - Each interval, the delay variation, and the handling delay give p50, p95, p99, and the maximum (nearest rank).
   - Each series keeps its newest 65536 samples. The counts are for the whole session. The memory of the statistics does not grow with the session time.
   - The target writes a summary to the log when the session ends. The debug protocol returns the summary of the current session, else of the last session.
+- **NET-10** A dial that fails does not retry automatically. The portal shows a candidate with no connection as "offline", and the candidate with a running dial as "connecting". While a candidate is offline, the portal shows a "Refresh" button. The button dials each offline candidate one time. It does not run `portal-match` again, and it does not start a handoff (user, 2026-11-05).
 
 ## 8. Platforms
 
@@ -254,6 +255,7 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-39 | The device of the target has no `verify` | Forwarding starts after the steps. The device state is unverified (VER-2) |
 | AC-40 | The verification fails or times out | The device state is unknown on the destination. "It is back" sets it to confirmed (VER-6) |
 | AC-41 | Three peers: A has a portal on display D and a session to C. The user switches D to B by hand, then requests a session to A from B | A closes its portal on D. The session A to C ends. A shows "Session ended: <B> took this display" (FLOW-24) |
+| AC-42 | A candidate is offline, and the user selects "Refresh" | One dial starts. The candidate shows "connecting". A second "Refresh" does not start a second dial. A failed dial shows "offline" and the button again. A connected candidate becomes available (NET-10) |
 
 Performance: measure p50, p95, and p99 of capture to injection, event loss, and idle CPU/GPU. A network latency number must state how it was measured (round trip on one clock, or the clock synchronization method). There is no hard threshold yet.
 

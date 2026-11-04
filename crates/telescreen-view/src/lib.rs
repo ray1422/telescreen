@@ -60,6 +60,8 @@ pub struct PortalScreen {
     pub display: String,
     pub matching: Matching,
     pub candidates: Vec<CandidateRow>,
+    /// True if a candidate is offline and no dial to it runs (NET-10).
+    pub can_refresh: bool,
     pub session: Option<SessionRow>,
     pub notice: Option<String>,
 }
@@ -183,6 +185,8 @@ pub enum Intent {
     /// Open the portal on the display of the control window (user, 2026-10-27).
     OpenPortal,
     ClosePortal,
+    /// Dial each offline candidate of the portal again (NET-10).
+    Refresh,
     SelectDevice {
         alias: String,
     },

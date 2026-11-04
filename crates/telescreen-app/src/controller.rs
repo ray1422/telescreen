@@ -228,6 +228,8 @@ pub struct Controller {
     portal_window_request: Option<DisplayToken>,
     next_portal: u64,
     connected: BTreeSet<ComputerId>,
+    /// The peers with a dial that did not report a result (NET-10).
+    dialing: BTreeSet<ComputerId>,
     leases: LeaseTable,
     incoming: BTreeMap<SessionId, TargetSession>,
     incoming_pointer_stats: BTreeMap<SessionId, PointerStats>,
@@ -309,6 +311,7 @@ impl Controller {
             portal_window_request: None,
             next_portal: 1,
             connected: BTreeSet::new(),
+            dialing: BTreeSet::new(),
             leases: LeaseTable::new(first_generation),
             incoming: BTreeMap::new(),
             incoming_pointer_stats: BTreeMap::new(),
@@ -634,7 +637,7 @@ impl Controller {
             })
             .collect();
         for (peer, endpoint) in targets {
-            if !self.connected.contains(&peer) {
+            if !self.connected.contains(&peer) && self.dialing.insert(peer.clone()) {
                 self.ports.net.send(NetCommand::Dial { peer, endpoint });
             }
         }
@@ -739,7 +742,13 @@ impl Controller {
         if let Capability::Missing(reason) = &self.ports.capabilities.suppress {
             return Some(format!("input suppress: {reason}"));
         }
-        (!self.connected.contains(target)).then(|| "offline".into())
+        if self.connected.contains(target) {
+            None
+        } else if self.dialing.contains(target) {
+            Some("connecting".into())
+        } else {
+            Some("offline".into())
+        }
     }
 
     /// Ends the unfinished session of the portal if it uses this device.
@@ -1185,6 +1194,7 @@ impl Controller {
     pub fn on_net(&mut self, event: NetEvent, now: Instant) {
         match event {
             NetEvent::Connected { peer } => {
+                self.dialing.remove(&peer);
                 self.connected.insert(peer);
             }
             NetEvent::Disconnected { peer, reason } => {
@@ -1193,6 +1203,7 @@ impl Controller {
                 self.notice(format!("{} disconnected: {reason}", self.label_of(&peer)));
             }
             NetEvent::DialFailed { peer, reason } => {
+                self.dialing.remove(&peer);
                 self.notice(format!(
                     "Cannot connect to {}: {reason}",
                     self.label_of(&peer)
@@ -2247,6 +2258,7 @@ impl Controller {
                 // The window layer opens and closes the portal window, then calls
                 // `open_portal` or `close_portal`.
             }
+            Intent::Refresh => self.dial_candidates(),
             Intent::SelectDevice { alias } => {
                 if let Some(portal) = self.portal.as_mut()
                     && let Matching::Ambiguous(choices) = &portal.matching
@@ -2400,19 +2412,21 @@ impl Controller {
     pub fn portal_screen(&self) -> Option<PortalScreen> {
         let portal = self.portal.as_ref()?;
         let device = self.portal_device();
-        let candidates = device
+        let routes = device
             .as_ref()
-            .map(|device| {
-                routes::candidates(&self.config, device)
-                    .into_iter()
-                    .map(|route| CandidateRow {
-                        target: route.target.clone(),
-                        label: self.label_of(route.target),
-                        unavailable: self.candidate_unavailable(route.target),
-                    })
-                    .collect()
-            })
+            .map(|device| routes::candidates(&self.config, device))
             .unwrap_or_default();
+        let can_refresh = routes
+            .iter()
+            .any(|r| !self.connected.contains(r.target) && !self.dialing.contains(r.target));
+        let candidates = routes
+            .into_iter()
+            .map(|route| CandidateRow {
+                target: route.target.clone(),
+                label: self.label_of(route.target),
+                unavailable: self.candidate_unavailable(route.target),
+            })
+            .collect();
         let session = portal.session.as_ref().map(|s| SessionRow {
             target: self.label_of(s.target()),
             phase: self.phase_view(s),
@@ -2422,6 +2436,7 @@ impl Controller {
             display: display_name(&portal.display),
             matching: portal.matching.clone(),
             candidates,
+            can_refresh,
             session,
             notice: portal.notice.clone(),
         })
