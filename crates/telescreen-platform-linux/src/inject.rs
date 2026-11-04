@@ -7,7 +7,8 @@
 //! - The wlroots virtual pointer, if the compositor has it (niri). Absolute motion
 //!   is on the input-target output, so the pointer cannot leave that output (IN-11).
 //! - Else a uinput absolute pointer (KWin). The compositor maps its range to all
-//!   outputs together, so this backend computes the position in that area.
+//!   outputs together, so this backend computes the position in that area. Its
+//!   scroll uses [`ButtonScroll`] on KWin, and the wheel on other compositors.
 
 use std::time::Instant;
 
@@ -26,6 +27,7 @@ use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
 };
 
+use crate::button_scroll::ButtonScroll;
 use crate::wl::{Globals, ignore_events};
 
 ignore_events!(ZwlrVirtualPointerManagerV1, ZwlrVirtualPointerV1);
@@ -51,6 +53,8 @@ enum PointerBackend {
         output: Option<String>,
         /// The wheel units that the last scrolls did not inject (IN-14).
         rest: (f32, f32),
+        /// `None` if the quirk is off (IN-16).
+        button_scroll: Option<ButtonScroll>,
     },
 }
 
@@ -77,7 +81,7 @@ fn failed(e: impl std::fmt::Display) -> PlatformError {
 }
 
 impl LinuxInjector {
-    pub fn new() -> Result<Self, PlatformError> {
+    pub fn new(use_button_scroll: bool) -> Result<Self, PlatformError> {
         let globals = Globals::connect().map_err(PlatformError::Failed)?;
         let backend = match globals.list.bind(&globals.handle(), 1..=2, ()) {
             Ok(manager) => PointerBackend::Virtual {
@@ -89,6 +93,10 @@ impl LinuxInjector {
                     .map_err(|e| PlatformError::Permission(format!("/dev/uinput: {e}")))?,
                 output: None,
                 rest: (0.0, 0.0),
+                button_scroll: use_button_scroll
+                    .then(ButtonScroll::new)
+                    .transpose()
+                    .map_err(|e| PlatformError::Permission(format!("/dev/uinput: {e}")))?,
             },
         };
         // All key codes, so that each forwarded key exists on the device.
@@ -175,7 +183,17 @@ impl LinuxInjector {
                 pointer.frame();
                 self.flush()
             }
-            PointerBackend::Uinput { device, rest, .. } => {
+            PointerBackend::Uinput {
+                device,
+                rest,
+                button_scroll,
+                ..
+            } => {
+                if let Some(button_scroll) = button_scroll
+                    && button_scroll.scroll(dx, dy).map_err(failed)?
+                {
+                    return Ok(());
+                }
                 // evdev: a positive vertical wheel value scrolls up. The wire is the
                 // opposite. A positive horizontal value scrolls right, as on the wire.
                 let vertical = whole_units(-dy * WHEEL_UNITS_PER_PIXEL, &mut rest.1);
@@ -257,7 +275,16 @@ impl Injector for LinuxInjector {
                     (),
                 ));
             }
-            PointerBackend::Uinput { output, .. } => *output = Some(display.token.0.clone()),
+            PointerBackend::Uinput {
+                output,
+                button_scroll,
+                ..
+            } => {
+                *output = Some(display.token.0.clone());
+                if let Some(button_scroll) = button_scroll {
+                    button_scroll.start_session().map_err(failed)?;
+                }
+            }
         }
         self.flush()
     }
@@ -280,7 +307,15 @@ impl Injector for LinuxInjector {
                 pointer.frame();
                 self.flush()
             }
-            PointerBackend::Uinput { device, output, .. } => {
+            PointerBackend::Uinput {
+                device,
+                output,
+                button_scroll,
+                ..
+            } => {
+                if let Some(button_scroll) = button_scroll {
+                    button_scroll.poll().map_err(failed)?;
+                }
                 let bounds = output
                     .as_deref()
                     .and_then(|name| self.globals.state.bounds(name));

@@ -68,3 +68,21 @@ Release checks (not done; do them before a release):
 - Always put `NSLocalNetworkUsageDescription` in the app `Info.plist`.
 
 Known from a different project of the user (not-enough-tokens, an ad-hoc signed Electron app installed from a dmg): the installed app never got the Local Network prompt, it was not listed in System Settings, and LAN connections failed with "No route to host". This is different from the local build above, which got the prompt. The fix in that project: start the network process through a small helper that calls the private `responsibility_spawnattrs_setdisclaim` (weak-linked) with `POSIX_SPAWN_SETEXEC`. Then the network process is its own responsible process, and macOS does not apply Local Network privacy to command-line tools. That project also installs with `curl | sh`, because files from `curl` do not get `com.apple.quarantine`. Note: the disclaimed process there is `/usr/bin/ssh`, a system command-line tool. This result does not apply to an executable in the Telescreen app bundle (ADR 0008).
+
+## Spike 5: wheel scroll and button scroll in Chrome on KWin (2026-11-05, KWin 6.8.2, libinput 1.32.0, Chrome 156 on Wayland)
+
+Code: `spikes/scroll-source/probe.py`. A script on the target makes the uinput devices and sends one fixed pattern. A page in Chrome records the wheel events and the scroll position of each frame. The values show the time from a wheel event in the page to the scroll position in the page. They do not show the time on the network or on the display.
+
+| Question | Result |
+| --- | --- |
+| Scroll source on KWin with `org_kde_kwin_fake_input` or libei | From the source code, not measured: KWin sends no `axis_source`. Chromium then uses `WHEEL`. These paths do not remove the animation. |
+| Default scroll method of a uinput mouse with `BTN_MIDDLE` and no wheel | KWin reports `scrollOnButtonDown=true` and `scrollButton=274` (`BTN_MIDDLE`). |
+| Wheel device, 6 high-resolution units each 13 ms | Lag at half of the distance: 100.1 ms. The page continues to move for 189.5 ms after the last wheel event. |
+| Button scroll device, 6 counts each 13 ms | Lag at half of the distance: 0.1 ms. The page continues to move for 0.1 ms after the last wheel event. |
+| Linearity of button scroll at 1, 6, and 30 counts each 13 ms | 10.909 CSS pixels for each count at all three speeds. The wheel device gives 0.909 CSS pixels for each unit. One count is thus a large step for a slow scroll. |
+| Slow horizontal scroll after a vertical scroll | Works, 1 count each 13 ms. The script first moves 5 counts and -5 counts on both axes while the button is down. |
+| Middle button events in the page | None during the tests, and none after the button up. |
+| Pointer shape while the button is down | User observation with the product build: KWin shows a scroll cursor, and it stays until the button goes up. From the source code: KWin shows it only if its `scrollOnButtonDown` is on. libinput applies a method change only when no button is down. |
+| Real trackpad on the product build, with the KWin setting turned off while the button is down | User observation: the pointer shape is normal, and the scroll feels normal. |
+| Other browsers and Qt applications, each one on its own | Not reported. |
+| Button state after a compositor or session restart, a VT change, or a screen lock | Not tested. |

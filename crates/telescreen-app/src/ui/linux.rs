@@ -12,6 +12,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use telescreen_core::config::{Computer, Quirk};
 use telescreen_core::ids::DisplayToken;
 use telescreen_core::input::{Button, InputEvent};
 use telescreen_core::key_route::{InputRouter, Route};
@@ -236,7 +237,7 @@ pub(crate) struct Hooks {
     prompts: Option<PromptQueue>,
 }
 
-pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
+pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Result<Parts, String> {
     let mut notices = Vec::new();
     let clipboard: Option<Box<dyn telescreen_core::platform::Clipboard>> =
         match LinuxClipboard::start() {
@@ -249,14 +250,14 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
             }
         };
     let capabilities = telescreen_platform_linux::capabilities();
-    let injector: Option<Box<dyn telescreen_core::platform::Injector>> = match LinuxInjector::new()
-    {
-        Ok(injector) => Some(Box::new(injector)),
-        Err(e) => {
-            notices.push(format!("Input injection is not available: {e}"));
-            None
-        }
-    };
+    let injector: Option<Box<dyn telescreen_core::platform::Injector>> =
+        match LinuxInjector::new(local.uses_quirk(Quirk::KwinButtonScroll)) {
+            Ok(injector) => Some(Box::new(injector)),
+            Err(e) => {
+                notices.push(format!("Input injection is not available: {e}"));
+                None
+            }
+        };
     let focus_holder: Option<Box<dyn telescreen_core::platform::FocusHolder>> =
         match LinuxFocusHolder::start() {
             Ok(holder) => Some(Box::new(holder)),
