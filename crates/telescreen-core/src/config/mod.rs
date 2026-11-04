@@ -13,7 +13,7 @@ pub mod schema;
 pub mod semantic;
 pub mod yaml;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -58,6 +58,14 @@ pub struct Config {
     pub computers: BTreeMap<ComputerId, Computer>,
 }
 
+/// A platform workaround. Each one is on, unless `disabled-quirks` has it (IN-16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Quirk {
+    /// A scroll on KWin as a button scroll, not as a wheel scroll (IN-15).
+    KwinButtonScroll,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Computer {
@@ -73,6 +81,9 @@ pub struct Computer {
     /// The multiplier for each scroll that this computer receives (IN-14).
     #[serde(default = "one")]
     pub scroll_speed: f32,
+    /// The platform workarounds that this computer does not use (IN-16).
+    #[serde(default)]
+    pub disabled_quirks: BTreeSet<Quirk>,
     pub endpoint: Endpoint,
     /// Keys are local aliases. They have no OS meaning.
     pub devices: BTreeMap<String, Device>,
@@ -95,6 +106,13 @@ impl Default for ClipboardConfig {
 
 fn on() -> bool {
     true
+}
+
+impl Computer {
+    /// Whether this computer uses a platform workaround (IN-16).
+    pub fn uses_quirk(&self, quirk: Quirk) -> bool {
+        !self.disabled_quirks.contains(&quirk)
+    }
 }
 
 fn one() -> f32 {

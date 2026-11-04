@@ -110,6 +110,15 @@
           "default": 1,
           "description": "This computer multiplies each scroll that it receives from a source by this number (IN-14)."
         },
+        "disabled-quirks": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": ["kwin-button-scroll"]
+          },
+          "default": [],
+          "description": "The platform workarounds that this computer does not use. Each workaround is on, unless this list has it (IN-16)."
+        },
         "path": {
           "type": "array",
           "minItems": 1,

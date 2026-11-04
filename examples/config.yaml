@@ -51,6 +51,7 @@ computers:
     hint: "Copy/paste: Ctrl+C / Ctrl+V. Terminal: Ctrl+Shift+C / Ctrl+Shift+V."
     clipboard: {text: false}         # start with the text clipboard switch off (CLIP-1; the default is on)
     scroll-speed: 0.4                # multiply the scroll that this computer receives (IN-14; the default is 1)
+    disabled-quirks: []              # the platform workarounds that this computer does not use (IN-16; the default is none)
     endpoint: {host: pc1.local, port: 24800}
     devices:
       Monitor1:

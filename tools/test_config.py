@@ -71,6 +71,10 @@ class ConfigContract(unittest.TestCase):
             'zero scroll speed': lambda c: c['computers']['pc1'].update({'scroll-speed': 0}),
             'large scroll speed': lambda c: c['computers']['pc1'].update({'scroll-speed': 11}),
             'non-number scroll speed': lambda c: c['computers']['pc1'].update({'scroll-speed': 'fast'}),
+            'unknown quirk': lambda c: c['computers']['pc1'].update({'disabled-quirks': ['absent']}),
+            'duplicate quirk': lambda c: c['computers']['pc1'].update(
+                {'disabled-quirks': ['kwin-button-scroll', 'kwin-button-scroll']}),
+            'non-list quirks': lambda c: c['computers']['pc1'].update({'disabled-quirks': 'kwin-button-scroll'}),
             'version': lambda c: c.update(version=2),
             'unknown field': lambda c: device(c).update(portal_match={}),
             'duplicate device id': lambda c: c['computers']['mac']['devices'].update(

@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use telescreen_core::config::{Config, ConfigError, Driver, Program, yaml};
+use telescreen_core::config::{Config, ConfigError, Driver, Program, Quirk, yaml};
 use telescreen_core::ids::{ComputerId, DeviceId};
 
 fn example_text() -> String {
@@ -364,6 +364,19 @@ fn in14_the_scroll_speed_defaults_to_one() {
         config.computers[&ComputerId("mac".into())].scroll_speed,
         1.0
     );
+}
+
+#[test]
+fn in16_each_quirk_is_on_unless_the_list_has_it() {
+    let mut value = example_value();
+    let computers = value["computers"].as_object_mut().unwrap();
+    for computer in computers.values_mut() {
+        computer.as_object_mut().unwrap().remove("disabled-quirks");
+    }
+    computers["pc1"]["disabled-quirks"] = json!(["kwin-button-scroll"]);
+    let config: Config = serde_json::from_value(value).unwrap();
+    assert!(!config.computers[&ComputerId("pc1".into())].uses_quirk(Quirk::KwinButtonScroll));
+    assert!(config.computers[&ComputerId("mac".into())].uses_quirk(Quirk::KwinButtonScroll));
 }
 
 #[test]

@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use telescreen_core::config::Computer;
 use telescreen_core::ids::DisplayToken;
 use telescreen_core::platform::{CapturedEvent, InputCapture};
 use telescreen_platform_macos::capture::MacCapture;
@@ -47,7 +48,7 @@ impl InputCapture for NoCapture {
     fn disarm(&mut self) {}
 }
 
-pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
+pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, _local: &Computer) -> Result<Parts, String> {
     telescreen_platform_macos::request_permissions();
     let mut notices = Vec::new();
     let capabilities = telescreen_platform_macos::capabilities();

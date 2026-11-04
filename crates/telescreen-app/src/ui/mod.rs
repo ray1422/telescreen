@@ -226,7 +226,8 @@ fn start_app(
         .ok()
         .and_then(|p| p.parent().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
-    let parts = platform::parts(proxy.clone())?;
+    let local_computer = config.computer(&local).ok_or("no local computer")?;
+    let parts = platform::parts(proxy.clone(), local_computer)?;
     let first_generation = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))

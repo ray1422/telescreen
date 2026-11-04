@@ -12,6 +12,7 @@
 //! claim other compositors.
 #![cfg(target_os = "linux")]
 
+mod button_scroll;
 pub mod clipboard;
 pub mod discovery;
 pub mod displays;
