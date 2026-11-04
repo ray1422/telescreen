@@ -128,13 +128,10 @@ impl LinuxInjector {
 
 impl Injector for LinuxInjector {
     fn set_display(&mut self, display: &DisplayInfo) -> Result<(), PlatformError> {
-        self.globals.roundtrip().map_err(PlatformError::Failed)?;
         let output = self
             .globals
-            .state
-            .by_name(&display.token.0)
-            .cloned()
-            .ok_or_else(|| PlatformError::Failed(format!("no output {}", display.token)))?;
+            .output(&display.token.0)
+            .map_err(PlatformError::Failed)?;
         if let Some(old) = self.pointer.take() {
             old.destroy();
         }

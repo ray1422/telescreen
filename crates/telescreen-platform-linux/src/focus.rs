@@ -179,13 +179,7 @@ impl Holder {
         if self.surface.is_some() {
             return Ok(());
         }
-        self.globals.roundtrip()?;
-        let output = self
-            .globals
-            .state
-            .by_name(output)
-            .cloned()
-            .ok_or_else(|| format!("no output {output}"))?;
+        let output = self.globals.output(output)?;
         let qh = self.globals.handle();
         let surface = self.compositor.create_surface(&qh, ());
         let region = self.compositor.create_region(&qh, ());

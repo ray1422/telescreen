@@ -132,3 +132,12 @@ Repeat the table of part 3 with the roles reversed: the portal on Linux (a fulls
   - Fix (NET-2, user, 2026-10-28): the target injects only the newest waiting position. NET-9 records the arrival on the network thread and the handling delay.
 - Linux to Mac with the fix (newest position only, NET-2), channel 149: the user reported that the pointer is smooth ("基本順暢"). NET-9 on the Mac: 5284 datagrams, 0 lost, 0 late, 4932 injected. Delay variation (now from the network thread) p50 0.9 ms, p95 10.9 ms, p99 42.0 ms, max 111.7 ms. Handling delay p50 0.04 ms, p95 7.8 ms, p99 12.9 ms, max 16.1 ms. The stop of about 1 s did not occur. This does not prove that the main loop caused the earlier stop: the trigger possibly did not occur in this session.
 
+### 2026-10-28, output hotplug on Linux (nested Hyprland 0.56.2)
+
+- Setup: a nested Hyprland on niri, with an empty config. A throwaway program kept one Wayland connection open through the layer-shell prompt, and tried to show the prompt on the output `TSTEST` each second. `hyprctl output create headless TSTEST` and `hyprctl output remove TSTEST` added and removed the output.
+- Pass: with the fix, the long connection found `TSTEST` after each add, did not find it after each remove, and found it again after a quick remove and add.
+- The old code failed the same test: after the add, a new connection listed `TSTEST`, but the long connection reported `no output TSTEST`.
+- Not related to the fix: Hyprland did not configure a layer surface on a headless output from `hyprctl` ("the compositor did not configure the prompt"), also on a new connection. On the nested window output, the prompt showed.
+- Real display on niri: the user ran `niri msg output HDMI-A-2 off`, then `on` after 5 s, during a Mac to Linux session. niri removed the output, and the Linux target ended the session with `DisplayGone` (FLOW-10). After `on`, the display list had `HDMI-A-2` again, and the keyboard focus holder (a long connection) held `HDMI-A-2` (debug `hold_keyboard`).
+- Pass (user report): after `on`, a new Mac to Linux handoff showed the prompt, and the pointer moved. The Linux app was not restarted.
+

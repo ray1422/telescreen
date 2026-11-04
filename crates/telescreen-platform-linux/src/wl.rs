@@ -25,28 +25,76 @@ pub struct Configure {
     pub height: u32,
 }
 
+/// One bound output: its registry name, its proxies, and its data.
+#[derive(Debug)]
+pub struct Output {
+    /// The name of the global in the registry. A `global_remove` event names it.
+    global: u32,
+    pub proxy: wl_output::WlOutput,
+    xdg: Option<zxdg_output_v1::ZxdgOutputV1>,
+    pub data: OutputData,
+}
+
 /// The dispatch state of a connection: the outputs, and the events that the users
 /// of the connection read after a roundtrip.
+///
+/// The output list follows the registry: an output that the compositor adds later
+/// is bound, and a removed output is released. Thus a long connection sees a
+/// display that the user connects again.
 #[derive(Debug, Default)]
 pub struct State {
-    pub outputs: Vec<(wl_output::WlOutput, OutputData)>,
+    pub outputs: Vec<Output>,
     pub configures: Vec<Configure>,
     pub closed: Vec<u64>,
+    xdg_manager: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
 }
 
 impl State {
     fn data(&mut self, output: &wl_output::WlOutput) -> Option<&mut OutputData> {
         self.outputs
             .iter_mut()
-            .find(|(o, _)| o == output)
-            .map(|(_, d)| d)
+            .find(|o| &o.proxy == output)
+            .map(|o| &mut o.data)
     }
 
     pub fn by_name(&self, name: &str) -> Option<&wl_output::WlOutput> {
         self.outputs
             .iter()
-            .find(|(_, d)| d.name.as_deref() == Some(name))
-            .map(|(o, _)| o)
+            .find(|o| o.data.name.as_deref() == Some(name))
+            .map(|o| &o.proxy)
+    }
+
+    fn bind_output(
+        &mut self,
+        registry: &wl_registry::WlRegistry,
+        global: u32,
+        version: u32,
+        qh: &QueueHandle<Self>,
+    ) {
+        let proxy: wl_output::WlOutput = registry.bind(global, version.min(4), qh, ());
+        let xdg = self
+            .xdg_manager
+            .as_ref()
+            .map(|manager| manager.get_xdg_output(&proxy, qh, proxy.clone()));
+        self.outputs.push(Output {
+            global,
+            proxy,
+            xdg,
+            data: OutputData::default(),
+        });
+    }
+
+    fn remove_output(&mut self, global: u32) {
+        let Some(index) = self.outputs.iter().position(|o| o.global == global) else {
+            return;
+        };
+        let output = self.outputs.remove(index);
+        if let Some(xdg) = output.xdg {
+            xdg.destroy();
+        }
+        if output.proxy.version() >= 3 {
+            output.proxy.release();
+        }
     }
 }
 
@@ -73,18 +121,13 @@ impl Globals {
         let (list, mut queue) = registry_queue_init::<State>(&connection)
             .map_err(|e| format!("Wayland registry: {e}"))?;
         let qh = queue.handle();
-        let mut state = State::default();
-        let xdg: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1> =
-            list.bind(&qh, 2..=3, ()).ok();
+        let mut state = State {
+            xdg_manager: list.bind(&qh, 2..=3, ()).ok(),
+            ..State::default()
+        };
         for global in list.contents().clone_list() {
             if global.interface == wl_output::WlOutput::interface().name {
-                let output: wl_output::WlOutput =
-                    list.registry()
-                        .bind(global.name, global.version.min(4), &qh, ());
-                if let Some(xdg) = &xdg {
-                    xdg.get_xdg_output(&output, &qh, output.clone());
-                }
-                state.outputs.push((output, OutputData::default()));
+                state.bind_output(list.registry(), global.name, global.version, &qh);
             }
         }
         queue
@@ -115,6 +158,18 @@ impl Globals {
         self.queue.handle()
     }
 
+    /// The output with this name, after the pending registry events. A new output
+    /// gets its name one roundtrip after it is bound, so a miss gets one more.
+    pub fn output(&mut self, name: &str) -> Result<wl_output::WlOutput, String> {
+        for _ in 0..2 {
+            self.roundtrip()?;
+            if let Some(output) = self.state.by_name(name) {
+                return Ok(output.clone());
+            }
+        }
+        Err(format!("no output {name}"))
+    }
+
     pub fn roundtrip(&mut self) -> Result<(), String> {
         self.queue
             .roundtrip(&mut self.state)
@@ -125,13 +180,24 @@ impl Globals {
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     fn event(
-        _: &mut Self,
-        _: &wl_registry::WlRegistry,
-        _: wl_registry::Event,
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
         _: &GlobalListContents,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == wl_output::WlOutput::interface().name => {
+                state.bind_output(registry, name, version, qh);
+            }
+            wl_registry::Event::GlobalRemove { name } => state.remove_output(name),
+            _ => {}
+        }
     }
 }
 

@@ -188,13 +188,7 @@ impl Overlay {
 
     fn show(&mut self, id: u64, output: &str, screen: PromptScreen) -> Result<(), String> {
         self.hide(id);
-        self.globals.roundtrip()?;
-        let output = self
-            .globals
-            .state
-            .by_name(output)
-            .cloned()
-            .ok_or(format!("no output {output}"))?;
+        let output = self.globals.output(output)?;
         let qh = self.globals.handle();
         let surface = self.compositor.create_surface(&qh, ());
         // An empty input region: pointer events go to the windows below.

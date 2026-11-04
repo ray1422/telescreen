@@ -21,7 +21,7 @@ impl Displays for LinuxDisplays {
             .state
             .outputs
             .iter()
-            .filter_map(|(_, data)| info(data))
+            .filter_map(|output| info(&output.data))
             .collect())
     }
 }
