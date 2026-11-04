@@ -154,6 +154,15 @@ ADR 0009. The **destination** is the computer that a handoff switches the device
 - **NET-5** The config does not hold keys, the trust list, or runtime state.
 - **NET-6** Sessions have a generation number and a heartbeat. A lease is held by one session only. The local state of one peer alone must not decide the lease owner.
 - **NET-7** On macOS, the network runs in the app process (ADR 0008). The app keeps `NSLocalNetworkUsageDescription` in `Info.plist`. The Local Network permission of the installed app is open (AC-25).
+- **NET-8** Each pointer datagram has a send time: the microseconds on the monotonic clock of the source since the first pointer datagram of the session (M14). The peers do not share a clock. Thus a peer uses only the difference between two send times.
+- **NET-9** The target records statistics of the pointer datagrams of each incoming session (M14). The statistics do not change the session.
+  - Counts: received datagrams, used datagrams, late datagrams (dropped by NET-2), lost datagrams (sequence numbers between the first and the newest used one that did not arrive).
+  - The send interval: the difference of the send times of two datagrams with consecutive sequence numbers.
+  - The arrival interval: the time between the arrivals of two consecutive used datagrams.
+  - A pause: an interval with a send-time difference of more than 100 ms (the pointer did not move). A pause is counted, and its interval is not in the interval statistics.
+  - The delay variation: for each received datagram, its arrival time minus its send time, minus the smallest such value of the session. It is not the one-way latency, because the peers do not share a clock.
+  - Each interval and the delay variation give p50, p95, p99, and the maximum (nearest rank).
+  - The target writes a summary to the log when the session ends. The debug protocol returns the summary of the current session, else of the last session.
 
 ## 8. Platforms
 

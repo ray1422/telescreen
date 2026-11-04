@@ -1,7 +1,7 @@
 //! Source session rules. Spec IDs are in the test names.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests may panic on a failed setup.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
 use telescreen_core::input::{Button, InputEvent};
@@ -235,7 +235,7 @@ fn flow13_forwards_input_only_while_forwarding() {
     let now = Instant::now();
     let mut s = ack_wanted(now);
     assert!(s.on_input(key(30, true)).is_empty());
-    assert!(s.pointer(Normalized { x: 0.5, y: 0.5 }).is_none());
+    assert!(s.pointer(Normalized { x: 0.5, y: 0.5 }, now).is_none());
 
     let mut s = forwarding(now);
     let event = key(30, true);
@@ -266,30 +266,49 @@ fn in3_unpaired_up_is_not_forwarded() {
 
 #[test]
 fn net2_pointer_sequence_increases() {
-    let mut s = forwarding(Instant::now());
-    let a = s.pointer(Normalized { x: 0.1, y: 0.2 }).unwrap();
-    let b = s.pointer(Normalized { x: 0.3, y: 0.4 }).unwrap();
+    let now = Instant::now();
+    let mut s = forwarding(now);
+    let a = s.pointer(Normalized { x: 0.1, y: 0.2 }, now).unwrap();
+    let b = s.pointer(Normalized { x: 0.3, y: 0.4 }, now).unwrap();
     assert_eq!(a.session, S);
     assert!(b.seq > a.seq);
     assert_eq!(b.position, Normalized { x: 0.3, y: 0.4 });
 }
 
 #[test]
+fn net8_the_send_time_starts_at_the_first_datagram() {
+    let now = Instant::now();
+    let mut s = forwarding(now);
+    let later = now + Duration::from_secs(3);
+    let a = s.pointer(Normalized { x: 0.1, y: 0.2 }, later).unwrap();
+    let b = s
+        .pointer(
+            Normalized { x: 0.3, y: 0.4 },
+            later + Duration::from_micros(8250),
+        )
+        .unwrap();
+    assert_eq!(a.sent_us, 0);
+    assert_eq!(b.sent_us, 8250);
+}
+
+#[test]
 fn net2_the_same_position_sends_no_datagram() {
-    let mut s = forwarding(Instant::now());
+    let now = Instant::now();
+    let mut s = forwarding(now);
     let p = Normalized { x: 0.1, y: 0.2 };
-    assert!(s.pointer(p).is_some());
-    assert!(s.pointer(p).is_none(), "no motion, no datagram");
-    assert!(s.pointer(Normalized { x: 0.3, y: 0.2 }).is_some());
+    assert!(s.pointer(p, now).is_some());
+    assert!(s.pointer(p, now).is_none(), "no motion, no datagram");
+    assert!(s.pointer(Normalized { x: 0.3, y: 0.2 }, now).is_some());
 }
 
 #[test]
 fn net2_forget_pointer_sends_the_same_position_again() {
-    let mut s = forwarding(Instant::now());
+    let now = Instant::now();
+    let mut s = forwarding(now);
     let p = Normalized { x: 0.1, y: 0.2 };
-    assert!(s.pointer(p).is_some());
+    assert!(s.pointer(p, now).is_some());
     s.forget_pointer();
-    assert!(s.pointer(p).is_some());
+    assert!(s.pointer(p, now).is_some());
 }
 
 #[test]

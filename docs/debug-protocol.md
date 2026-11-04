@@ -18,6 +18,7 @@ Each request and each response is one line of JSON. One connection can send more
 | `{"cmd":"state"}` | none | `{"ok":true,"control":<text>,"portal":<text or null>,"windows":[<window>...]}` |
 | `{"cmd":"intent","intent":<intent>}` | the same as the click in the UI | `{"ok":true}` |
 | `{"cmd":"ack"}` | the same as the acknowledgement key in the focused portal (FLOW-8; the focus check applies, AC-6). If the portal does not accept it, the same as Return on the destination of a hand back (VER-4) | `{"ok":true}`, or an error if nothing waits for an acknowledgement |
+| `{"cmd":"pointer_stats"}` | none (NET-9) | `{"ok":true,"stats":<summary or null>}`: the pointer statistics of the current incoming session, else of the last one |
 | `{"cmd":"quit"}` | the same as closing the control window | `{"ok":true}` |
 | `{"cmd":"hold_keyboard","display":<display token>}` | calls the focus holder of this peer directly (UI-7), with no session | `{"ok":true}`, or an error if the peer has no focus holder or no such display |
 | `{"cmd":"release_keyboard"}` | removes the focus holder | `{"ok":true}` |

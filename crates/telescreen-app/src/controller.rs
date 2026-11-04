@@ -17,6 +17,7 @@ use telescreen_core::platform::{
     InputCapabilities, InputCapture, PlatformError,
 };
 use telescreen_core::pointer::{self, Point, Rect};
+use telescreen_core::pointer_stats::{PointerStats, PointerSummary};
 use telescreen_core::routes;
 use telescreen_core::session::VideoInput;
 use telescreen_core::session::lease::LeaseTable;
@@ -226,6 +227,8 @@ pub struct Controller {
     connected: BTreeSet<ComputerId>,
     leases: LeaseTable,
     incoming: BTreeMap<SessionId, TargetSession>,
+    incoming_pointer_stats: BTreeMap<SessionId, PointerStats>,
+    last_pointer_summary: Option<PointerSummary>,
     /// Device state on this destination, independent of sessions (VER-6).
     /// A missing device is `Unchanged`: no handoff to this computer yet.
     device_states: HashMap<DeviceId, VideoInput>,
@@ -305,6 +308,8 @@ impl Controller {
             connected: BTreeSet::new(),
             leases: LeaseTable::new(first_generation),
             incoming: BTreeMap::new(),
+            incoming_pointer_stats: BTreeMap::new(),
+            last_pointer_summary: None,
             device_states: HashMap::new(),
             injector_session: None,
             jobs: HashMap::new(),
@@ -882,7 +887,7 @@ impl Controller {
         let Some(session) = portal.session.as_mut() else {
             return;
         };
-        if let Some(datagram) = session.pointer(position) {
+        if let Some(datagram) = session.pointer(position, Instant::now()) {
             let peer = session.target().clone();
             self.ports
                 .net
@@ -1157,6 +1162,9 @@ impl Controller {
                 if target.source() != &peer {
                     return;
                 }
+                if let Some(stats) = self.incoming_pointer_stats.get_mut(&datagram.session) {
+                    stats.record(&datagram, now);
+                }
                 if let Some(action) = target.on_pointer(&datagram) {
                     let session = datagram.session;
                     self.run_target_actions(session, vec![action]);
@@ -1380,6 +1388,8 @@ impl Controller {
             .is_some_and(|p| p.display.token == token);
         let (target, actions) = TargetSession::new(session, peer, device, token);
         self.incoming.insert(session, target);
+        self.incoming_pointer_stats
+            .insert(session, PointerStats::new(session));
         self.run_target_actions(session, actions);
         // FLOW-24: the display shows this computer as the target, not a second portal.
         if on_portal {
@@ -1643,7 +1653,7 @@ impl Controller {
                 }
                 TargetAction::ReleaseLease => {
                     self.leases.release(session);
-                    self.incoming.remove(&session);
+                    self.remove_incoming(session);
                     self.prompts.remove(&session);
                     if self.injector_session == Some(session) {
                         self.injector_session = None;
@@ -1657,7 +1667,7 @@ impl Controller {
             .get(&session)
             .is_some_and(TargetSession::is_finished)
         {
-            self.incoming.remove(&session);
+            self.remove_incoming(session);
             self.prompts.remove(&session);
             if self.injector_session == Some(session) {
                 self.injector_session = None;
@@ -1668,6 +1678,15 @@ impl Controller {
 
     fn target_mut(&mut self, session: SessionId) -> Option<&mut TargetSession> {
         self.incoming.get_mut(&session)
+    }
+
+    fn remove_incoming(&mut self, session: SessionId) {
+        self.incoming.remove(&session);
+        if let Some(stats) = self.incoming_pointer_stats.remove(&session) {
+            let summary = stats.summary();
+            eprintln!("telescreen: {summary}");
+            self.last_pointer_summary = Some(summary);
+        }
     }
 
     // ----- Hand back, without a session -----
@@ -2302,6 +2321,15 @@ impl Controller {
     }
 
     // ----- View models -----
+
+    /// Pointer statistics of the newest incoming session, else the last ended
+    /// incoming session (NET-9).
+    pub fn pointer_stats(&self) -> Option<PointerSummary> {
+        self.incoming_pointer_stats
+            .last_key_value()
+            .map(|(_, stats)| stats.summary())
+            .or_else(|| self.last_pointer_summary.clone())
+    }
 
     /// The display of the current display list with this token.
     pub fn display(&self, token: &telescreen_core::ids::DisplayToken) -> Option<DisplayInfo> {

@@ -752,6 +752,35 @@ fn net2_m10_keys_with_no_motion_send_no_pointer_datagram() {
 }
 
 #[test]
+fn net9_the_target_keeps_pointer_statistics_after_the_session() {
+    let mut w = World::new();
+    assert!(w.pc1.controller.pointer_stats().is_none());
+    w.advance_to_forwarding();
+    for x in [10.0, 20.0, 30.0] {
+        w.mac.controller.on_captured(CapturedEvent::PointerMoved {
+            at: Point { x, y: 10.0 },
+        });
+    }
+    w.pump();
+    let session = w.pc1.controller.control_screen().incoming[0].session;
+    let sent = w.pc1.log.borrow().pointer.len() as u64;
+    let stats = w.pc1.controller.pointer_stats().unwrap();
+    assert_eq!(stats.session, session);
+    assert_eq!(stats.received, sent);
+    assert_eq!(stats.lost, 0);
+    assert!(
+        w.mac.controller.pointer_stats().is_none(),
+        "the source has no incoming session"
+    );
+
+    w.pc1.controller.on_intent(Intent::StopSession { session });
+    w.pump();
+    let stats = w.pc1.controller.pointer_stats().unwrap();
+    assert_eq!(stats.session, session, "the last session");
+    assert_eq!(stats.received, sent);
+}
+
+#[test]
 fn flow14_ac11_leaving_the_portal_keeps_forwarding() {
     let mut w = World::new();
     w.advance_to_forwarding();

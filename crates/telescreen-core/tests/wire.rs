@@ -101,6 +101,7 @@ fn net2_pointer_round_trip_and_order() {
     let d = |session, seq| PointerDatagram {
         session: SessionId(session),
         seq,
+        sent_us: 123_456,
         position: Normalized { x: 0.25, y: 1.0 },
     };
     let bytes = encode_pointer(&d(3, 9)).unwrap();

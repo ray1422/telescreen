@@ -24,6 +24,8 @@ use telescreen_view::{ControlScreen, Intent, PortalScreen};
 pub enum Request {
     /// `{"cmd":"state"}`: the view models and the window facts.
     State,
+    /// `{"cmd":"pointer_stats"}`: current or last incoming session statistics (NET-9).
+    PointerStats,
     /// `{"cmd":"intent","intent":<intent>}`: the same as a click in the UI.
     Intent(Intent),
     /// `{"cmd":"ack"}`: acknowledges the portal session, else a local verification.
@@ -81,6 +83,7 @@ pub fn parse_request(line: &str) -> Result<Request, DebugError> {
         serde_json::from_str(line).map_err(|error| DebugError::Request(error.to_string()))?;
     match string_field(&value, "cmd")? {
         "state" => Ok(Request::State),
+        "pointer_stats" => Ok(Request::PointerStats),
         "ack" => Ok(Request::Ack),
         "hold_keyboard" => Ok(Request::HoldKeyboard {
             display: DisplayToken::from(string_field(&value, "display")?),

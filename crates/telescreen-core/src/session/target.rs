@@ -468,6 +468,7 @@ mod tests {
         let mut datagram = PointerDatagram {
             session: SESSION,
             seq: 100,
+            sent_us: 0,
             position: Normalized { x: 0.5, y: 0.5 },
         };
         assert_eq!(target.on_pointer(&datagram), None);

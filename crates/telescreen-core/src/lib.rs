@@ -13,6 +13,7 @@ pub mod key_route;
 pub mod keys;
 pub mod platform;
 pub mod pointer;
+pub mod pointer_stats;
 pub mod routes;
 pub mod session;
 pub mod verification;

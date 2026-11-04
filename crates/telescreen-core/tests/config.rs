@@ -357,7 +357,13 @@ fn clip1_the_clipboard_switch_starts_on_by_default() {
     computers["pc1"]["clipboard"] = json!({"text": false});
     computers["mac"]["clipboard"] = json!({});
     let config = Config::from_value(value).unwrap();
-    let text = |id: &str| config.computer(&ComputerId::from(id)).unwrap().clipboard.text;
+    let text = |id: &str| {
+        config
+            .computer(&ComputerId::from(id))
+            .unwrap()
+            .clipboard
+            .text
+    };
     assert!(text("mac"), "an empty clipboard key");
     assert!(!text("pc1"), "the user turned it off");
     let other = config

@@ -21,6 +21,7 @@ fn parse(line: &str) -> Request {
 fn requests_without_arguments() {
     assert_eq!(parse(r#"{"cmd":"state"}"#), Request::State);
     assert_eq!(parse(r#"{"cmd":"ack"}"#), Request::Ack);
+    assert_eq!(parse(r#"{"cmd":"pointer_stats"}"#), Request::PointerStats);
     assert!(
         parse_request(r#"{"cmd":"confirm"}"#).is_err(),
         "the old name"

@@ -61,6 +61,7 @@ pub struct SourceSession {
     seq: u64,
     /// The position of the last pointer datagram (NET-2).
     last_pointer: Option<Normalized>,
+    first_pointer_at: Option<Instant>,
 }
 
 impl SourceSession {
@@ -82,6 +83,7 @@ impl SourceSession {
             held: HeldInputs::default(),
             seq: 0,
             last_pointer: None,
+            first_pointer_at: None,
         };
         (source, actions)
     }
@@ -256,21 +258,29 @@ impl SourceSession {
 
     /// The pointer position in the portal. Returns a datagram only while forwarding,
     /// and only if the position is different from the last datagram (NET-2).
-    pub fn pointer(&mut self, position: Normalized) -> Option<PointerDatagram> {
+    /// Its send time starts at the first returned datagram of this session (NET-8).
+    pub fn pointer(&mut self, position: Normalized, now: Instant) -> Option<PointerDatagram> {
         if self.phase != SourcePhase::Forwarding || self.last_pointer == Some(position) {
             return None;
         }
         let session = self.session?;
         self.last_pointer = Some(position);
         self.seq = self.seq.checked_add(1)?;
+        let first = *self.first_pointer_at.get_or_insert(now);
+        let sent_us = now
+            .saturating_duration_since(first)
+            .as_micros()
+            .min(u128::from(u64::MAX)) as u64;
         Some(PointerDatagram {
             session,
             seq: self.seq,
+            sent_us,
             position,
         })
     }
 
     /// The next `pointer` call returns a datagram also for the same position (NET-2).
+    /// The send-time origin stays the first datagram of the session (NET-8).
     pub fn forget_pointer(&mut self) {
         self.last_pointer = None;
     }

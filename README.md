@@ -50,6 +50,36 @@ The safety exit (Escape 10 times in 5 seconds) only ends the session. It does no
 
 macOS asks for Accessibility and Input Monitoring. Linux needs write access to `/dev/uinput` (for example the `input` group) and a compositor with the wlroots virtual pointer and layer-shell protocols.
 
+## Troubleshooting
+
+### The pointer on the target stops and then jumps
+
+Cause: the network delays some pointer datagrams, and then they arrive together. On a Mac with Wi-Fi, AWDL (the interface for AirDrop and Continuity) is a known cause. It makes the Wi-Fi leave its channel at intervals. In a measurement (2026-10-28), more than 5% of the datagrams arrived 60 to 90 ms late. With AWDL off, the largest ping time was 3.9 ms.
+
+1. Measure the delay from the Mac to the other computer. Look for times over 20 ms:
+
+   ```sh
+   ping -i 0.1 -c 150 <address>
+   ```
+
+2. If the Mac uses Wi-Fi, set AWDL off while you use Telescreen:
+
+   ```sh
+   sudo ifconfig awdl0 down
+   ```
+
+   AirDrop, Continuity, Universal Control, and Sidecar do not work while AWDL is off. macOS can set AWDL on again, for example when you use AirDrop. A restart sets it on.
+3. To set AWDL on again:
+
+   ```sh
+   sudo ifconfig awdl0 up
+   ```
+
+4. Alternative with AWDL on: set the 5 GHz channel of the Wi-Fi access point to 149. In the same measurement, channel 149 removed the delays (largest ping time 6.5 ms), but channel 48 did not. Do not use a DFS channel (52 to 144): the access point must stop for radar detection. The result can be different on a different network.
+5. A network cable prevents the problem.
+
+A Telescreen built with the debug protocol shows the pointer statistics of the target (`{"cmd":"pointer_stats"}`, `docs/debug-protocol.md`). Each session also writes a summary to the log when it ends (NET-9).
+
 ## Specification tools
 
 Validate the example. This needs Python 3.10+, PyYAML, and jsonschema. The tool does not run the commands in the config:

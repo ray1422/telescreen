@@ -120,6 +120,7 @@ fn datagram(session: SessionId, seq: u64, x: f32) -> PointerDatagram {
     PointerDatagram {
         session,
         seq,
+        sent_us: seq * 8000,
         position: Normalized { x, y: 0.5 },
     }
 }

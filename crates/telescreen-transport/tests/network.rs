@@ -136,6 +136,7 @@ fn net1_net2_messages_and_datagrams_both_ways() {
     let datagram = PointerDatagram {
         session: SessionId(9),
         seq: 1,
+        sent_us: 0,
         position: Normalized { x: 0.5, y: 0.25 },
     };
     mac.network.send(NetCommand::SendPointer {

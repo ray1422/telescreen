@@ -204,6 +204,9 @@ pub struct PointerDatagram {
     /// Increases by one for each datagram of a session. The target drops a datagram
     /// with a sequence number that is not larger than the last one that it used.
     pub seq: u64,
+    /// Microseconds since the first pointer datagram of this session on the
+    /// monotonic clock of the source (NET-8).
+    pub sent_us: u64,
     /// The position in the portal, which the target maps to its input-target display.
     pub position: Normalized,
 }

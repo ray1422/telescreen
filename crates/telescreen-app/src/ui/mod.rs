@@ -621,6 +621,11 @@ impl App {
                     windows,
                 })
             }
+            Request::PointerStats => serde_json::json!({
+                "ok": true,
+                "stats": self.controller.pointer_stats(),
+            })
+            .to_string(),
             Request::Intent(intent) => {
                 self.handle_intents(event_loop, vec![intent]);
                 debug::ok_response()

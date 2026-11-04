@@ -113,3 +113,18 @@ Repeat the table of part 3 with the roles reversed: the portal on Linux (a fulls
 - Pass (user report): the text clipboard works. The user did not report a failure in the copy and paste steps of AC-30 to AC-35.
 - Open (user report): the pointer on the target feels slow and not smooth. The user thinks that many pointer datagrams are lost. Not measured: the loss rate and the latency are not known. First measure the loss, the latency (p50, p95, p99), and the interval between datagrams on both peers. Then decide a fix. One candidate is prediction of the pointer position from its recent motion. See milestone M14 in `docs/plan.md`.
 - Open (user request): the scroll speed must be adjustable. See milestone M15 in `docs/plan.md`.
+
+### 2026-10-28, pointer measurement (M14, NET-9), Mac to Linux, niri
+
+- The user moved the pointer for about 30 seconds. The Linux target recorded 1900 datagrams: 0 lost, 0 late, 9 pauses.
+- Send interval: p50 8.0 ms, p95 8.5 ms, p99 18.7 ms, max 71.4 ms. The source sends at about 125 Hz.
+- Arrival interval: p50 7.9 ms, p95 10.1 ms, p99 91.4 ms, max 100.1 ms.
+- Delay variation: p50 0.7 ms, p95 62.6 ms, p99 83.6 ms, max 89.7 ms.
+- Result: loss is not the cause. More than 5% of the datagrams arrive 60 to 90 ms late, and then several arrive together. The target pointer stops and then jumps.
+- The same delays occur without Telescreen: `ping -i 0.1 -c 150` from the Mac to the Linux computer gave min 2.0 ms, avg 10.8 ms, max 90.2 ms, and 21 of 150 replies over 20 ms.
+- The Mac uses Wi-Fi, and its `awdl0` interface is active. AWDL (AirDrop, Continuity) is a known cause of periodic Wi-Fi delays on macOS.
+- After the user set AWDL off (`sudo ifconfig awdl0 down`), the same `ping` gave avg 2.5 ms, max 3.9 ms, and 0 replies over 20 ms. The user reported that the pointer is much smoother ("順多了"). The NET-9 statistics of this check are not separate: the session continued, and the summary includes the datagrams from before.
+- Conclusion: the main cause of the stutter is the AWDL delay on the Wi-Fi of the Mac, not Telescreen and not loss.
+- Then the user set AWDL on again and changed the 5 GHz channel of the Wi-Fi access point from 48 (80 MHz) to 149 (80 MHz). With AWDL on, two runs of the same `ping` gave avg 3.1 ms, max 6.5 ms and avg 3.2 ms, max 5.0 ms, with 0 replies over 20 ms. Thus channel 149 removed the delays without AWDL off on this network. The reason is not confirmed: 149 is one of the AWDL channels, but 44, the other 5 GHz AWDL channel, is in the 80 MHz block of channel 48. - A second check on channel 149, with AWDL on and an AirDrop transfer in progress (user report): three runs of the same `ping` gave avg 2.8 to 3.0 ms, max 5.8 to 7.5 ms, and 0 replies over 20 ms.
+- NET-9 statistics of a new Mac to Linux session on channel 149, AWDL on: 984 datagrams, 0 lost, 0 late, 5 pauses. Send interval p50 8.0 ms, p95 8.8 ms, p99 11.2 ms, max 96.8 ms. Arrival interval p50 8.0 ms, p95 10.0 ms, p99 12.4 ms, max 96.3 ms. Delay variation p50 0.7 ms, p95 2.1 ms, p99 3.1 ms, max 6.5 ms. The largest arrival interval comes from the source: the largest send interval is the same.
+
