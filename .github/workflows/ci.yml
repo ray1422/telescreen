@@ -1,0 +1,27 @@
+# Run the tests for each pull request and each push to main. The checks "linux" and
+# "macos" are required on main, so that auto-merge waits for them.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --workspace
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --workspace
