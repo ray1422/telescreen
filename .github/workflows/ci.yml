@@ -1,11 +1,10 @@
-# Run the tests for each pull request and each push to main. The checks "linux" and
-# "macos" are required on main, so that auto-merge waits for them.
+# Run the tests for each pull request to the release branch (DIST-3). The checks
+# "linux" and "macos" are required on that branch, so that auto-merge waits for them.
 name: ci
 
 on:
   pull_request:
-  push:
-    branches: [main]
+    branches: [release]
 
 permissions:
   contents: read
