@@ -73,6 +73,8 @@ The user plans a new design of the UI later (user, 2026-10-27). Until then, do n
 
 - A pairing UI. Until then, pairing stays manual with `telescreen trust` (ADR 0004).
 - A question on the first use of the clipboard sync (user, 2026-10-27). Until then, the switch starts on (CLIP-1).
+- Touchpad gestures to a Linux target (user, 2026-10-27). niri gets gestures only from libinput, which reads finger positions from a touchpad device. Thus the target needs a uinput multitouch touchpad, and the macOS source must read the finger positions (for example `NSTouch` in the portal). Telescreen can change the finger count, because niri cannot (niri: three fingers switch workspaces and scroll columns, four fingers toggle the overview). Example: macOS four fingers become Linux three fingers, and the macOS three-finger drag stays a left-button drag. Conflict: macOS uses four-finger swipes for Spaces, and a Space change makes the portal leave fullscreen (UI-3). Alternative: map a gesture to a shortcut, with no tracking of the fingers.
+- The scroll source (user, 2026-10-27). The target injects each scroll as a touchpad scroll (`finger`), so niri binds for the mouse wheel (`Mod+WheelScroll…`) do not apply. Send the source (wheel or touchpad) from the source computer, and inject a wheel with discrete steps. A touchpad scroll stays a touchpad scroll; niri `Mod+TouchpadScroll…` binds apply to it.
 
 ## Rules for each milestone
 
