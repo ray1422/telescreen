@@ -350,21 +350,21 @@ fn in13_input_lost_outside_forwarding_does_nothing() {
 }
 
 #[test]
-fn flow16_release_shortcut_while_forwarding() {
+fn flow16_in8_the_safety_exit_while_forwarding() {
     let mut s = forwarding(Instant::now());
     s.on_input(key(30, true));
-    let actions = s.end(EndReason::ReleaseShortcut);
+    let actions = s.end(EndReason::SafetyExit);
     assert_eq!(
         actions,
         vec![
             StopForwarding,
             Send(Message::End {
                 session: S,
-                reason: EndReason::ReleaseShortcut
+                reason: EndReason::SafetyExit
             })
         ]
     );
-    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::ReleaseShortcut));
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::SafetyExit));
     assert_eq!(
         s.video_input(),
         VideoInput::Confirmed,
@@ -488,4 +488,62 @@ fn flow16_end_before_handoff_leaves_video_input_unchanged() {
     let mut s = granted(Instant::now());
     s.end(EndReason::SourceClosed);
     assert_eq!(s.video_input(), VideoInput::Unchanged);
+}
+
+#[test]
+fn hb3_in7_the_shortcut_requests_a_hand_back_while_forwarding() {
+    let mut s = forwarding(Instant::now());
+    s.on_input(key(30, true));
+    assert_eq!(
+        s.request_hand_back(),
+        vec![
+            StopForwarding,
+            Send(Message::HandBackRequest { session: S })
+        ],
+        "no End: the target ends the session for the hand back"
+    );
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandBack));
+    assert!(s.request_hand_back().is_empty(), "only once");
+}
+
+#[test]
+fn hb3_a_hand_back_request_while_verifying() {
+    let mut s = ack_wanted(Instant::now());
+    assert_eq!(
+        s.request_hand_back(),
+        vec![Send(Message::HandBackRequest { session: S })]
+    );
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandBack));
+    assert!(!s.ack_wanted());
+}
+
+#[test]
+fn hb3_no_hand_back_before_the_steps_complete() {
+    // The steps of the source can still run: a route back now would race them.
+    let mut s = granted(Instant::now());
+    assert_eq!(
+        s.request_hand_back(),
+        vec![Send(Message::End {
+            session: S,
+            reason: EndReason::SourceClosed
+        })],
+        "the shortcut only ends the session"
+    );
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::SourceClosed));
+
+    let mut s = start();
+    assert!(s.request_hand_back().is_empty());
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::SourceClosed));
+}
+
+#[test]
+fn hb1_an_end_for_a_hand_back_from_the_target() {
+    let now = Instant::now();
+    let mut s = forwarding(now);
+    let end = Message::End {
+        session: S,
+        reason: EndReason::HandBack,
+    };
+    assert_eq!(s.on_message(&end, now), vec![StopForwarding]);
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandBack));
 }

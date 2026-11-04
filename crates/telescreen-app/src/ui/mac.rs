@@ -83,7 +83,7 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
         capabilities,
         labels: Labels {
             confirm_key: "Return".into(),
-            release_shortcut: "Control+Option+Command+Escape".into(),
+            hand_back_shortcut: "Control+Option+Command+Escape".into(),
         },
         hooks: Hooks {
             capture,

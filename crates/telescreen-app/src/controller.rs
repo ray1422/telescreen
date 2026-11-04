@@ -22,12 +22,13 @@ use telescreen_core::session::VideoInput;
 use telescreen_core::session::lease::LeaseTable;
 use telescreen_core::session::source::{HandoffResult, SourceAction, SourcePhase, SourceSession};
 use telescreen_core::session::target::{TargetAction, TargetPhase, TargetSession};
+use telescreen_core::verification::{Verification, VerificationAction, VerificationResult};
 use telescreen_core::verifier::{PromptVerifier, VerifierEvent};
-use telescreen_core::wire::{EndReason, Message, RefuseReason};
+use telescreen_core::wire::{EndReason, HandBackOutcome, Message, RefuseReason};
 use telescreen_transport::{NetCommand, NetEvent};
 use telescreen_view::{
     CandidateRow, ControlScreen, DeviceChoice, DeviceRow, DisplayRow, IncomingRow, Intent,
-    Matching, PortalScreen, PromptPresenter, PromptScreen, SessionPhase, SessionRow,
+    Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase, SessionRow,
 };
 
 /// Sends commands to the transport.
@@ -93,6 +94,27 @@ enum TargetWork {
     Event(VerifierEvent),
 }
 
+struct HandBackVerification {
+    prompt: PromptId,
+    display: Option<DisplayInfo>,
+    verification: Verification,
+    verifier: Option<Verifier>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum HandBackVerificationError {
+    #[error("the local device is gone (input-target)")]
+    DeviceGone,
+    #[error("{0} has no input-target")]
+    NoInputTarget(String),
+    #[error("input-target failed: {0}")]
+    InputTargetFailed(String),
+    #[error("input-target did not return a display")]
+    InvalidInputTarget,
+    #[error("the input-target display is gone")]
+    DisplayGone,
+}
+
 /// Runs a job. The job runner of the app calls it on a worker thread.
 pub fn run_job(job: &Job, context: &driver::Context) -> JobOutput {
     match job {
@@ -142,7 +164,7 @@ pub struct Ports {
 #[derive(Debug, Clone)]
 pub struct Labels {
     pub confirm_key: String,
-    pub release_shortcut: String,
+    pub hand_back_shortcut: String,
 }
 
 enum Pending {
@@ -157,6 +179,15 @@ enum Pending {
     },
     Handoff {
         session: Option<SessionId>,
+    },
+    HandBack {
+        peer: ComputerId,
+        device: DeviceId,
+    },
+    HandBackInputTarget {
+        prompt: PromptId,
+        peer: ComputerId,
+        device: DeviceId,
     },
 }
 
@@ -203,6 +234,10 @@ pub struct Controller {
     next_job: u64,
     verifiers: BTreeMap<SessionId, Verifier>,
     next_verifier: u64,
+    prompts: BTreeMap<SessionId, PromptId>,
+    next_prompt: u64,
+    pending_hand_backs: BTreeSet<(ComputerId, DeviceId)>,
+    hand_back_verifications: BTreeMap<DeviceId, HandBackVerification>,
     notices: Vec<String>,
     /// The last display list, for the view. `displays()` refreshes it.
     display_cache: Vec<DisplayInfo>,
@@ -276,6 +311,10 @@ impl Controller {
             next_job: 1,
             verifiers: BTreeMap::new(),
             next_verifier: 1,
+            prompts: BTreeMap::new(),
+            next_prompt: 1,
+            pending_hand_backs: BTreeSet::new(),
+            hand_back_verifications: BTreeMap::new(),
             notices: Vec::new(),
             display_cache: Vec::new(),
             last_heartbeat: None,
@@ -321,6 +360,11 @@ impl Controller {
         for session in sessions {
             self.end_incoming(session, EndReason::TargetDisconnected);
         }
+        let devices: Vec<_> = self.hand_back_verifications.keys().cloned().collect();
+        for device in devices {
+            self.stop_hand_back_verification(&device);
+        }
+        self.pending_hand_backs.clear();
         self.update_clipboard();
         for peer in std::mem::take(&mut self.connected) {
             self.ports.net.send(NetCommand::Close { peer });
@@ -378,6 +422,12 @@ impl Controller {
         self.next_job += 1;
         self.jobs.insert(id, pending);
         self.ports.jobs.spawn(id, job);
+    }
+
+    fn allocate_prompt(&mut self) -> PromptId {
+        let id = PromptId(self.next_prompt);
+        self.next_prompt += 1;
+        id
     }
 
     // ----- Portal and source side -----
@@ -615,6 +665,17 @@ impl Controller {
             .is_some_and(SourceSession::ack_wanted)
     }
 
+    /// The portal left fullscreen: request a hand back as for the shortcut (UI-3).
+    pub fn portal_left_fullscreen(&mut self) {
+        let actions = self
+            .portal
+            .as_mut()
+            .and_then(|p| p.session.as_mut())
+            .map(SourceSession::request_hand_back)
+            .unwrap_or_default();
+        self.run_source_actions(actions);
+    }
+
     fn portal_phase(&self) -> Option<SourcePhase> {
         Some(self.portal.as_ref()?.session.as_ref()?.phase())
     }
@@ -676,6 +737,8 @@ impl Controller {
     /// Ends each unfinished session of this device: the session of the portal and
     /// the sessions where this computer is the target. It releases the held state.
     fn end_device_sessions(&mut self, device: &DeviceId) {
+        self.stop_hand_back_verification(device);
+        self.pending_hand_backs.retain(|(_, id)| id != device);
         self.end_portal_session_of(device);
         let incoming: Vec<_> = self
             .incoming
@@ -699,6 +762,11 @@ impl Controller {
             let target = session.target().clone();
             match action {
                 SourceAction::Send(message) => {
+                    if matches!(message, Message::HandBackRequest { .. }) {
+                        let device = session.device().clone();
+                        self.stop_hand_back_verification(&device);
+                        self.pending_hand_backs.insert((target.clone(), device));
+                    }
                     self.ports.net.send(NetCommand::Send {
                         peer: target,
                         message,
@@ -849,7 +917,7 @@ impl Controller {
             CapturedEvent::KeyboardEntered => session.on_keyboard(true),
             CapturedEvent::KeyboardLeft => session.on_keyboard(false),
             CapturedEvent::InputLost => session.on_input_lost(),
-            CapturedEvent::ReleaseShortcut => session.end(EndReason::ReleaseShortcut),
+            CapturedEvent::HandBackShortcut => session.request_hand_back(),
             CapturedEvent::SafetyExit => session.end(EndReason::SafetyExit),
             CapturedEvent::Overflow => session.end(EndReason::QueueOverflow),
         };
@@ -885,6 +953,21 @@ impl Controller {
         for (session, event) in events {
             let actions = self.verifier_actions(session, event);
             self.run_target_actions_at(session, actions, now);
+        }
+        let events: Vec<_> = self
+            .hand_back_verifications
+            .iter_mut()
+            .filter_map(
+                |(device, verification)| match verification.verifier.as_mut() {
+                    Some(Verifier::Prompt(prompt)) => {
+                        prompt.tick(now).map(|event| (device.clone(), event))
+                    }
+                    _ => None,
+                },
+            )
+            .collect();
+        for (device, event) in events {
+            self.hand_back_verifier_event(&device, event);
         }
         self.update_clipboard();
         self.sync_clipboard();
@@ -1117,6 +1200,9 @@ impl Controller {
             Message::ClipboardClear { session } => {
                 self.receive_clipboard_clear(&peer, *session);
             }
+            Message::HandBackResult { device, outcome } => {
+                self.hand_back_result(peer, device.clone(), *outcome, now);
+            }
             // To the source side.
             Message::SessionGranted { .. }
             | Message::SessionRefused { .. }
@@ -1128,6 +1214,7 @@ impl Controller {
             // To the target side.
             Message::RequestSession { device } => self.request_session(peer, device.clone()),
             Message::HandoffDone { session }
+            | Message::HandBackRequest { session }
             | Message::Ack { session }
             | Message::Input { session, .. }
             | Message::ReleaseAll { session }
@@ -1166,7 +1253,15 @@ impl Controller {
         if session.target() != peer {
             return;
         }
+        let hand_back_device =
+            matches!(message, Message::End { session: id, reason: EndReason::HandBack }
+            if session.session() == Some(*id) && !session.is_finished())
+            .then(|| session.device().clone());
         let actions = session.on_message(message, now);
+        if let Some(device) = hand_back_device {
+            self.stop_hand_back_verification(&device);
+            self.pending_hand_backs.insert((peer.clone(), device));
+        }
         if let Message::SessionRefused { reason, .. } = message
             && let Some(portal) = self.portal.as_mut()
         {
@@ -1215,11 +1310,25 @@ impl Controller {
         }
         // FLOW-6: a new handoff of this device ends the session of the local
         // portal. A session of a different source keeps its lease (AC-20).
+        let taken = self
+            .portal
+            .as_ref()
+            .and_then(|p| p.session.as_ref())
+            .is_some_and(|s| !s.is_finished() && s.device() == &device_id);
         self.end_portal_session_of(&device_id);
+        if taken {
+            // FLOW-24: another computer shows on the display now.
+            self.notice(format!(
+                "Session ended: {} took this display",
+                self.label_of(&peer)
+            ));
+        }
         let session = match self.leases.acquire(&device_id, &peer) {
             Ok(session) => session,
             Err(_) => return self.refuse(peer, device_id, RefuseReason::Busy),
         };
+        self.stop_hand_back_verification(&device_id);
+        self.pending_hand_backs.retain(|(_, id)| id != &device_id);
         let request = Request {
             computer_id: self.local.clone(),
             device: DeviceRef {
@@ -1265,9 +1374,17 @@ impl Controller {
                 return self.refuse(peer, device, RefuseReason::NoInputTarget);
             }
         };
+        let on_portal = self
+            .portal
+            .as_ref()
+            .is_some_and(|p| p.display.token == token);
         let (target, actions) = TargetSession::new(session, peer, device, token);
         self.incoming.insert(session, target);
         self.run_target_actions(session, actions);
+        // FLOW-24: the display shows this computer as the target, not a second portal.
+        if on_portal {
+            self.close_portal(EndReason::SourceClosed);
+        }
     }
 
     fn find_display(&mut self, session: SessionId) -> Option<DisplayInfo> {
@@ -1279,7 +1396,7 @@ impl Controller {
         self.run_target_actions_at(session, actions, Instant::now());
     }
 
-    /// Delivers events only to the session of a running process verifier.
+    /// Delivers events to a running session or hand back process verifier.
     pub fn on_verifier_event(&mut self, id: VerifierId, event: VerifierEvent) {
         let session = self.verifiers.iter().find_map(|(session, verifier)| {
             matches!(verifier, Verifier::Process(running) if *running == id).then_some(*session)
@@ -1287,6 +1404,17 @@ impl Controller {
         if let Some(session) = session {
             let actions = self.verifier_actions(session, event);
             self.run_target_actions(session, actions);
+            return;
+        }
+        let device = self
+            .hand_back_verifications
+            .iter()
+            .find_map(|(device, verification)| {
+                matches!(&verification.verifier, Some(Verifier::Process(running)) if *running == id)
+                    .then(|| device.clone())
+            });
+        if let Some(device) = device {
+            self.hand_back_verifier_event(&device, event);
         }
     }
 
@@ -1317,6 +1445,12 @@ impl Controller {
         actions: Vec<TargetAction>,
         now: Instant,
     ) {
+        let Some(target) = self.incoming.get(&session) else {
+            return;
+        };
+        // RunHandBack follows ReleaseLease, which removes the session.
+        let source = target.source().clone();
+        let device_id = target.device().clone();
         let mut queue: std::collections::VecDeque<_> =
             actions.into_iter().map(TargetWork::Action).collect();
         while let Some(work) = queue.pop_front() {
@@ -1330,24 +1464,20 @@ impl Controller {
                     continue;
                 }
             };
-            let Some(target) = self.incoming.get(&session) else {
-                return;
-            };
-            let source = target.source().clone();
             match action {
                 TargetAction::Send(message) => {
                     self.ports.net.send(NetCommand::Send {
-                        peer: source,
+                        peer: source.clone(),
                         message,
                     });
                 }
                 TargetAction::StartVerifier => {
                     self.device_states
-                        .insert(target.device().clone(), VideoInput::Unverified);
+                        .insert(device_id.clone(), VideoInput::Unverified);
                     let device = self
                         .config
                         .computer(&self.local)
-                        .and_then(|c| c.device_by_id(target.device()))
+                        .and_then(|c| c.device_by_id(&device_id))
                         .map(|(alias, device)| (alias.to_owned(), device.clone()));
                     let Some((alias, device)) = device else {
                         queue.push_front(TargetWork::Event(VerifierEvent::Failed(
@@ -1382,7 +1512,7 @@ impl Controller {
                                     id: device.id,
                                     alias,
                                 },
-                                source_computer_id: source,
+                                source_computer_id: source.clone(),
                                 target_computer_id: Some(self.local.clone()),
                                 session_id: Some(session),
                                 portal: None,
@@ -1413,13 +1543,21 @@ impl Controller {
                 }
                 TargetAction::ShowVerifier { text, ack_wanted } => {
                     let screen = PromptScreen {
-                        source: self.label_of(&source),
+                        source: Some(self.label_of(&source)),
                         confirm_key: self.labels.confirm_key.clone(),
                         text,
                         ack_wanted,
                     };
+                    let prompt = match self.prompts.get(&session) {
+                        Some(prompt) => *prompt,
+                        None => {
+                            let prompt = self.allocate_prompt();
+                            self.prompts.insert(session, prompt);
+                            prompt
+                        }
+                    };
                     let shown = match self.find_display(session) {
-                        Some(display) => self.ports.prompt.show(session, &display, &screen),
+                        Some(display) => self.ports.prompt.show(prompt, &display, &screen),
                         None => Err("the input-target display is gone".into()),
                     };
                     if let Err(e) = &shown {
@@ -1432,7 +1570,11 @@ impl Controller {
                         queue.push_front(TargetWork::Action(action));
                     }
                 }
-                TargetAction::HideVerifier => self.ports.prompt.hide(session),
+                TargetAction::HideVerifier => {
+                    if let Some(prompt) = self.prompts.get(&session) {
+                        self.ports.prompt.hide(*prompt);
+                    }
+                }
                 TargetAction::HoldKeyboard => {
                     let display = self.find_display(session);
                     let result = match (display, self.ports.focus_holder.as_mut()) {
@@ -1501,7 +1643,13 @@ impl Controller {
                 }
                 TargetAction::ReleaseLease => {
                     self.leases.release(session);
+                    self.incoming.remove(&session);
+                    self.prompts.remove(&session);
+                    if self.injector_session == Some(session) {
+                        self.injector_session = None;
+                    }
                 }
+                TargetAction::RunHandBack => self.run_hand_back(source.clone(), device_id.clone()),
             }
         }
         if self
@@ -1510,6 +1658,7 @@ impl Controller {
             .is_some_and(TargetSession::is_finished)
         {
             self.incoming.remove(&session);
+            self.prompts.remove(&session);
             if self.injector_session == Some(session) {
                 self.injector_session = None;
             }
@@ -1519,6 +1668,398 @@ impl Controller {
 
     fn target_mut(&mut self, session: SessionId) -> Option<&mut TargetSession> {
         self.incoming.get_mut(&session)
+    }
+
+    // ----- Hand back, without a session -----
+
+    fn hand_back_cause(&self, target: &TargetSession) -> Option<String> {
+        let has_route = self
+            .config
+            .computer(&self.local)
+            .and_then(|c| c.device_by_id(target.device()))
+            .is_some_and(|(_, device)| device.handoff.contains_key(target.source()));
+        if !has_route {
+            Some(format!(
+                "No route back to {} in this config",
+                self.label_of(target.source())
+            ))
+        } else if !target.can_hand_back() {
+            Some("The source still switches the display".into())
+        } else {
+            None
+        }
+    }
+
+    fn send_hand_back_result(
+        &mut self,
+        peer: ComputerId,
+        device: DeviceId,
+        outcome: HandBackOutcome,
+    ) {
+        self.ports.net.send(NetCommand::Send {
+            peer,
+            message: Message::HandBackResult { device, outcome },
+        });
+    }
+
+    fn run_hand_back(&mut self, source: ComputerId, device_id: DeviceId) {
+        self.stop_hand_back_verification(&device_id);
+        let route = self
+            .config
+            .computer(&self.local)
+            .and_then(|c| c.device_by_id(&device_id))
+            .and_then(|(alias, device)| {
+                device
+                    .handoff
+                    .get(&source)
+                    .map(|route| (alias.to_owned(), route.clone()))
+            });
+        let Some((alias, route)) = route else {
+            self.notice(format!(
+                "Switch the display by hand: no route back to {} in this config.",
+                self.label_of(&source)
+            ));
+            self.send_hand_back_result(source, device_id, HandBackOutcome::NoRoute);
+            return;
+        };
+        let request = Request {
+            computer_id: self.local.clone(),
+            device: DeviceRef {
+                id: device_id.clone(),
+                alias,
+            },
+            source_computer_id: self.local.clone(),
+            target_computer_id: Some(source.clone()),
+            session_id: None,
+            portal: None,
+            displays: self.displays(),
+        };
+        self.spawn(
+            Pending::HandBack {
+                peer: source,
+                device: device_id,
+            },
+            Job::Handoff {
+                steps: route.steps,
+                request,
+            },
+        );
+    }
+
+    fn hand_back_result(
+        &mut self,
+        peer: ComputerId,
+        device: DeviceId,
+        outcome: HandBackOutcome,
+        now: Instant,
+    ) {
+        if !self
+            .pending_hand_backs
+            .remove(&(peer.clone(), device.clone()))
+        {
+            return;
+        }
+        self.stop_hand_back_verification(&device);
+        match outcome {
+            HandBackOutcome::NoRoute => self.notice(format!(
+                "Switch the display by hand: {} has no route back to this computer.",
+                self.label_of(&peer)
+            )),
+            HandBackOutcome::Failed { partial } => {
+                self.notice(format!(
+                    "The hand back from {} failed.",
+                    self.label_of(&peer)
+                ));
+                if partial {
+                    self.device_states.insert(device, VideoInput::Unknown);
+                }
+            }
+            HandBackOutcome::Done => {
+                self.device_states
+                    .insert(device.clone(), VideoInput::Unverified);
+                let prompt = self.allocate_prompt();
+                self.hand_back_verifications.insert(
+                    device.clone(),
+                    HandBackVerification {
+                        prompt,
+                        display: None,
+                        verification: Verification::new(),
+                        verifier: None,
+                    },
+                );
+                self.start_hand_back_input_target(peer, device, prompt, now);
+            }
+        }
+    }
+
+    fn hand_back_verification_failed(
+        &mut self,
+        device: &DeviceId,
+        error: HandBackVerificationError,
+    ) {
+        self.notice(format!("Cannot verify the hand back: {error}."));
+        self.stop_hand_back_verification(device);
+        self.device_states
+            .insert(device.clone(), VideoInput::Unknown);
+    }
+
+    fn start_hand_back_input_target(
+        &mut self,
+        peer: ComputerId,
+        device_id: DeviceId,
+        prompt: PromptId,
+        _now: Instant,
+    ) {
+        let device = self
+            .config
+            .computer(&self.local)
+            .and_then(|c| c.device_by_id(&device_id))
+            .map(|(alias, device)| (alias.to_owned(), device.clone()));
+        let Some((alias, device)) = device else {
+            self.hand_back_verification_failed(&device_id, HandBackVerificationError::DeviceGone);
+            return;
+        };
+        let Some(operation) = device.input_target else {
+            self.hand_back_verification_failed(
+                &device_id,
+                HandBackVerificationError::NoInputTarget(alias),
+            );
+            return;
+        };
+        let request = self.hand_back_verifier_request(&peer, &device_id, alias);
+        self.spawn(
+            Pending::HandBackInputTarget {
+                prompt,
+                peer,
+                device: device_id,
+            },
+            Job::Operation {
+                operation,
+                kind: OperationKind::InputTarget,
+                request,
+            },
+        );
+    }
+
+    fn hand_back_verifier_request(
+        &mut self,
+        peer: &ComputerId,
+        device: &DeviceId,
+        alias: String,
+    ) -> Request {
+        Request {
+            computer_id: self.local.clone(),
+            device: DeviceRef {
+                id: device.clone(),
+                alias,
+            },
+            source_computer_id: peer.clone(),
+            target_computer_id: Some(self.local.clone()),
+            session_id: None,
+            portal: None,
+            displays: self.displays(),
+        }
+    }
+
+    fn hand_back_input_target_done(
+        &mut self,
+        peer: ComputerId,
+        device_id: DeviceId,
+        output: JobOutput,
+    ) {
+        let result = match output {
+            JobOutput::Operation(Ok(Outcome::Display(token))) => self
+                .displays()
+                .into_iter()
+                .find(|display| display.token == token)
+                .ok_or(HandBackVerificationError::DisplayGone),
+            JobOutput::Operation(Err(error)) => {
+                Err(HandBackVerificationError::InputTargetFailed(error))
+            }
+            _ => Err(HandBackVerificationError::InvalidInputTarget),
+        };
+        let display = match result {
+            Ok(display) => display,
+            Err(error) => {
+                self.hand_back_verification_failed(&device_id, error);
+                return;
+            }
+        };
+        let Some(verification) = self.hand_back_verifications.get_mut(&device_id) else {
+            return;
+        };
+        verification.display = Some(display);
+        let device = self
+            .config
+            .computer(&self.local)
+            .and_then(|c| c.device_by_id(&device_id))
+            .map(|(alias, device)| (alias.to_owned(), device.clone()));
+        let Some((alias, device)) = device else {
+            self.hand_back_verification_failed(&device_id, HandBackVerificationError::DeviceGone);
+            return;
+        };
+        let Some(operation) = device.verify else {
+            self.stop_hand_back_verification(&device_id);
+            return;
+        };
+        match &operation.driver {
+            Driver::Prompt => {
+                let hint = self
+                    .config
+                    .computer(&self.local)
+                    .and_then(|c| c.hint.clone());
+                let (prompt, events) = PromptVerifier::start(hint, Instant::now());
+                verification.verifier = Some(Verifier::Prompt(prompt));
+                for event in events {
+                    self.hand_back_verifier_event(&device_id, event);
+                }
+            }
+            Driver::Exec(_) | Driver::Command(_) => {
+                let id = VerifierId(self.next_verifier);
+                self.next_verifier += 1;
+                verification.verifier = Some(Verifier::Process(id));
+                let request = self.hand_back_verifier_request(&peer, &device_id, alias);
+                self.ports.verifiers.start(id, operation, request);
+            }
+            Driver::Extension { name, .. } => self.hand_back_verifier_event(
+                &device_id,
+                VerifierEvent::Failed(format!("the driver {name} is not available")),
+            ),
+        }
+    }
+
+    fn hand_back_verifier_event(&mut self, device: &DeviceId, event: VerifierEvent) {
+        let Some(verification) = self.hand_back_verifications.get_mut(device) else {
+            return;
+        };
+        if matches!(event, VerifierEvent::Done(_) | VerifierEvent::Failed(_)) {
+            verification.verifier = None;
+        }
+        let actions = verification.verification.on_verifier(event);
+        self.run_hand_back_verification_actions(device, actions);
+    }
+
+    fn run_hand_back_verification_actions(
+        &mut self,
+        device: &DeviceId,
+        actions: Vec<VerificationAction>,
+    ) {
+        let mut queue: std::collections::VecDeque<_> = actions.into();
+        while let Some(action) = queue.pop_front() {
+            let Some(verification) = self.hand_back_verifications.get_mut(device) else {
+                return;
+            };
+            match action {
+                VerificationAction::Show { text, ack_wanted } => {
+                    let prompt = verification.prompt;
+                    let token = verification.display.as_ref().map(|d| d.token.clone());
+                    let display = self
+                        .displays()
+                        .into_iter()
+                        .find(|d| Some(&d.token) == token.as_ref());
+                    let screen = PromptScreen {
+                        source: None,
+                        confirm_key: self.labels.confirm_key.clone(),
+                        text,
+                        ack_wanted,
+                    };
+                    let shown = match display {
+                        Some(display) => self.ports.prompt.show(prompt, &display, &screen),
+                        None => Err(HandBackVerificationError::DisplayGone.to_string()),
+                    };
+                    if let Err(error) = &shown {
+                        self.notice(format!("Cannot show the hand back prompt: {error}"));
+                    }
+                    if let Some(verification) = self.hand_back_verifications.get_mut(device) {
+                        let more = verification.verification.on_shown(shown.is_ok());
+                        for action in more.into_iter().rev() {
+                            queue.push_front(action);
+                        }
+                    }
+                }
+                VerificationAction::Hide => self.ports.prompt.hide(verification.prompt),
+                VerificationAction::Ack => {
+                    let event = match verification.verifier.as_mut() {
+                        Some(Verifier::Prompt(prompt)) => prompt.ack(),
+                        Some(Verifier::Process(id)) => {
+                            self.ports.verifiers.ack(*id);
+                            None
+                        }
+                        None => None,
+                    };
+                    if let Some(event) = event {
+                        verification.verifier = None;
+                        let more = verification.verification.on_verifier(event);
+                        for action in more.into_iter().rev() {
+                            queue.push_front(action);
+                        }
+                    }
+                }
+                VerificationAction::Stop => {
+                    if let Some(Verifier::Process(id)) = verification.verifier.take() {
+                        self.ports.verifiers.stop(id);
+                    }
+                }
+                VerificationAction::AckWanted => {}
+                VerificationAction::Finished(result) => {
+                    if !verification.verification.hide().is_empty() {
+                        self.ports.prompt.hide(verification.prompt);
+                    }
+                    self.device_states.insert(
+                        device.clone(),
+                        match result {
+                            VerificationResult::Ok => VideoInput::Confirmed,
+                            VerificationResult::NotOk | VerificationResult::WindowFailed => {
+                                VideoInput::Unknown
+                            }
+                        },
+                    );
+                    self.hand_back_verifications.remove(device);
+                }
+            }
+        }
+    }
+
+    fn stop_hand_back_verification(&mut self, device: &DeviceId) {
+        let Some(mut verification) = self.hand_back_verifications.remove(device) else {
+            return;
+        };
+        for action in verification.verification.stop() {
+            match action {
+                VerificationAction::Stop => {
+                    if let Some(Verifier::Process(id)) = verification.verifier.take() {
+                        self.ports.verifiers.stop(id);
+                    }
+                }
+                VerificationAction::Hide => self.ports.prompt.hide(verification.prompt),
+                _ => {}
+            }
+        }
+    }
+
+    /// True when a hand back verifier wants an acknowledgement on this destination.
+    pub fn awaiting_local_ack(&self) -> bool {
+        self.hand_back_verifications
+            .values()
+            .any(|v| v.verification.ack_wanted())
+    }
+
+    /// Acknowledges a hand back verifier. Suppress an accepted event (FLOW-9).
+    pub fn acknowledge_local(&mut self) -> bool {
+        let device = self
+            .hand_back_verifications
+            .iter()
+            .find_map(|(device, v)| v.verification.ack_wanted().then(|| device.clone()));
+        let Some(device) = device else {
+            return false;
+        };
+        let Some(verification) = self.hand_back_verifications.get_mut(&device) else {
+            return false;
+        };
+        let actions = verification.verification.acknowledge();
+        let accepted = !actions.is_empty();
+        self.run_hand_back_verification_actions(&device, actions);
+        accepted
     }
 
     // ----- Jobs -----
@@ -1569,6 +2110,59 @@ impl Controller {
                     .unwrap_or_default();
                 self.run_source_actions(actions);
             }
+            Pending::HandBack { peer, device } => {
+                let (outcome, error) = match output {
+                    JobOutput::Handoff {
+                        result: HandoffResult::Done,
+                        ..
+                    } => (HandBackOutcome::Done, None),
+                    JobOutput::Handoff {
+                        result: HandoffResult::Failed { completed_steps },
+                        error,
+                    } => (
+                        HandBackOutcome::Failed {
+                            partial: completed_steps > 0,
+                        },
+                        error,
+                    ),
+                    other => (
+                        HandBackOutcome::Failed { partial: false },
+                        Some(format!("unexpected handoff result: {other:?}")),
+                    ),
+                };
+                // VER-6: the state of this computer after its route back.
+                match outcome {
+                    HandBackOutcome::Done => {
+                        self.device_states.remove(&device);
+                    }
+                    HandBackOutcome::Failed { partial: true } => {
+                        self.device_states
+                            .insert(device.clone(), VideoInput::Unknown);
+                    }
+                    _ => {}
+                }
+                if let HandBackOutcome::Failed { .. } = outcome {
+                    self.notice(format!(
+                        "The hand back to {} failed: {}",
+                        self.label_of(&peer),
+                        error.as_deref().unwrap_or("the handoff steps failed")
+                    ));
+                }
+                self.send_hand_back_result(peer, device, outcome);
+            }
+            Pending::HandBackInputTarget {
+                prompt,
+                peer,
+                device,
+            } => {
+                if self
+                    .hand_back_verifications
+                    .get(&device)
+                    .is_some_and(|v| v.prompt == prompt)
+                {
+                    self.hand_back_input_target_done(peer, device, output);
+                }
+            }
         }
     }
 
@@ -1603,6 +2197,17 @@ impl Controller {
             }
             Intent::StartHandoff { target } => self.start_handoff(target),
             Intent::EndSession => self.end_portal_session(EndReason::SourceClosed),
+            Intent::HandBack { session } => {
+                if self
+                    .incoming
+                    .get(&session)
+                    .is_some_and(|target| self.hand_back_cause(target).is_none())
+                    && let Some(target) = self.incoming.get_mut(&session)
+                {
+                    let actions = target.hand_back();
+                    self.run_target_actions(session, actions);
+                }
+            }
             Intent::StopSession { session } => self.end_incoming(session, EndReason::TargetStopped),
             Intent::ControlFromHere { session } => self.control_from_here(session),
         }
@@ -1633,9 +2238,33 @@ impl Controller {
     }
 
     /// The window layer could not show a prompt that the presenter accepted.
-    pub fn prompt_failed(&mut self, session: SessionId) {
+    pub fn prompt_failed(&mut self, prompt: PromptId) {
+        let session = self
+            .prompts
+            .iter()
+            .find_map(|(session, id)| (*id == prompt).then_some(*session));
+        if let Some(session) = session {
+            self.notice("Cannot show the prompt window.".into());
+            self.device_states.extend(
+                self.incoming
+                    .get(&session)
+                    .map(|t| (t.device().clone(), VideoInput::Unknown)),
+            );
+            self.end_incoming(session, EndReason::PromptFailed);
+            return;
+        }
+        let device = self
+            .hand_back_verifications
+            .iter()
+            .find_map(|(device, v)| (v.prompt == prompt).then(|| device.clone()));
+        let Some(device) = device else {
+            return;
+        };
         self.notice("Cannot show the prompt window.".into());
-        self.end_incoming(session, EndReason::PromptFailed);
+        if let Some(verification) = self.hand_back_verifications.get_mut(&device) {
+            let actions = verification.verification.on_shown(false);
+            self.run_hand_back_verification_actions(&device, actions);
+        }
     }
 
     fn end_incoming(&mut self, session: SessionId, reason: EndReason) {
@@ -1777,6 +2406,7 @@ impl Controller {
                 session: *session,
                 source: self.label_of(t.source()),
                 state: target_phase_text(t.phase()).into(),
+                hand_back: self.hand_back_cause(t),
             })
             .collect();
         ControlScreen {
@@ -1827,7 +2457,7 @@ fn refuse_text(reason: RefuseReason) -> String {
 
 fn end_text(reason: EndReason) -> &'static str {
     match reason {
-        EndReason::ReleaseShortcut => "release shortcut",
+        EndReason::HandBack => "handed back",
         EndReason::SafetyExit => "safety exit",
         EndReason::SourceClosed => "ended on this computer",
         EndReason::TargetDisconnected => "disconnected on the target",

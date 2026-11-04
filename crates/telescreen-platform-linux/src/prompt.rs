@@ -1,6 +1,7 @@
 //! The confirmation prompt as a layer-shell overlay on the input-target output
 //! (UI-5, FLOW-7). It runs on its own thread with its own Wayland connection.
-//! It does not take keyboard or pointer input: the user confirms on the source.
+//! It does not take keyboard or pointer input: the user confirms on the source,
+//! or, for a hand back, in another window of Telescreen (VER-4).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -10,9 +11,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 use std::time::Duration;
 
-use telescreen_core::ids::SessionId;
 use telescreen_core::platform::DisplayInfo;
-use telescreen_view::{PromptPresenter, PromptScreen};
+use telescreen_view::{PromptId, PromptPresenter, PromptScreen};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
 };
@@ -61,12 +61,12 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u64> for State {
 
 enum Command {
     Show {
-        session: SessionId,
+        prompt: PromptId,
         output: String,
         screen: PromptScreen,
     },
     Hide {
-        session: SessionId,
+        prompt: PromptId,
     },
 }
 
@@ -102,14 +102,14 @@ impl LayerPrompt {
 impl PromptPresenter for LayerPrompt {
     fn show(
         &mut self,
-        session: SessionId,
+        prompt: PromptId,
         display: &DisplayInfo,
         screen: &PromptScreen,
     ) -> Result<(), String> {
         let output = display.token.0.clone();
         self.commands
             .send(Command::Show {
-                session,
+                prompt,
                 output,
                 screen: screen.clone(),
             })
@@ -119,8 +119,8 @@ impl PromptPresenter for LayerPrompt {
             .map_err(|_| "the prompt did not show in time".to_string())?
     }
 
-    fn hide(&mut self, session: SessionId) {
-        let _ = self.commands.send(Command::Hide { session });
+    fn hide(&mut self, prompt: PromptId) {
+        let _ = self.commands.send(Command::Hide { prompt });
     }
 }
 
@@ -168,14 +168,14 @@ impl Overlay {
         loop {
             match commands.recv_timeout(Duration::from_millis(250)) {
                 Ok(Command::Show {
-                    session,
+                    prompt,
                     output,
                     screen,
                 }) => {
-                    let result = self.show(session.0, &output, screen);
+                    let result = self.show(prompt.0, &output, screen);
                     let _ = results.send(result);
                 }
-                Ok(Command::Hide { session }) => self.hide(session.0),
+                Ok(Command::Hide { prompt }) => self.hide(prompt.0),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }

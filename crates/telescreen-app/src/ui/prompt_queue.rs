@@ -4,19 +4,18 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use telescreen_core::ids::SessionId;
 use telescreen_core::platform::DisplayInfo;
-use telescreen_view::{PromptPresenter, PromptScreen};
+use telescreen_view::{PromptId, PromptPresenter, PromptScreen};
 
 #[derive(Debug, Clone)]
 pub enum PromptRequest {
     Show {
-        session: SessionId,
+        prompt: PromptId,
         display: DisplayInfo,
         screen: PromptScreen,
     },
     Hide {
-        session: SessionId,
+        prompt: PromptId,
     },
 }
 
@@ -34,19 +33,19 @@ impl PromptPresenter for PromptQueue {
     /// `Controller::prompt_failed`.
     fn show(
         &mut self,
-        session: SessionId,
+        prompt: PromptId,
         display: &DisplayInfo,
         screen: &PromptScreen,
     ) -> Result<(), String> {
         self.0.borrow_mut().push(PromptRequest::Show {
-            session,
+            prompt,
             display: display.clone(),
             screen: screen.clone(),
         });
         Ok(())
     }
 
-    fn hide(&mut self, session: SessionId) {
-        self.0.borrow_mut().push(PromptRequest::Hide { session });
+    fn hide(&mut self, prompt: PromptId) {
+        self.0.borrow_mut().push(PromptRequest::Hide { prompt });
     }
 }

@@ -3,7 +3,7 @@
 //!
 //! The tap runs on its own thread with its own run loop. The callback only reads
 //! the event, decides to suppress it, and pushes a [`CapturedEvent`] to a bounded
-//! queue (IN-2). The callback itself handles the release shortcut and the safety
+//! queue (IN-2). The callback itself handles the hand back shortcut and the safety
 //! exit, so they work when the main thread does not respond (IN-7, IN-8). A
 //! watchdog thread stops suppression when the main thread stops its heartbeat (IN-9).
 //!
@@ -463,7 +463,7 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
                 let flags = unsafe { ffi::CGEventGetFlags(event) };
                 if flags & RELEASE_FLAGS == RELEASE_FLAGS {
                     // IN-7: never forwarded.
-                    shared.stop(CapturedEvent::ReleaseShortcut);
+                    shared.stop(CapturedEvent::HandBackShortcut);
                     return true;
                 }
             }

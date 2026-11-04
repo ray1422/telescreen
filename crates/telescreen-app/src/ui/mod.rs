@@ -24,13 +24,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telescreen_core::config::Config;
 use telescreen_core::driver::{self, SearchPath};
-use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DisplayToken};
 use telescreen_core::verifier::VerifierEvent;
 use telescreen_core::wire::{EndReason, Message};
 use telescreen_render_egui::{SharedGpu, WindowRenderer};
 use telescreen_transport::network::{Timing, TrustSource};
 use telescreen_transport::{Identity, NetConfig, NetEvent, Network};
-use telescreen_view::{Intent, PromptScreen};
+use telescreen_view::{Intent, PromptId, PromptScreen};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -256,7 +256,7 @@ struct App {
     hooks: platform::Hooks,
     control: Option<Surface>,
     portal: Option<PortalSurface>,
-    prompts: HashMap<SessionId, PromptSurface>,
+    prompts: HashMap<PromptId, PromptSurface>,
     last_display_check: Instant,
     /// The release of an acknowledgement click must not go to the UI (FLOW-9).
     swallow_release: bool,
@@ -440,21 +440,21 @@ impl App {
 
     fn prompt_request(&mut self, event_loop: &ActiveEventLoop, request: PromptRequest) {
         match request {
-            PromptRequest::Hide { session } => {
-                self.prompts.remove(&session);
+            PromptRequest::Hide { prompt } => {
+                self.prompts.remove(&prompt);
             }
             PromptRequest::Show {
-                session,
+                prompt,
                 display,
                 screen,
             } => {
-                if let Some(prompt) = self.prompts.get_mut(&session) {
-                    prompt.screen = screen;
-                    prompt.surface.window.request_redraw();
+                if let Some(surface) = self.prompts.get_mut(&prompt) {
+                    surface.screen = screen;
+                    surface.surface.window.request_redraw();
                     return;
                 }
                 let Some(bounds) = display.bounds else {
-                    self.controller.prompt_failed(session);
+                    self.controller.prompt_failed(prompt);
                     return;
                 };
                 let attributes = platform::window_attributes(Window::default_attributes())
@@ -472,9 +472,9 @@ impl App {
                             self.controller.add_notice(error);
                         }
                         self.prompts
-                            .insert(session, PromptSurface { surface, screen });
+                            .insert(prompt, PromptSurface { surface, screen });
                     }
-                    Err(_) => self.controller.prompt_failed(session),
+                    Err(_) => self.controller.prompt_failed(prompt),
                 }
             }
         }
@@ -508,8 +508,49 @@ impl App {
         }
     }
 
-    /// Portal window events before the renderer sees them. Returns true if the
-    /// event was used here (an acknowledgement, or input of a Linux capture).
+    /// Accepts acknowledgements before the renderer sees them (VER-4, FLOW-9).
+    fn acknowledgement_event(
+        &mut self,
+        event: &WindowEvent,
+        is_portal: bool,
+        is_prompt: bool,
+    ) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && !event.repeat
+                    && matches!(
+                        event.physical_key,
+                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
+                    ) =>
+            {
+                (is_portal && self.controller.acknowledge())
+                    || (self.controller.awaiting_local_ack() && self.controller.acknowledge_local())
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if is_portal || is_prompt => {
+                let accepted = (is_portal && self.controller.acknowledge())
+                    || (self.controller.awaiting_local_ack()
+                        && self.controller.acknowledge_local());
+                self.swallow_release = accepted;
+                accepted
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } if self.swallow_release => {
+                self.swallow_release = false;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Portal window events before the renderer sees them. Returns true if used.
     fn portal_event(&mut self, event: &WindowEvent) -> bool {
         if self
             .hooks
@@ -537,37 +578,12 @@ impl App {
                 false
             }
             WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
+                if self.controller.forwarding() && window.fullscreen().is_none() {
+                    self.controller.portal_left_fullscreen();
+                }
                 self.portal_monitor_changed(&window);
                 self.start_portal();
                 false
-            }
-            WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
-                    && !event.repeat
-                    && matches!(
-                        event.physical_key,
-                        PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
-                    )
-                    && self.controller.awaiting_ack() =>
-            {
-                self.controller.acknowledge()
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } if self.controller.awaiting_ack() => {
-                let acknowledged = self.controller.acknowledge();
-                self.swallow_release = acknowledged;
-                acknowledged
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } if self.swallow_release => {
-                self.swallow_release = false;
-                true
             }
             WindowEvent::CloseRequested => {
                 self.close_portal_window();
@@ -610,10 +626,10 @@ impl App {
                 debug::ok_response()
             }
             Request::Ack => {
-                if !self.controller.awaiting_ack() {
-                    debug::error_response("the portal does not wait for an acknowledgement")
-                } else if self.controller.acknowledge() {
+                if self.controller.acknowledge() || self.controller.acknowledge_local() {
                     debug::ok_response()
+                } else if !self.controller.awaiting_ack() && !self.controller.awaiting_local_ack() {
+                    debug::error_response("nothing waits for an acknowledgement")
                 } else {
                     debug::error_response("the portal must have the focus to acknowledge")
                 }
@@ -738,7 +754,10 @@ impl ApplicationHandler<UserEvent> for App {
             .as_ref()
             .is_some_and(|p| p.surface.window.id() == id);
         let is_control = self.control.as_ref().is_some_and(|c| c.window.id() == id);
-        let used = is_portal && self.portal_event(&event);
+        let is_prompt = self.prompts.values().any(|p| p.surface.window.id() == id);
+        let used = (is_portal || is_control || is_prompt)
+            && self.acknowledgement_event(&event, is_portal, is_prompt)
+            || (is_portal && self.portal_event(&event));
         if is_control && matches!(event, WindowEvent::CloseRequested) {
             self.controller.shutdown();
             self.close_portal_window();

@@ -11,7 +11,7 @@ use telescreen_core::wire::{EndReason, Message, PointerDatagram};
 
 use TargetAction::{
     AckVerifier, CheckDisplay, HideVerifier, HoldKeyboard, Inject, MovePointer, ReleaseKeyboard,
-    ReleaseLease, Send, ShowVerifier, StartVerifier, StopVerifier,
+    ReleaseLease, RunHandBack, Send, ShowVerifier, StartVerifier, StopVerifier,
 };
 
 const S: SessionId = SessionId(42);
@@ -380,7 +380,7 @@ fn flow23_end_removes_the_focus_holder() {
     t.on_message(&input(key(56, true)));
     let actions = t.on_message(&Message::End {
         session: S,
-        reason: EndReason::ReleaseShortcut,
+        reason: EndReason::SafetyExit,
     });
     assert_eq!(
         actions,
@@ -435,7 +435,7 @@ fn flow16_source_end_while_forwarding_releases() {
     t.on_message(&input(key(56, true)));
     let actions = t.on_message(&Message::End {
         session: S,
-        reason: EndReason::ReleaseShortcut,
+        reason: EndReason::SafetyExit,
     });
     assert_eq!(actions, vec![Inject(key(56, false)), ReleaseLease]);
 }
@@ -497,4 +497,93 @@ fn net6_stale_and_unexpected_messages_have_no_effect() {
         "no verifier yet"
     );
     assert_eq!(t.phase(), TargetPhase::AwaitingHandoff);
+}
+
+#[test]
+fn hb1_hb2_hand_back_ends_then_runs_the_route() {
+    let mut t = forwarding();
+    t.on_message(&Message::KeyboardAway { session: S });
+    t.on_message(&input(key(56, true)));
+    assert!(t.can_hand_back());
+    // The end comes first: no key stays held across the switch.
+    assert_eq!(
+        t.hand_back(),
+        vec![
+            Inject(key(56, false)),
+            ReleaseKeyboard,
+            Send(Message::End {
+                session: S,
+                reason: EndReason::HandBack
+            }),
+            ReleaseLease,
+            RunHandBack
+        ]
+    );
+    assert_eq!(t.phase(), TargetPhase::Ended(EndReason::HandBack));
+    assert!(t.hand_back().is_empty());
+    assert!(!t.can_hand_back());
+}
+
+#[test]
+fn hb1_hand_back_while_verifying_stops_the_verifier() {
+    let mut t = ack_wanted();
+    assert_eq!(
+        t.hand_back(),
+        vec![
+            StopVerifier,
+            HideVerifier,
+            Send(Message::End {
+                session: S,
+                reason: EndReason::HandBack
+            }),
+            ReleaseLease,
+            RunHandBack
+        ]
+    );
+    let mut t = checking_display();
+    assert!(t.can_hand_back());
+    assert_eq!(*t.hand_back().last().unwrap(), RunHandBack);
+}
+
+#[test]
+fn hb1_no_hand_back_before_handoff_done() {
+    // The source can still run its steps.
+    let mut t = new();
+    assert!(!t.can_hand_back());
+    assert!(t.hand_back().is_empty());
+    assert!(
+        t.on_message(&Message::HandBackRequest { session: S })
+            .is_empty()
+    );
+    assert_eq!(t.phase(), TargetPhase::AwaitingHandoff);
+}
+
+#[test]
+fn hb3_a_request_of_the_source_runs_the_route() {
+    let mut t = forwarding();
+    t.on_message(&input(key(56, true)));
+    assert_eq!(
+        t.on_message(&Message::HandBackRequest { session: S }),
+        vec![Inject(key(56, false)), ReleaseLease, RunHandBack],
+        "the source already ended the session: no End"
+    );
+    assert_eq!(t.phase(), TargetPhase::Ended(EndReason::HandBack));
+
+    let mut t = ack_wanted();
+    assert_eq!(
+        t.on_message(&Message::HandBackRequest { session: S }),
+        vec![StopVerifier, HideVerifier, ReleaseLease, RunHandBack]
+    );
+}
+
+#[test]
+fn hb3_a_request_for_another_session_has_no_effect() {
+    let mut t = forwarding();
+    assert!(
+        t.on_message(&Message::HandBackRequest {
+            session: SessionId(41)
+        })
+        .is_empty()
+    );
+    assert_eq!(t.phase(), TargetPhase::Forwarding);
 }

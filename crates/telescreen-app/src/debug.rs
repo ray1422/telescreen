@@ -26,7 +26,7 @@ pub enum Request {
     State,
     /// `{"cmd":"intent","intent":<intent>}`: the same as a click in the UI.
     Intent(Intent),
-    /// `{"cmd":"ack"}`: the same as the acknowledgement key in the portal.
+    /// `{"cmd":"ack"}`: acknowledges the portal session, else a local verification.
     Ack,
     /// `{"cmd":"hold_keyboard","display":"<token>"}`: takes keyboard focus (UI-7).
     HoldKeyboard { display: DisplayToken },
@@ -137,7 +137,7 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
         "SelectDevice" => Ok(Intent::SelectDevice {
             alias: string_field(arguments, "alias")?.to_owned(),
         }),
-        "StopSession" | "ControlFromHere" => {
+        "HandBack" | "StopSession" | "ControlFromHere" => {
             let session = arguments
                 .get("session")
                 .and_then(Value::as_u64)
@@ -145,7 +145,9 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
                 .ok_or_else(|| {
                     DebugError::Request("session must be a non-negative u64 integer".into())
                 })?;
-            if name == "StopSession" {
+            if name == "HandBack" {
+                Ok(Intent::HandBack { session })
+            } else if name == "StopSession" {
                 Ok(Intent::StopSession { session })
             } else {
                 Ok(Intent::ControlFromHere { session })

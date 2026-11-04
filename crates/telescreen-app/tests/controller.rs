@@ -1,5 +1,5 @@
-//! Two controllers with fake ports and an in-memory network: the user flow of
-//! `docs/spec.md` section 4 across two peers.
+//! Controllers with fake ports and an in-memory network: the user flow of
+//! `docs/spec.md` section 4 across two peers, and three peers for FLOW-24.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests may panic on a failed setup.
 
 use std::cell::RefCell;
@@ -14,7 +14,7 @@ use telescreen_app::controller::{
 use telescreen_core::clipboard::{ClipboardChange, ClipboardItem};
 use telescreen_core::config::{Config, Driver, Operation};
 use telescreen_core::driver::{OperationKind, Outcome, Request};
-use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken};
 use telescreen_core::input::InputEvent;
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{
@@ -25,9 +25,9 @@ use telescreen_core::pointer::{Normalized, Point, Rect};
 use telescreen_core::session::VideoInput;
 use telescreen_core::session::source::HandoffResult;
 use telescreen_core::verifier::VerifierEvent;
-use telescreen_core::wire::{EndReason, Message, RefuseReason};
+use telescreen_core::wire::{EndReason, HandBackOutcome, Message, RefuseReason};
 use telescreen_transport::{NetCommand, NetEvent};
-use telescreen_view::{Intent, Matching, PromptPresenter, PromptScreen, SessionPhase};
+use telescreen_view::{Intent, Matching, PromptId, PromptPresenter, PromptScreen, SessionPhase};
 
 /// The config of the tests. pc1 and the Mac verify with the `prompt` verifier.
 fn config() -> Config {
@@ -74,6 +74,17 @@ fn config() -> Config {
                     "Screen": {
                         "id": "shared-lg",
                         "handoff": {"pc1": {"steps": [op("to-pc1")]}}
+                    }
+                }
+            },
+            "pc4": {
+                "label": "Desk PC",
+                "endpoint": {"host": "pc4.test", "port": 24800},
+                "devices": {
+                    "Screen": {
+                        "id": "shared-lg",
+                        "portal-match": op("match"),
+                        "handoff": {"mac": {"steps": [op("to-mac")]}}
                     }
                 }
             }
@@ -126,7 +137,15 @@ impl NetPort for Net {
 struct Jobs(Shared);
 impl JobPort for Jobs {
     fn spawn(&mut self, id: JobId, job: Job) {
-        self.0.borrow_mut().jobs.push_back((id, job));
+        let mut log = self.0.borrow_mut();
+        if let Job::Handoff { steps, .. } = &job {
+            let first = match &steps[0].driver {
+                Driver::Command(program) | Driver::Exec(program) => program.argv[0].clone(),
+                _ => "other".into(),
+            };
+            log.target.push(format!("handoff {first}"));
+        }
+        log.jobs.push_back((id, job));
     }
 }
 
@@ -269,7 +288,7 @@ impl VerifierPort for Verifiers {
 
 struct Prompt(Shared);
 impl PromptPresenter for Prompt {
-    fn show(&mut self, _: SessionId, _: &DisplayInfo, screen: &PromptScreen) -> Result<(), String> {
+    fn show(&mut self, _: PromptId, _: &DisplayInfo, screen: &PromptScreen) -> Result<(), String> {
         let mut log = self.0.borrow_mut();
         log.prompts.push(format!(
             "{} | {}",
@@ -279,7 +298,7 @@ impl PromptPresenter for Prompt {
         log.prompt_visible = true;
         Ok(())
     }
-    fn hide(&mut self, _: SessionId) {
+    fn hide(&mut self, _: PromptId) {
         self.0.borrow_mut().prompt_visible = false;
     }
 }
@@ -353,7 +372,7 @@ fn peer_config(
     };
     let labels = Labels {
         confirm_key: "Return".into(),
-        release_shortcut: "Ctrl+Opt+Cmd+Esc".into(),
+        hand_back_shortcut: "Ctrl+Opt+Cmd+Esc".into(),
     };
     let controller = Controller::new(
         config,
@@ -371,9 +390,23 @@ fn peer_config(
     }
 }
 
+/// Two different peers of the slice.
+fn pair<'a>(peers: &'a mut [&mut Peer], i: usize, j: usize) -> (&'a mut Peer, &'a mut Peer) {
+    assert_ne!(i, j, "a peer sends to itself");
+    if i < j {
+        let (left, right) = peers.split_at_mut(j);
+        (&mut *left[i], &mut *right[0])
+    } else {
+        let (left, right) = peers.split_at_mut(i);
+        (&mut *right[0], &mut *left[j])
+    }
+}
+
 struct World {
     mac: Peer,
     pc1: Peer,
+    /// More peers for FLOW-24.
+    extra: Vec<Peer>,
     now: Instant,
     /// The result of each handoff job.
     handoff: HandoffResult,
@@ -390,6 +423,7 @@ impl World {
                 ],
             ),
             pc1: peer("pc1", vec![display("HDMI-A-2", 0.0, 2048.0)]),
+            extra: Vec::new(),
             now: Instant::now(),
             handoff: HandoffResult::Done,
         }
@@ -399,27 +433,35 @@ impl World {
     fn pump(&mut self) {
         loop {
             let mut progress = false;
-            for mac_first in [true, false] {
-                let (a, b) = if mac_first {
-                    (&mut self.mac, &mut self.pc1)
-                } else {
-                    (&mut self.pc1, &mut self.mac)
-                };
+            let mut peers: Vec<&mut Peer> = [&mut self.mac, &mut self.pc1]
+                .into_iter()
+                .chain(self.extra.iter_mut())
+                .collect();
+            for i in 0..peers.len() {
                 loop {
                     // Take the item first: the controller writes to the log while it runs.
-                    let next = a.log.borrow_mut().net.pop_front();
+                    let next = peers[i].log.borrow_mut().net.pop_front();
                     let Some(command) = next else { break };
                     progress = true;
+                    let to = match &command {
+                        NetCommand::Dial { peer, .. }
+                        | NetCommand::Send { peer, .. }
+                        | NetCommand::SendPointer { peer, .. }
+                        | NetCommand::Close { peer } => peer.clone(),
+                    };
+                    let j = peers
+                        .iter()
+                        .position(|p| p.id == to)
+                        .unwrap_or_else(|| panic!("no peer {to:?} in the world"));
+                    let (a, b) = pair(&mut peers, i, j);
                     match command {
-                        NetCommand::Dial { peer, .. } => {
-                            assert_eq!(peer, b.id);
+                        NetCommand::Dial { .. } => {
                             a.controller
                                 .on_net(NetEvent::Connected { peer: b.id.clone() }, self.now);
                             b.controller
                                 .on_net(NetEvent::Connected { peer: a.id.clone() }, self.now);
                         }
-                        NetCommand::Send { peer, message } => {
-                            assert_eq!(peer, b.id);
+                        NetCommand::Send { message, .. } => {
                             b.controller.on_net(
                                 NetEvent::Message {
                                     peer: a.id.clone(),
@@ -428,8 +470,7 @@ impl World {
                                 self.now,
                             );
                         }
-                        NetCommand::SendPointer { peer, datagram } => {
-                            assert_eq!(peer, b.id);
+                        NetCommand::SendPointer { datagram, .. } => {
                             b.controller.on_net(
                                 NetEvent::Pointer {
                                     peer: a.id.clone(),
@@ -439,7 +480,6 @@ impl World {
                             );
                         }
                         NetCommand::Close { peer } => {
-                            assert_eq!(peer, b.id);
                             a.log.borrow_mut().closed.push(peer);
                             let reason = || "closed".to_string();
                             let (a_id, b_id) = (a.id.clone(), b.id.clone());
@@ -460,6 +500,7 @@ impl World {
                         }
                     }
                 }
+                let a = &mut *peers[i];
                 loop {
                     let next = a.log.borrow_mut().jobs.pop_front();
                     let Some((id, job)) = next else { break };
@@ -780,9 +821,15 @@ fn flow23_session_end_removes_the_holder() {
     let mut w = World::new();
     w.advance_to_forwarding();
     w.mac.controller.on_captured(CapturedEvent::KeyboardLeft);
-    w.mac.controller.on_captured(CapturedEvent::ReleaseShortcut);
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::HandBackShortcut);
     w.pump();
-    assert_eq!(w.pc1.log.borrow().target, ["hold HDMI-A-2", "release"]);
+    // The holder goes before the route back runs (HB-1).
+    assert_eq!(
+        w.pc1.log.borrow().target,
+        ["hold HDMI-A-2", "release", "handoff /bin/to-mac"]
+    );
 }
 
 #[test]
@@ -832,18 +879,18 @@ fn ac29_target_without_focus_holder_refuses() {
 }
 
 #[test]
-fn flow16_ac15_release_shortcut_ends_both_sides() {
+fn flow16_in8_the_safety_exit_ends_both_sides() {
     let mut w = World::new();
     w.advance_to_forwarding();
     w.mac
         .controller
         .on_captured(CapturedEvent::Input(key(29, true)));
-    w.mac.controller.on_captured(CapturedEvent::ReleaseShortcut);
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
     w.pump();
     assert_eq!(
         w.phase(),
         Some(SessionPhase::Ended {
-            reason: "release shortcut".into()
+            reason: "safety exit".into()
         })
     );
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
@@ -968,12 +1015,8 @@ fn flow17_ac23_control_from_here_starts_the_reverse_session() {
         .on_intent(Intent::ControlFromHere { session });
     w.pump();
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "the target took control back".into()
-        })
-    );
+    // FLOW-24: the Mac grants the new session and closes its portal on the display.
+    assert!(!w.mac.controller.has_portal());
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     // pc1 is now the source: a portal on the display of the old session, and a
     // handoff to the old source that waits for the confirmation.
@@ -1003,11 +1046,15 @@ fn flow6_reverse_handoff_ends_the_old_session() {
     w.pump();
     w.pc1.controller.start_handoff(ComputerId::from("mac"));
     w.pump();
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "a new handoff of this display started".into()
-        })
+    assert!(!w.mac.controller.has_portal(), "FLOW-24");
+    assert!(
+        !w.mac
+            .controller
+            .control_screen()
+            .notices
+            .iter()
+            .any(|n| n.contains("took this display")),
+        "with two peers, the old session ended before the request (FLOW-24)"
     );
     assert!(
         w.mac.log.borrow().capture.contains(&"disarm".to_string()),
@@ -1312,7 +1359,7 @@ fn clip2_ac32_no_sync_with_a_switch_off() {
 fn clip5_ac32_no_sync_after_the_session_end() {
     let mut w = World::new();
     w.advance_to_forwarding();
-    w.mac.controller.on_captured(CapturedEvent::ReleaseShortcut);
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
     w.pump();
     copy(&w.mac, "late", false);
     w.mac.controller.tick(w.now);
@@ -1378,13 +1425,13 @@ fn clip7_no_clear_for_a_text_without_the_mark() {
 
 #[test]
 fn clip11_ac35_the_session_end_clears_the_received_text() {
-    for end in ["release shortcut", "stop on the target", "switch off"] {
+    for end in ["safety exit", "stop on the target", "switch off"] {
         let mut w = World::new();
         w.advance_to_forwarding();
         copy(&w.mac, "a", false);
         settle(&mut w);
         match end {
-            "release shortcut" => w.mac.controller.on_captured(CapturedEvent::ReleaseShortcut),
+            "safety exit" => w.mac.controller.on_captured(CapturedEvent::SafetyExit),
             "stop on the target" => {
                 let session = w.pc1.controller.control_screen().incoming[0].session;
                 w.pc1.controller.on_intent(Intent::StopSession { session });
@@ -1423,7 +1470,7 @@ fn clip11_ac35_a_copy_by_the_user_stays_at_the_end() {
     copy(&w.mac, "a", false);
     settle(&mut w);
     copy(&w.pc1, "mine", false);
-    w.mac.controller.on_captured(CapturedEvent::ReleaseShortcut);
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
     settle(&mut w);
     assert_eq!(w.pc1.log.borrow().clip_calls, ["open", "close"]);
 }
@@ -1720,4 +1767,363 @@ fn flow12_a_partial_handoff_makes_the_device_unknown_on_the_destination() {
     w.handoff = HandoffResult::Failed { completed_steps: 0 };
     w.advance_to_confirmation();
     assert_eq!(pc1_state(&w), VideoInput::Unchanged, "nothing switched");
+}
+
+/// The device state of the shared display on the Mac (VER-6).
+fn mac_state(w: &World) -> VideoInput {
+    let screen = w.mac.controller.control_screen();
+    screen
+        .devices
+        .iter()
+        .find(|row| row.alias == "Desktop")
+        .unwrap()
+        .state
+}
+
+const LOCAL_PROMPT: &str = "Press Return or click here to confirm this display | ";
+
+fn hand_back_on_pc1(w: &mut World) {
+    let row = w.pc1.controller.control_screen().incoming[0].clone();
+    assert_eq!(row.hand_back, None, "Hand back is available");
+    w.pc1.controller.on_intent(Intent::HandBack {
+        session: row.session,
+    });
+    w.pump();
+}
+
+#[test]
+fn hb1_hb2_ac36_the_target_hands_back() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::Input(key(42, true)));
+    w.pump();
+    hand_back_on_pc1(&mut w);
+    // The end comes first: no key stays held across the switch.
+    assert_eq!(
+        w.pc1.log.borrow().target[1..],
+        [
+            format!("inject {:?}", key(42, false)),
+            "handoff /bin/to-mac".into()
+        ]
+    );
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert!(matches!(w.phase(), Some(SessionPhase::Ended { .. })));
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    // VER-6: the device left pc1, so pc1 shows no state.
+    assert_eq!(pc1_state(&w), VideoInput::Unchanged);
+
+    // The Mac verifies as the destination, with its own prompt (HB-1, VER-4).
+    assert!(w.mac.log.borrow().prompt_visible);
+    assert_eq!(w.mac.log.borrow().prompts.last().unwrap(), LOCAL_PROMPT);
+    assert_eq!(mac_state(&w), VideoInput::Unverified);
+    assert!(w.mac.controller.awaiting_local_ack());
+    assert!(
+        !w.mac.controller.acknowledge(),
+        "the portal has no session to ack"
+    );
+    assert!(w.mac.controller.acknowledge_local());
+    assert!(!w.mac.controller.awaiting_local_ack());
+    assert!(!w.mac.log.borrow().prompt_visible);
+    assert_eq!(mac_state(&w), VideoInput::Confirmed);
+    assert!(!w.mac.controller.acknowledge_local(), "one ack");
+}
+
+#[test]
+fn hb3_ac15_the_hand_back_shortcut() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::HandBackShortcut);
+    w.pump();
+    assert_eq!(
+        w.pc1.log.borrow().target.last().unwrap(),
+        "handoff /bin/to-mac"
+    );
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    assert_eq!(w.mac.log.borrow().prompts.last().unwrap(), LOCAL_PROMPT);
+    assert!(w.mac.controller.acknowledge_local());
+    assert_eq!(mac_state(&w), VideoInput::Confirmed);
+}
+
+#[test]
+fn hb3_ui3_ac38_the_portal_left_fullscreen() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.portal_left_fullscreen();
+    w.pump();
+    assert_eq!(
+        w.pc1.log.borrow().target.last().unwrap(),
+        "handoff /bin/to-mac"
+    );
+    assert!(w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn ver5_the_local_prompt_times_out() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    hand_back_on_pc1(&mut w);
+    w.mac
+        .controller
+        .tick(w.now + std::time::Duration::from_secs(61));
+    w.pump();
+    assert!(!w.mac.log.borrow().prompt_visible);
+    assert_eq!(mac_state(&w), VideoInput::Unknown);
+    w.mac.controller.on_intent(Intent::DeviceIsBack {
+        device: DeviceId::from("shared-lg"),
+    });
+    assert_eq!(mac_state(&w), VideoInput::Confirmed);
+}
+
+#[test]
+fn hb5_in8_the_safety_exit_does_not_hand_back() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
+    w.pump();
+    assert!(
+        !w.pc1
+            .log
+            .borrow()
+            .target
+            .iter()
+            .any(|t| t.starts_with("handoff")),
+        "no route back"
+    );
+    assert!(!w.mac.log.borrow().prompt_visible);
+    assert!(!w.mac.controller.awaiting_local_ack());
+}
+
+/// A world where pc1 has no route back to the Mac.
+fn world_with_no_route_back() -> World {
+    let mut config = config();
+    config
+        .computers
+        .get_mut(&ComputerId::from("pc1"))
+        .unwrap()
+        .devices
+        .get_mut("Monitor")
+        .unwrap()
+        .handoff
+        .clear();
+    let mut w = World::new();
+    w.pc1 = peer_config(
+        "pc1",
+        vec![display("HDMI-A-2", 0.0, 2048.0)],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+        true,
+        config,
+    );
+    w
+}
+
+fn has_notice(peer: &Peer, text: &str) -> bool {
+    peer.controller
+        .control_screen()
+        .notices
+        .iter()
+        .any(|n| n.contains(text))
+}
+
+#[test]
+fn hb2_hb4_ac37_no_route_back() {
+    let mut w = world_with_no_route_back();
+    w.advance_to_forwarding();
+    let row = w.pc1.controller.control_screen().incoming[0].clone();
+    assert_eq!(
+        row.hand_back.as_deref(),
+        Some("No route back to MacBook in this config")
+    );
+    // The disabled action has no effect.
+    w.pc1.controller.on_intent(Intent::HandBack {
+        session: row.session,
+    });
+    w.pump();
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::HandBackShortcut);
+    w.pump();
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert!(has_notice(&w.pc1, "by hand"));
+    assert!(has_notice(&w.mac, "by hand"));
+    assert!(!w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), VideoInput::Unchanged);
+    assert_eq!(
+        pc1_state(&w),
+        VideoInput::Confirmed,
+        "no route: nothing switched"
+    );
+}
+
+#[test]
+fn flow12_a_partial_hand_back_makes_the_device_unknown() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.handoff = HandoffResult::Failed { completed_steps: 1 };
+    hand_back_on_pc1(&mut w);
+    assert!(!w.mac.log.borrow().prompt_visible, "no verification");
+    assert_eq!(mac_state(&w), VideoInput::Unknown);
+    assert_eq!(pc1_state(&w), VideoInput::Unknown, "VER-6");
+    assert!(has_notice(&w.mac, "hand back"));
+    assert!(has_notice(&w.pc1, "hand back"));
+
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.handoff = HandoffResult::Failed { completed_steps: 0 };
+    hand_back_on_pc1(&mut w);
+    assert_eq!(mac_state(&w), VideoInput::Unchanged, "nothing switched");
+    assert_eq!(pc1_state(&w), VideoInput::Confirmed, "nothing switched");
+    assert!(has_notice(&w.mac, "hand back"));
+}
+
+#[test]
+fn hb3_a_result_with_no_hand_back_has_no_effect() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    for outcome in [
+        HandBackOutcome::Done,
+        HandBackOutcome::Failed { partial: true },
+    ] {
+        w.mac.controller.on_net(
+            NetEvent::Message {
+                peer: ComputerId::from("pc1"),
+                message: Message::HandBackResult {
+                    device: DeviceId::from("shared-lg"),
+                    outcome,
+                },
+            },
+            w.now,
+        );
+    }
+    assert!(w.mac.log.borrow().jobs.is_empty());
+    assert!(!w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), VideoInput::Unchanged);
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+}
+
+#[test]
+fn hb3_a_request_from_another_peer_has_no_effect() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let session = w.pc1.controller.control_screen().incoming[0].session;
+    w.pc1.controller.on_net(
+        NetEvent::Message {
+            peer: ComputerId::from("pc2"),
+            message: Message::HandBackRequest { session },
+        },
+        w.now,
+    );
+    w.pump();
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+    assert!(
+        !w.pc1
+            .log
+            .borrow()
+            .target
+            .iter()
+            .any(|t| t.starts_with("handoff"))
+    );
+}
+
+#[test]
+fn hb1_no_input_target_on_the_destination_leaves_the_device_unknown() {
+    let mut config = config();
+    config
+        .computers
+        .get_mut(&ComputerId::from("mac"))
+        .unwrap()
+        .devices
+        .get_mut("Desktop")
+        .unwrap()
+        .input_target = None;
+    let mut w = World::new();
+    w.mac = peer_config(
+        "mac",
+        vec![
+            display("builtin", -1500.0, 1500.0),
+            display("lg", 0.0, 3400.0),
+        ],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+        true,
+        config,
+    );
+    w.advance_to_forwarding();
+    hand_back_on_pc1(&mut w);
+    assert!(!w.mac.log.borrow().prompt_visible);
+    assert_eq!(mac_state(&w), VideoInput::Unknown);
+    assert!(has_notice(&w.mac, "input-target"));
+}
+
+// ----- FLOW-24: the target closes its portal on the display -----
+
+fn pc4() -> Peer {
+    peer("pc4", vec![display("HDMI-A-2", 0.0, 2048.0)])
+}
+
+/// pc4 opens a portal on the shared display and requests a session to the Mac.
+fn pc4_takes_the_display(w: &mut World) {
+    w.extra[0]
+        .controller
+        .open_portal(display("HDMI-A-2", 0.0, 2048.0));
+    w.pump();
+    w.extra[0].controller.start_handoff(ComputerId::from("mac"));
+    w.pump();
+}
+
+#[test]
+fn flow24_ac41_a_third_peer_takes_the_display() {
+    let mut w = World::new();
+    w.extra.push(pc4());
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::Input(key(56, true)));
+    w.pump();
+    // The user switches the display to pc4 by hand.
+    pc4_takes_the_display(&mut w);
+    assert!(!w.mac.controller.has_portal(), "the Mac closes its portal");
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    assert_eq!(
+        w.pc1.log.borrow().injected.last(),
+        Some(&key(56, false)),
+        "the session Mac to pc1 ends and releases the held key"
+    );
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    let control = w.mac.controller.control_screen();
+    assert!(
+        control
+            .notices
+            .iter()
+            .any(|n| n == "Session ended: Desk PC took this display"),
+        "{:?}",
+        control.notices
+    );
+    assert_eq!(control.incoming.len(), 1);
+    assert_eq!(control.incoming[0].source, "Desk PC");
+}
+
+#[test]
+fn flow24_a_portal_on_another_display_stays_open() {
+    let mut w = World::new();
+    w.extra.push(pc4());
+    w.mac
+        .controller
+        .open_portal(display("builtin", -1500.0, 1500.0));
+    w.pump();
+    pc4_takes_the_display(&mut w);
+    assert!(w.mac.controller.has_portal());
+    assert_eq!(w.mac.controller.control_screen().incoming.len(), 1);
 }

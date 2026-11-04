@@ -303,7 +303,7 @@ pub(crate) fn parts(_proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> 
         capabilities,
         labels: Labels {
             confirm_key: "Return".into(),
-            release_shortcut: "Control+Alt+Shift+Escape".into(),
+            hand_back_shortcut: "Control+Alt+Shift+Escape".into(),
         },
         hooks: Hooks { capture, prompts },
         notices,
@@ -408,7 +408,7 @@ impl Hooks {
                 let release = ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SHIFT;
                 if s.mode == Mode::Forwarding && escape && down && s.modifiers.contains(release) {
                     // IN-7: never forwarded.
-                    s.stop(CapturedEvent::ReleaseShortcut);
+                    s.stop(CapturedEvent::HandBackShortcut);
                     return true;
                 }
                 let Some(code) = event

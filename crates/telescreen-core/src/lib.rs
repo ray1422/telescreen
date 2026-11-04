@@ -15,5 +15,6 @@ pub mod platform;
 pub mod pointer;
 pub mod routes;
 pub mod session;
+pub mod verification;
 pub mod verifier;
 pub mod wire;

@@ -38,9 +38,15 @@ On Linux, the build needs the Wayland and xkbcommon development files. On macOS,
 4. On each computer, run Telescreen with its own computer ID:
    - Linux: `telescreen run --config config.yaml --computer linux`
    - macOS: `open -a Telescreen.app --args run --config "$PWD/config.yaml" --computer mac`
-5. On the source, open a portal on the shared display. Select the target. Then press Return in the portal (or click it) when the target shows the prompt.
+5. On the source, open a portal on the shared display. Select the target. When the target shows the prompt, press Return in the portal (or click it).
 
-To go back to the source: move the pointer out of the portal to a different display (pause), or press the release shortcut (end): Control+Option+Command+Escape on macOS, Control+Alt+Shift+Escape on Linux. The safety exit is Escape 10 times in 5 seconds.
+To go back to the source, use one of these:
+
+- Move the pointer out of the portal to a different display. Forwarding pauses; the session continues.
+- Press the hand back shortcut: Control+Option+Command+Escape on macOS, Control+Alt+Shift+Escape on Linux. The target switches the display back with its route, and the source shows the prompt. Press Return or click on the source to confirm.
+- On the target, select "Hand back" in the control window.
+
+The safety exit (Escape 10 times in 5 seconds) only ends the session. It does not switch the display.
 
 macOS asks for Accessibility and Input Monitoring. Linux needs write access to `/dev/uinput` (for example the `input` group) and a compositor with the wlroots virtual pointer and layer-shell protocols.
 

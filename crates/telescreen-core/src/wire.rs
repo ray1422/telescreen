@@ -4,7 +4,7 @@
 //! [`PointerDatagram`]s. Both use postcard. A reliable frame is a 4-byte
 //! little-endian length and the payload.
 //!
-//! Protocol (`docs/adr/0009-destination-verifies-a-handoff.md`):
+//! Protocol (ADRs 0009 and 0010):
 //!
 //! ```text
 //! source                         target
@@ -25,6 +25,10 @@
 //! ClipboardText{session, text} ◀▶          sync text while forwarding (CLIP-2)
 //! ClipboardClear{session}     ◀▶          the sent concealed text went away (CLIP-7)
 //! End{session, reason}  ◀──────▶  End{session, reason}
+//! HandBackRequest{session} ─────▶          source ends; target ends, runs route back
+//! (or target sends End{reason: HandBack}, ends, runs route back)
+//!        ◀─────────────────────── HandBackResult{device, outcome} (no session)
+//! (on Done, old source verifies as the destination, VER-4)
 //! Heartbeat ◀──────────────────▶ Heartbeat (each second; the transport owns it)
 //! ```
 
@@ -55,6 +59,11 @@ pub enum Message {
         device: DeviceId,
     },
     HandoffDone {
+        session: SessionId,
+    },
+    /// The source ends its active session and asks the target to run its route
+    /// back to the source (HB-3).
+    HandBackRequest {
         session: SessionId,
     },
     /// The user acknowledged in the portal (FLOW-8).
@@ -107,12 +116,29 @@ pub enum Message {
         /// True if the verifier answered ok; false if there is no `verify` (VER-2).
         verified: bool,
     },
+    /// The old target reports its route back to the old source (HB-1, HB-4).
+    /// This result is not part of a session.
+    HandBackResult {
+        device: DeviceId,
+        outcome: HandBackOutcome,
+    },
 
     // Both directions.
     End {
         session: SessionId,
         reason: EndReason,
     },
+}
+
+/// The result of the old target's route back to the old source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HandBackOutcome {
+    /// The steps succeeded; the old source verifies as the destination (HB-1).
+    Done,
+    /// The target has no `handoff.<source>` route (HB-4).
+    NoRoute,
+    /// A step failed. `partial` is true when other steps completed (FLOW-12).
+    Failed { partial: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,15 +160,15 @@ pub enum RefuseReason {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EndReason {
-    /// The release shortcut on the source (IN-7).
-    ReleaseShortcut,
+    /// The session ended for a hand back (HB-1).
+    HandBack,
     /// The safety exit on the source (IN-8).
     SafetyExit,
     /// The user ended the session in the UI of the source.
     SourceClosed,
     /// The target app quit (AC-18).
     TargetDisconnected,
-    /// The user selected "Stop this session" on the target (FLOW-17).
+    /// The user selected "Disconnect" on the target (FLOW-17).
     TargetStopped,
     /// The target requests control back (FLOW-17).
     TargetRequestedControl,

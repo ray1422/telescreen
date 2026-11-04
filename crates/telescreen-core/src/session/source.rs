@@ -275,7 +275,25 @@ impl SourceSession {
         self.last_pointer = None;
     }
 
-    /// Ends the session on the source (FLOW-16): the release shortcut, the safety
+    /// Requests a hand back after the handoff steps completed (HB-3, IN-7).
+    /// Stops forwarding and ends locally without sending `End`: the target ends
+    /// its session before running the route back. Before the steps complete,
+    /// only ends the session as `SourceClosed`, so the routes cannot race.
+    pub fn request_hand_back(&mut self) -> Vec<SourceAction> {
+        match self.phase {
+            SourcePhase::Verifying | SourcePhase::Forwarding => {
+                let mut actions = self.finish(EndReason::HandBack, false);
+                if let Some(session) = self.session {
+                    actions.push(SourceAction::Send(Message::HandBackRequest { session }));
+                }
+                actions
+            }
+            SourcePhase::Requesting | SourcePhase::HandingOff => self.end(EndReason::SourceClosed),
+            SourcePhase::Refused(_) | SourcePhase::Ended(_) => Vec::new(),
+        }
+    }
+
+    /// Ends the session on the source (FLOW-16): the safety
     /// exit, the UI, a lost portal display, a queue overflow, or a lost permission.
     ///
     /// The actions of each end, in this order: `StopForwarding` if the phase is

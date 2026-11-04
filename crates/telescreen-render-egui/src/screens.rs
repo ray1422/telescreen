@@ -50,13 +50,24 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
                 ui.horizontal(|ui| {
                     ui.label(format!("Controlled by {}", incoming.source));
                     ui.label(&incoming.state);
-                    if ui.button("Stop this session").clicked() {
-                        intents.push(Intent::StopSession {
+                    if ui
+                        .add_enabled(incoming.hand_back.is_none(), egui::Button::new("Hand back"))
+                        .clicked()
+                    {
+                        intents.push(Intent::HandBack {
                             session: incoming.session,
                         });
                     }
+                    if let Some(cause) = &incoming.hand_back {
+                        ui.label(cause);
+                    }
                     if ui.button("Control from here").clicked() {
                         intents.push(Intent::ControlFromHere {
+                            session: incoming.session,
+                        });
+                    }
+                    if ui.button("Disconnect").clicked() {
+                        intents.push(Intent::StopSession {
                             session: incoming.session,
                         });
                     }
@@ -253,11 +264,13 @@ mod tests {
                         session: SessionId(1),
                         source: "Source peer".into(),
                         state: "Forwarding".into(),
+                        hand_back: None,
                     },
                     IncomingRow {
                         session: SessionId(2),
                         source: "Source peer".into(),
                         state: "Paused".into(),
+                        hand_back: Some("No route back to Source peer in this config".into()),
                     },
                 ],
                 notices: vec!["Older notice.".into(), "Newer notice.".into()],
@@ -359,16 +372,19 @@ mod tests {
             Some("**Copy**: Control+C\nPaste: Control+V".into()),
         ] {
             for ack_wanted in [false, true] {
-                let screen = PromptScreen {
-                    source: "Source peer".into(),
-                    confirm_key: "Return".into(),
-                    text: text.clone(),
-                    ack_wanted,
-                };
-                assert_idle_frame(&context, |ui| {
-                    prompt(ui, &screen);
-                    Vec::new()
-                });
+                // `None`: the acknowledgement is on this computer (a hand back).
+                for source in [Some("Source peer".to_string()), None] {
+                    let screen = PromptScreen {
+                        source,
+                        confirm_key: "Return".into(),
+                        text: text.clone(),
+                        ack_wanted,
+                    };
+                    assert_idle_frame(&context, |ui| {
+                        prompt(ui, &screen);
+                        Vec::new()
+                    });
+                }
             }
         }
     }

@@ -9,6 +9,10 @@ use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::session::VideoInput;
 
+/// Identifies a verifier window, independently of a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PromptId(pub u64);
+
 /// The control window: this computer, its displays, devices, and incoming sessions.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ControlScreen {
@@ -46,6 +50,8 @@ pub struct IncomingRow {
     pub session: SessionId,
     pub source: String,
     pub state: String,
+    /// `None` if Hand back is available, else the cause.
+    pub hand_back: Option<String>,
 }
 
 /// The portal window on the source.
@@ -113,7 +119,8 @@ pub enum SessionPhase {
 /// The verifier window on the destination (UI-5, VER-5).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromptScreen {
-    pub source: String,
+    /// `None` when the acknowledgement is on this destination (VER-4).
+    pub source: Option<String>,
     pub confirm_key: String,
     /// Verifier text; for the built-in prompt, the `hint` of this computer.
     pub text: Option<String>,
@@ -122,11 +129,15 @@ pub struct PromptScreen {
 
 impl PromptScreen {
     pub fn title(&self) -> Option<String> {
-        self.ack_wanted.then(|| {
-            format!(
+        self.ack_wanted.then(|| match &self.source {
+            Some(source) => format!(
                 "Press {} on {} to control this computer",
-                self.confirm_key, self.source
-            )
+                self.confirm_key, source
+            ),
+            None => format!(
+                "Press {} or click here to confirm this display",
+                self.confirm_key
+            ),
         })
     }
 }
@@ -153,6 +164,10 @@ pub enum Intent {
     },
     /// End the session of the portal (on the source).
     EndSession,
+    /// End the incoming session and hand its device back to the source (HB-2).
+    HandBack {
+        session: SessionId,
+    },
     /// End the incoming session on the target (FLOW-17).
     StopSession {
         session: SessionId,
@@ -185,9 +200,9 @@ pub trait VideoInputText {
 pub trait PromptPresenter {
     fn show(
         &mut self,
-        session: SessionId,
+        prompt: PromptId,
         display: &DisplayInfo,
         screen: &PromptScreen,
     ) -> Result<(), String>;
-    fn hide(&mut self, session: SessionId);
+    fn hide(&mut self, prompt: PromptId);
 }

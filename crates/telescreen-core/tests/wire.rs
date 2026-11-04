@@ -34,6 +34,19 @@ fn messages_round_trip() {
             session: s,
             verified: true,
         },
+        Message::HandBackRequest { session: s },
+        Message::HandBackResult {
+            device: DeviceId::from("shared-lg"),
+            outcome: HandBackOutcome::Done,
+        },
+        Message::HandBackResult {
+            device: DeviceId::from("shared-lg"),
+            outcome: HandBackOutcome::NoRoute,
+        },
+        Message::HandBackResult {
+            device: DeviceId::from("shared-lg"),
+            outcome: HandBackOutcome::Failed { partial: true },
+        },
         Message::Input {
             session: s,
             event: InputEvent::Key {

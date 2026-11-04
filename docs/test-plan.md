@@ -66,7 +66,7 @@ Negative test (AC-21): before the trust step, start both apps (step 2). Each con
 | 3.10d | Copy a password from a password manager that marks it as concealed | Nothing arrives | AC-34 |
 | 3.11 | Control+Option+Command+Escape | The session ends. Local keys come back | AC-15 |
 | 3.12 | New session, then Escape 10 times in 5 s | The session ends; Escape went to Linux | AC-16 |
-| 3.13 | New session, then on Linux "Stop this session" | The session ends on both sides | AC-23 |
+| 3.13 | New session, then on Linux "Disconnect" | The session ends on both sides | AC-23 |
 | 3.13a | New session, then on Linux "Control from here" | The session ends. The LG switches to the Mac, and Linux is the source of a new session | AC-23, FLOW-17 |
 | 3.14 | New session, then stop the Linux app (or unplug the network) | In 5 s the Mac gets control back. Linux has no stuck key | AC-18 |
 | 3.15 | Start a session and do not confirm for 60 s | The prompt goes away. Video input "unknown". The display does not switch back | AC-7 |

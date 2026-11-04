@@ -3,6 +3,7 @@
 use crate::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use crate::input::{HeldInputs, InputEvent};
 use crate::pointer::Normalized;
+use crate::verification::{Verification, VerificationAction, VerificationResult};
 use crate::verifier::VerifierEvent;
 use crate::wire::{EndReason, Message, PointerDatagram, PointerOrder};
 
@@ -52,6 +53,9 @@ pub enum TargetAction {
     ReleaseKeyboard,
     /// Release the device lease of this session.
     ReleaseLease,
+    /// Run this computer's route back to the source for the device (HB-1).
+    /// Always follows all session end actions and is the last action.
+    RunHandBack,
 }
 
 #[derive(Debug)]
@@ -64,11 +68,7 @@ pub struct TargetSession {
     held: HeldInputs,
     pointer_order: PointerOrder,
     keyboard_held: bool,
-    verifier_running: bool,
-    verifier_visible: bool,
-    verifier_text: Option<String>,
-    ack_wanted: bool,
-    ack_wanted_sent: bool,
+    verification: Option<Verification>,
     verified: bool,
 }
 
@@ -94,11 +94,7 @@ impl TargetSession {
             held: HeldInputs::default(),
             pointer_order: PointerOrder::default(),
             keyboard_held: false,
-            verifier_running: false,
-            verifier_visible: false,
-            verifier_text: None,
-            ack_wanted: false,
-            ack_wanted_sent: false,
+            verification: None,
             verified: false,
         };
         (target, actions)
@@ -134,6 +130,7 @@ impl TargetSession {
     pub fn on_message(&mut self, message: &Message) -> Vec<TargetAction> {
         let session = match message {
             Message::HandoffDone { session }
+            | Message::HandBackRequest { session }
             | Message::Ack { session }
             | Message::Input { session, .. }
             | Message::ReleaseAll { session }
@@ -148,17 +145,21 @@ impl TargetSession {
         match message {
             Message::HandoffDone { .. } if self.phase == TargetPhase::AwaitingHandoff => {
                 self.phase = TargetPhase::Verifying;
-                self.verifier_running = true;
+                self.verification = Some(Verification::new());
                 vec![TargetAction::StartVerifier]
             }
-            Message::Ack { .. }
-                if self.phase == TargetPhase::Verifying
-                    && self.ack_wanted
-                    && self.ack_wanted_sent =>
-            {
-                self.ack_wanted = false;
-                self.ack_wanted_sent = false;
-                vec![TargetAction::AckVerifier]
+            Message::HandBackRequest { .. } if self.can_hand_back() => {
+                let mut actions = self.finish(EndReason::HandBack, false);
+                actions.push(TargetAction::RunHandBack);
+                actions
+            }
+            Message::Ack { .. } if self.phase == TargetPhase::Verifying => {
+                let actions = self
+                    .verification
+                    .as_mut()
+                    .map(Verification::acknowledge)
+                    .unwrap_or_default();
+                self.apply_verification(actions)
             }
             Message::Input { event, .. } if self.phase == TargetPhase::Forwarding => {
                 if self.held.record(event) {
@@ -192,23 +193,12 @@ impl TargetSession {
         if self.phase != TargetPhase::Verifying {
             return Vec::new();
         }
-        match event {
-            VerifierEvent::Show(text) => {
-                self.verifier_text = Some(text);
-                vec![self.show_verifier()]
-            }
-            VerifierEvent::WantAck => {
-                self.ack_wanted = true;
-                self.ack_wanted_sent = false;
-                vec![self.show_verifier()]
-            }
-            VerifierEvent::Done(true) => self.check_display(true),
-            VerifierEvent::Done(false) | VerifierEvent::Failed(_) => {
-                // The verifier has already ended; it does not need stopping.
-                self.verifier_running = false;
-                self.end(EndReason::VerifyFailed)
-            }
-        }
+        let actions = self
+            .verification
+            .as_mut()
+            .map(|verification| verification.on_verifier(event))
+            .unwrap_or_default();
+        self.apply_verification(actions)
     }
 
     /// The destination has no `verify`: continue with an unverified result (VER-2).
@@ -216,7 +206,10 @@ impl TargetSession {
         if self.phase != TargetPhase::Verifying {
             return Vec::new();
         }
-        self.check_display(false)
+        // Complete the shared lifecycle without claiming a verified result.
+        let actions = self.on_verifier(VerifierEvent::Done(true));
+        self.verified = false;
+        actions
     }
 
     /// Reports the synchronous result of `ShowVerifier`. Only a visible window
@@ -225,17 +218,12 @@ impl TargetSession {
         if self.phase != TargetPhase::Verifying {
             return self.unexpected_callback();
         }
-        if !shown {
-            return self.end(EndReason::PromptFailed);
-        }
-        self.verifier_visible = true;
-        if self.ack_wanted && !self.ack_wanted_sent {
-            self.ack_wanted_sent = true;
-            return vec![TargetAction::Send(Message::AckWanted {
-                session: self.session,
-            })];
-        }
-        Vec::new()
+        let actions = self
+            .verification
+            .as_mut()
+            .map(|verification| verification.on_shown(shown))
+            .unwrap_or_default();
+        self.apply_verification(actions)
     }
 
     /// Reports the result of `CheckDisplay` (FLOW-10).
@@ -247,11 +235,12 @@ impl TargetSession {
             return self.end(EndReason::DisplayGone);
         }
         self.phase = TargetPhase::Forwarding;
-        let mut actions = Vec::new();
-        if self.verifier_visible {
-            self.verifier_visible = false;
-            actions.push(TargetAction::HideVerifier);
-        }
+        let verification_actions = self
+            .verification
+            .as_mut()
+            .map(Verification::hide)
+            .unwrap_or_default();
+        let mut actions = self.apply_verification(verification_actions);
         actions.push(TargetAction::Send(Message::Started {
             session: self.session,
             verified: self.verified,
@@ -284,6 +273,25 @@ impl TargetSession {
         self.finish(reason, true)
     }
 
+    /// Whether the source finished its handoff steps, so a route back cannot
+    /// race them (HB-1).
+    pub fn can_hand_back(&self) -> bool {
+        matches!(
+            self.phase,
+            TargetPhase::Verifying | TargetPhase::CheckingDisplay | TargetPhase::Forwarding
+        )
+    }
+
+    /// Ends the session, then runs the route back to its source (HB-2).
+    pub fn hand_back(&mut self) -> Vec<TargetAction> {
+        if !self.can_hand_back() {
+            return Vec::new();
+        }
+        let mut actions = self.end(EndReason::HandBack);
+        actions.push(TargetAction::RunHandBack);
+        actions
+    }
+
     /// The connection to the source closed or its heartbeat timed out. The target
     /// releases all held input by itself (IN-4).
     pub fn on_peer_lost(&mut self) -> Vec<TargetAction> {
@@ -298,17 +306,32 @@ impl TargetSession {
             .collect()
     }
 
-    fn show_verifier(&self) -> TargetAction {
-        TargetAction::ShowVerifier {
-            text: self.verifier_text.clone(),
-            ack_wanted: self.ack_wanted,
+    fn apply_verification(&mut self, actions: Vec<VerificationAction>) -> Vec<TargetAction> {
+        let mut target_actions = Vec::new();
+        for action in actions {
+            match action {
+                VerificationAction::Show { text, ack_wanted } => {
+                    target_actions.push(TargetAction::ShowVerifier { text, ack_wanted });
+                }
+                VerificationAction::Hide => target_actions.push(TargetAction::HideVerifier),
+                VerificationAction::Ack => target_actions.push(TargetAction::AckVerifier),
+                VerificationAction::Stop => target_actions.push(TargetAction::StopVerifier),
+                VerificationAction::AckWanted => {
+                    target_actions.push(TargetAction::Send(Message::AckWanted {
+                        session: self.session,
+                    }));
+                }
+                VerificationAction::Finished(result) => target_actions.extend(match result {
+                    VerificationResult::Ok => self.check_display(true),
+                    VerificationResult::NotOk => self.end(EndReason::VerifyFailed),
+                    VerificationResult::WindowFailed => self.end(EndReason::PromptFailed),
+                }),
+            }
         }
+        target_actions
     }
 
     fn check_display(&mut self, verified: bool) -> Vec<TargetAction> {
-        self.verifier_running = false;
-        self.ack_wanted = false;
-        self.ack_wanted_sent = false;
         self.verified = verified;
         self.phase = TargetPhase::CheckingDisplay;
         vec![TargetAction::CheckDisplay]
@@ -327,14 +350,12 @@ impl TargetSession {
             self.keyboard_held = false;
             actions.push(TargetAction::ReleaseKeyboard);
         }
-        if self.verifier_running {
-            self.verifier_running = false;
-            actions.push(TargetAction::StopVerifier);
-        }
-        if self.verifier_visible {
-            self.verifier_visible = false;
-            actions.push(TargetAction::HideVerifier);
-        }
+        let verification_actions = self
+            .verification
+            .as_mut()
+            .map(Verification::stop)
+            .unwrap_or_default();
+        actions.extend(self.apply_verification(verification_actions));
         if notify_source {
             actions.push(TargetAction::Send(Message::End {
                 session: self.session,
@@ -342,8 +363,6 @@ impl TargetSession {
             }));
         }
         actions.push(TargetAction::ReleaseLease);
-        self.ack_wanted = false;
-        self.ack_wanted_sent = false;
         self.phase = TargetPhase::Ended(reason);
         actions
     }

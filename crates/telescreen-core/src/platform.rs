@@ -107,8 +107,8 @@ pub enum CapturedEvent {
     KeyboardLeft,
     /// The capture can no longer see forwarded up events (IN-13).
     InputLost,
-    /// The release shortcut (IN-7). It is never forwarded.
-    ReleaseShortcut,
+    /// The hand back shortcut (IN-7). It starts a hand back and is never forwarded.
+    HandBackShortcut,
     /// The safety exit (IN-8). The capture already stopped suppression.
     SafetyExit,
     /// The queue was full and an event was lost (IN-3).
