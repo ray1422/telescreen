@@ -63,6 +63,10 @@ Tested locally: the archive and `install.sh` on both computers (also a wrong che
 
 `telescreen` needs no argument, and the start window selects the computer (PEER-3, PEER-5, UI-8). The Linux archive has a launcher entry and a stripped binary (DIST-4). A local macOS build is not in `target/` (DIST-5). Tested on 2026-11-04 with the Mac and with KDE: the selection through the debug protocol on both, and a handoff from a portal on the external display to forwarding and a hand back. Not tested: a click in the KDE launcher.
 
+### M18: more than one address and discovery
+
+A computer can have a list of hosts, and a dial races them (NET-11). Discovery uses the system mDNS responder: "Allow discovery" for 10 minutes, and "Refresh" searches (NET-12 to NET-16, ADR 0011). Tested on 2026-11-05 between the Mac and Linux (KDE Plasma Wayland, Avahi), with the debug protocol and no clicks, also with a Mac app that `open` started: "Allow discovery" and "Refresh" connect in both directions, with an absent or a wrong host, and "Stop" removes the record. The 10-minute end and a Linux computer with no Avahi have only automated tests.
+
 ### M12 steps
 
 Each step is one commit or more. Claude writes the tests first; Codex implements steps c to f.

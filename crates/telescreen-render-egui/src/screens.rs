@@ -44,6 +44,22 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
         // Not a choice of computer: the label of this peer.
         ui.heading(format!("This computer: {}", screen.computer));
         ui.add(egui::Label::new(&screen.fingerprint).selectable(true));
+        if let Some(discovery) = screen.discovery {
+            ui.horizontal(|ui| {
+                if let Some(seconds) = discovery.remaining_seconds {
+                    ui.label(format!(
+                        "Discoverable for {}:{:02}",
+                        seconds / 60,
+                        seconds % 60
+                    ));
+                    if ui.button("Stop").clicked() {
+                        intents.push(Intent::StopDiscovery);
+                    }
+                } else if ui.button("Allow discovery").clicked() {
+                    intents.push(Intent::AllowDiscovery);
+                }
+            });
+        }
         if let Some(mut on) = screen.clipboard
             && ui.checkbox(&mut on, "Sync text clipboard").changed()
         {
@@ -247,7 +263,7 @@ mod tests {
     use super::*;
     use telescreen_core::{ids::SessionId, session::VideoInput};
     use telescreen_view::{
-        CandidateRow, DeviceChoice, DeviceRow, DisplayRow, IncomingRow, SessionRow,
+        CandidateRow, DeviceChoice, DeviceRow, DiscoveryRow, DisplayRow, IncomingRow, SessionRow,
     };
 
     fn assert_idle_frame(
@@ -342,6 +358,15 @@ mod tests {
                 ],
                 notices: vec!["Older notice.".into(), "Newer notice.".into()],
                 clipboard: Some(true),
+                discovery: Some(DiscoveryRow {
+                    remaining_seconds: Some(90),
+                }),
+            },
+            ControlScreen {
+                discovery: Some(DiscoveryRow {
+                    remaining_seconds: None,
+                }),
+                ..ControlScreen::default()
             },
         ];
         for screen in screens {

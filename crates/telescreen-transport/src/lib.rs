@@ -9,7 +9,6 @@ pub mod network;
 mod tls;
 pub mod trust;
 
-use telescreen_core::config::Endpoint;
 use telescreen_core::ids::ComputerId;
 use telescreen_core::wire::{Message, PointerDatagram};
 
@@ -18,13 +17,21 @@ pub use identity::Identity;
 pub use network::{NetConfig, Network};
 pub use trust::TrustStore;
 
+/// One address to try for a peer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialTarget {
+    pub host: String,
+    pub port: u16,
+}
+
 /// A request to the transport.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NetCommand {
-    /// Connect to a peer. On success the transport sends [`NetEvent::Connected`].
+    /// Connect to a peer through the first target that answers (NET-11). On success
+    /// the transport sends [`NetEvent::Connected`].
     Dial {
         peer: ComputerId,
-        endpoint: Endpoint,
+        targets: Vec<DialTarget>,
     },
     /// Send on the reliable channel. A message to a peer with no connection is lost.
     Send { peer: ComputerId, message: Message },

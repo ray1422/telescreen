@@ -133,6 +133,7 @@ fn report() -> StateReport {
             incoming: vec![],
             notices: vec!["a notice".into()],
             clipboard: None,
+            discovery: None,
         },
         portal: None,
         windows: vec![

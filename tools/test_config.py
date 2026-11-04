@@ -39,6 +39,12 @@ class ConfigContract(unittest.TestCase):
             'exec verifier': lambda c: device(c).update(verify={'driver': 'exec', 'command': 'v'}),
             'extension verifier': lambda c: device(c).update(
                 verify={'driver': 'lab.http', 'options': {}}),
+            'host list': lambda c: c['computers']['pc1']['endpoint'].update(
+                host=['192.0.2.1', 'pc1.example']),
+            'discovery with a host': lambda c: c['computers']['pc1']['endpoint'].update(
+                discovery='mdns'),
+            'discovery with no host': lambda c: c['computers']['pc1'].update(
+                endpoint={'port': 24800, 'discovery': 'mdns'}),
         }.items():
             with self.subTest(name=name):
                 config = copy.deepcopy(self.example)
@@ -51,6 +57,13 @@ class ConfigContract(unittest.TestCase):
 
         mutations = {
             'empty hint': lambda c: c['computers']['pc1'].update(hint=''),
+            'no host and no discovery': lambda c: c['computers']['pc1'].update(
+                endpoint={'port': 24800}),
+            'empty host list': lambda c: c['computers']['pc1']['endpoint'].update(host=[]),
+            'duplicate host': lambda c: c['computers']['pc1']['endpoint'].update(
+                host=['a', 'a']),
+            'unknown discovery': lambda c: c['computers']['pc1']['endpoint'].update(
+                discovery='dns'),
             'non-string hint': lambda c: c['computers']['pc1'].update(hint=['x']),
             'long hint': lambda c: c['computers']['pc1'].update(hint='x' * 501),
             'non-boolean clipboard text': lambda c: c['computers']['pc1'].update(clipboard={'text': 'yes'}),

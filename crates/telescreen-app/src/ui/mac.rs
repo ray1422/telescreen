@@ -51,6 +51,7 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
     telescreen_platform_macos::request_permissions();
     let mut notices = Vec::new();
     let capabilities = telescreen_platform_macos::capabilities();
+    let discovery_proxy = proxy.clone();
     let capture = match MacCapture::start(move || {
         let _ = proxy.send_event(UserEvent::Captured);
     }) {
@@ -80,6 +81,11 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
         focus_holder: Some(Box::new(MacFocusHolder::new())),
         clipboard: Some(Box::new(MacClipboard::new())),
         prompt: Box::new(prompts.clone()),
+        discovery: Box::new(telescreen_platform_macos::discovery::MacDiscovery::new(
+            std::sync::Arc::new(move |event| {
+                let _ = discovery_proxy.send_event(UserEvent::Discovery(event));
+            }),
+        )),
         capabilities,
         labels: Labels {
             confirm_key: "Return".into(),

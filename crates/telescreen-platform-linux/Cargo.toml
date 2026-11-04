@@ -23,3 +23,4 @@ evdev.workspace = true
 ab_glyph.workspace = true
 epaint_default_fonts.workspace = true
 raw-window-handle.workspace = true
+zbus.workspace = true

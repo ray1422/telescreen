@@ -13,6 +13,7 @@
 #![cfg(target_os = "linux")]
 
 pub mod clipboard;
+pub mod discovery;
 pub mod displays;
 pub mod focus;
 pub mod inhibit;

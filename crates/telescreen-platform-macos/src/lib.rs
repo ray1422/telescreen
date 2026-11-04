@@ -10,6 +10,7 @@
 
 pub mod capture;
 pub mod clipboard;
+pub mod discovery;
 pub mod displays;
 mod ffi;
 pub mod focus;
