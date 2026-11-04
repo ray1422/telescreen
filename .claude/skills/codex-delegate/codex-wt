@@ -193,6 +193,28 @@ cmd_integrate() {
     echo "next: run the full build and tests here, then 'git commit', or 'git reset --hard' to drop them."
 }
 
+# The codex plugin starts one app-server broker for each worktree. The broker
+# does not stop by itself, so stop it with its worktree, and remove its
+# temporary directory (the directory of its pid file).
+stop_brokers() {
+    ps -axo pid=,command= | while read -r pid command; do
+        case "$command" in
+            *app-server-broker.mjs*" --cwd $wt "*) ;;
+            *) continue ;;
+        esac
+        dir=$(printf '%s\n' "$command" | sed -n 's|.* --pid-file \(.*\)/broker\.pid.*|\1|p')
+        kill "$pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        case "$dir" in
+            "${TMPDIR%/}"/cxc-*) rm -rf "$dir" ;;
+        esac
+        echo "stopped the codex broker of $task"
+    done
+}
+
 cmd_cleanup() {
     task_paths "${1:-}"
     discard=0
@@ -202,6 +224,7 @@ cmd_cleanup() {
         [ -n "$(git -C "$wt" status --porcelain --untracked-files=all -- . ':!target')" ]; then
         die "$task has changes that were not integrated; run integrate first, or cleanup $task --discard"
     fi
+    stop_brokers
     [ ! -d "$wt" ] || git worktree remove --force "$wt"
     git branch -D "$branch" 2>/dev/null || true
     rm -f "$base_file" "$meta/$task.integrated"
