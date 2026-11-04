@@ -5,16 +5,17 @@
 //! This crate has no UI library, so that a different renderer can replace
 //! `telescreen-render-egui` (`docs/plan.md`, "View boundary").
 
-use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::session::VideoInput;
 
-/// The control window: this computer, its displays, and incoming sessions.
+/// The control window: this computer, its displays, devices, and incoming sessions.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ControlScreen {
     pub computer: String,
     pub fingerprint: String,
     pub displays: Vec<DisplayRow>,
+    pub devices: Vec<DeviceRow>,
     pub incoming: Vec<IncomingRow>,
     /// The text clipboard switch, or `None` without a backend (CLIP-1, CLIP-8).
     pub clipboard: Option<bool>,
@@ -28,6 +29,15 @@ pub struct DisplayRow {
     pub name: String,
     /// True if a portal is open on this display.
     pub has_portal: bool,
+}
+
+/// A local device and its state on this destination (VER-6).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceRow {
+    pub alias: String,
+    pub device: DeviceId,
+    /// `Unchanged` means no handoff to this computer yet.
+    pub state: VideoInput,
 }
 
 /// A session where this computer is the target.
@@ -88,39 +98,46 @@ pub struct SessionRow {
 pub enum SessionPhase {
     Requesting,
     HandingOff,
-    WaitingForPrompt,
-    /// The prompt shows on the target. The user presses `key` or clicks the portal.
-    WaitingForConfirmation {
+    /// The destination verifies; no acknowledgement is wanted now.
+    Verifying,
+    /// The destination verifier waits for `key` or a click in the portal.
+    WaitingForAck {
         key: String,
     },
-    Starting,
     Forwarding,
     Ended {
         reason: String,
     },
 }
 
-/// The confirmation prompt on the target (FLOW-7, ADR 0002).
+/// The verifier window on the destination (UI-5, VER-5).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PromptScreen {
     pub source: String,
     pub confirm_key: String,
-    /// The `hint` of this computer, as plain text.
-    pub hint: Option<String>,
+    /// Verifier text; for the built-in prompt, the `hint` of this computer.
+    pub text: Option<String>,
+    pub ack_wanted: bool,
 }
 
 impl PromptScreen {
-    pub fn title(&self) -> String {
-        format!(
-            "Press {} on {} to control this computer",
-            self.confirm_key, self.source
-        )
+    pub fn title(&self) -> Option<String> {
+        self.ack_wanted.then(|| {
+            format!(
+                "Press {} on {} to control this computer",
+                self.confirm_key, self.source
+            )
+        })
     }
 }
 
 /// What the user did in a window.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Intent {
+    /// The user says an unknown device is back on this computer (VER-6).
+    DeviceIsBack {
+        device: DeviceId,
+    },
     /// Changes the text clipboard switch for this run (CLIP-1).
     SetClipboard {
         on: bool,
@@ -158,13 +175,13 @@ impl VideoInputText for VideoInput {
     }
 }
 
-/// The user text of a video input state (UI-4).
+/// The user text of a device state (UI-4, VER-6).
 pub trait VideoInputText {
     fn text(&self) -> &'static str;
 }
 
-/// Shows the confirmation prompt on a display of the target (UI-5). The macOS
-/// backend and the Linux layer-shell backend implement it.
+/// Shows or updates the verifier window on a display of the destination (UI-5).
+/// The macOS backend and the Linux layer-shell backend implement it.
 pub trait PromptPresenter {
     fn show(
         &mut self,

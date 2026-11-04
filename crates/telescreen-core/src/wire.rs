@@ -4,7 +4,7 @@
 //! [`PointerDatagram`]s. Both use postcard. A reliable frame is a 4-byte
 //! little-endian length and the payload.
 //!
-//! Protocol (tentative, `docs/adr/0007-session-protocol.md`):
+//! Protocol (`docs/adr/0009-destination-verifies-a-handoff.md`):
 //!
 //! ```text
 //! source                         target
@@ -12,11 +12,13 @@
 //! RequestSession{device} ───────▶          lease + input-target (FLOW-5)
 //!        ◀─────────────────────── SessionGranted{session} | SessionRefused
 //! (run handoff steps, FLOW-6)
-//! HandoffDone{session} ─────────▶          show prompt (FLOW-7)
-//!        ◀─────────────────────── PromptShown{session}
-//! (user confirms, FLOW-8)
-//! Confirm{session} ─────────────▶          check display, remove prompt (FLOW-10)
-//!        ◀─────────────────────── Started{session}
+//! HandoffDone{session} ─────────▶          start destination verifier (VER-1)
+//!        ◀─────────────────────── AckWanted{session} (if requested, window visible)
+//! (user acknowledges in the portal, FLOW-8)
+//! Ack{session} ────────────────▶           acknowledge to verifier (may repeat)
+//!                                         verifier ok, or no verify (VER-2):
+//!                                         check display, hide verifier (FLOW-10)
+//!        ◀─────────────────────── Started{session, verified}
 //! Input / ReleaseAll / datagrams ▶         inject
 //! KeyboardAway{session} ────────▶          hold keyboard focus (FLOW-23)
 //! KeyboardBack{session} ────────▶          release keyboard focus holder
@@ -33,7 +35,7 @@ use crate::input::InputEvent;
 use crate::pointer::Normalized;
 
 /// The wire protocol version. A peer refuses a different version.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// The maximum size of one reliable frame payload.
 pub const MAX_FRAME: usize = crate::clipboard::MAX_TEXT + 4 * 1024;
@@ -55,7 +57,8 @@ pub enum Message {
     HandoffDone {
         session: SessionId,
     },
-    Confirm {
+    /// The user acknowledged in the portal (FLOW-8).
+    Ack {
         session: SessionId,
     },
     Input {
@@ -95,11 +98,14 @@ pub enum Message {
         device: DeviceId,
         reason: RefuseReason,
     },
-    PromptShown {
+    /// The verifier of the target waits for an acknowledgement (FLOW-8).
+    AckWanted {
         session: SessionId,
     },
     Started {
         session: SessionId,
+        /// True if the verifier answered ok; false if there is no `verify` (VER-2).
+        verified: bool,
     },
 
     // Both directions.
@@ -140,11 +146,11 @@ pub enum EndReason {
     TargetStopped,
     /// The target requests control back (FLOW-17).
     TargetRequestedControl,
-    /// No confirmation in the timeout (FLOW-11).
-    ConfirmTimeout,
-    /// A handoff step failed or `verify` was false (FLOW-12).
+    /// The verifier of the destination answered not ok, or failed (FLOW-11).
+    VerifyFailed,
+    /// A handoff step failed with no completed step (FLOW-12).
     HandoffFailed,
-    /// The prompt could not show on the target.
+    /// The window of the verifier could not show on the target.
     PromptFailed,
     /// The input-target display is no longer valid (FLOW-10).
     DisplayGone,
@@ -160,6 +166,9 @@ pub enum EndReason {
     ProtocolError,
     /// A new handoff of the same device ended this session (FLOW-6).
     NewHandoff,
+    /// A handoff step failed after other steps completed; the device state is
+    /// unknown (FLOW-12).
+    HandoffPartial,
 }
 
 /// The latest pointer position, on the unreliable channel (NET-2).

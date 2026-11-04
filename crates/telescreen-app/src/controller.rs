@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use telescreen_core::clipboard::{ClipboardChange, ClipboardSync, Outgoing};
-use telescreen_core::config::{Config, Device, Operation};
+use telescreen_core::config::{Config, Device, Driver, Operation};
 use telescreen_core::driver::{self, DeviceRef, OperationKind, Outcome, PortalInfo, Request};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::platform::{
@@ -18,14 +18,16 @@ use telescreen_core::platform::{
 };
 use telescreen_core::pointer::{self, Point, Rect};
 use telescreen_core::routes;
+use telescreen_core::session::VideoInput;
 use telescreen_core::session::lease::LeaseTable;
 use telescreen_core::session::source::{HandoffResult, SourceAction, SourcePhase, SourceSession};
 use telescreen_core::session::target::{TargetAction, TargetPhase, TargetSession};
+use telescreen_core::verifier::{PromptVerifier, VerifierEvent};
 use telescreen_core::wire::{EndReason, Message, RefuseReason};
 use telescreen_transport::{NetCommand, NetEvent};
 use telescreen_view::{
-    CandidateRow, ControlScreen, DeviceChoice, DisplayRow, IncomingRow, Intent, Matching,
-    PortalScreen, PromptPresenter, PromptScreen, SessionPhase, SessionRow,
+    CandidateRow, ControlScreen, DeviceChoice, DeviceRow, DisplayRow, IncomingRow, Intent,
+    Matching, PortalScreen, PromptPresenter, PromptScreen, SessionPhase, SessionRow,
 };
 
 /// Sends commands to the transport.
@@ -47,10 +49,9 @@ pub enum Job {
         kind: OperationKind,
         request: Request,
     },
-    /// The steps in sequence, then `verify` if present (FLOW-6).
+    /// The handoff steps in sequence (FLOW-6). The destination verifies separately.
     Handoff {
         steps: Vec<Operation>,
-        verify: Option<Operation>,
         request: Request,
     },
 }
@@ -71,6 +72,27 @@ pub trait JobPort {
     fn spawn(&mut self, id: JobId, job: Job);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct VerifierId(pub u64);
+
+/// Runs `exec` and `command` verifiers off the UI thread. The app sends the
+/// events back with `Controller::on_verifier_event`.
+pub trait VerifierPort {
+    fn start(&mut self, id: VerifierId, operation: Operation, request: Request);
+    fn ack(&mut self, id: VerifierId);
+    fn stop(&mut self, id: VerifierId);
+}
+
+enum Verifier {
+    Prompt(PromptVerifier),
+    Process(VerifierId),
+}
+
+enum TargetWork {
+    Action(TargetAction),
+    Event(VerifierEvent),
+}
+
 /// Runs a job. The job runner of the app calls it on a worker thread.
 pub fn run_job(job: &Job, context: &driver::Context) -> JobOutput {
     match job {
@@ -81,11 +103,7 @@ pub fn run_job(job: &Job, context: &driver::Context) -> JobOutput {
         } => JobOutput::Operation(
             driver::run(operation, *kind, request, context).map_err(|e| e.to_string()),
         ),
-        Job::Handoff {
-            steps,
-            verify,
-            request,
-        } => {
+        Job::Handoff { steps, request } => {
             for (completed_steps, step) in steps.iter().enumerate() {
                 if let Err(e) = driver::run(step, OperationKind::Handoff, request, context) {
                     return JobOutput::Handoff {
@@ -94,31 +112,9 @@ pub fn run_job(job: &Job, context: &driver::Context) -> JobOutput {
                     };
                 }
             }
-            let Some(verify) = verify else {
-                return JobOutput::Handoff {
-                    result: HandoffResult::Done { verified: None },
-                    error: None,
-                };
-            };
-            match driver::run(verify, OperationKind::Verify, request, context) {
-                Ok(Outcome::Matched(matched)) => JobOutput::Handoff {
-                    result: HandoffResult::Done {
-                        verified: Some(matched),
-                    },
-                    error: None,
-                },
-                Ok(other) => JobOutput::Handoff {
-                    result: HandoffResult::Failed {
-                        completed_steps: steps.len(),
-                    },
-                    error: Some(format!("verify gave {other:?}")),
-                },
-                Err(e) => JobOutput::Handoff {
-                    result: HandoffResult::Failed {
-                        completed_steps: steps.len(),
-                    },
-                    error: Some(format!("verify: {e}")),
-                },
+            JobOutput::Handoff {
+                result: HandoffResult::Done,
+                error: None,
             }
         }
     }
@@ -129,6 +125,7 @@ pub fn run_job(job: &Job, context: &driver::Context) -> JobOutput {
 pub struct Ports {
     pub net: Box<dyn NetPort>,
     pub jobs: Box<dyn JobPort>,
+    pub verifiers: Box<dyn VerifierPort>,
     pub displays: Box<dyn Displays>,
     pub capture: Box<dyn InputCapture>,
     /// `None` if this peer cannot inject input.
@@ -198,9 +195,14 @@ pub struct Controller {
     connected: BTreeSet<ComputerId>,
     leases: LeaseTable,
     incoming: BTreeMap<SessionId, TargetSession>,
+    /// Device state on this destination, independent of sessions (VER-6).
+    /// A missing device is `Unchanged`: no handoff to this computer yet.
+    device_states: HashMap<DeviceId, VideoInput>,
     injector_session: Option<SessionId>,
     jobs: HashMap<JobId, Pending>,
     next_job: u64,
+    verifiers: BTreeMap<SessionId, Verifier>,
+    next_verifier: u64,
     notices: Vec<String>,
     /// The last display list, for the view. `displays()` refreshes it.
     display_cache: Vec<DisplayInfo>,
@@ -268,9 +270,12 @@ impl Controller {
             connected: BTreeSet::new(),
             leases: LeaseTable::new(first_generation),
             incoming: BTreeMap::new(),
+            device_states: HashMap::new(),
             injector_session: None,
             jobs: HashMap::new(),
             next_job: 1,
+            verifiers: BTreeMap::new(),
+            next_verifier: 1,
             notices: Vec::new(),
             display_cache: Vec::new(),
             last_heartbeat: None,
@@ -588,24 +593,26 @@ impl Controller {
         }
     }
 
-    /// The confirmation key or a click in the portal (FLOW-8). Returns true if it
-    /// was a confirmation: then the window layer must not use the event (FLOW-9).
-    pub fn confirm(&mut self) -> bool {
+    /// The acknowledgement key or a click in the portal (FLOW-8). Returns true
+    /// when accepted: then the window layer must suppress the event (FLOW-9).
+    pub fn acknowledge(&mut self) -> bool {
         let Some(portal) = self.portal.as_mut() else {
             return false;
         };
         let focused = portal.focused;
-        let Some(actions) = portal.session.as_mut().and_then(|s| s.confirm(focused)) else {
+        let Some(actions) = portal.session.as_mut().and_then(|s| s.acknowledge(focused)) else {
             return false;
         };
-        self.set_guard(false);
         self.run_source_actions(actions);
         true
     }
 
-    /// True if the next confirmation key or click is a confirmation.
-    pub fn awaiting_confirmation(&self) -> bool {
-        self.portal_phase() == Some(SourcePhase::AwaitingConfirm)
+    /// True while the destination verifier wants an acknowledgement.
+    pub fn awaiting_ack(&self) -> bool {
+        self.portal
+            .as_ref()
+            .and_then(|p| p.session.as_ref())
+            .is_some_and(SourceSession::ack_wanted)
     }
 
     fn portal_phase(&self) -> Option<SourcePhase> {
@@ -726,7 +733,7 @@ impl Controller {
         self.update_clipboard();
     }
 
-    /// Changes the portal guard during the confirmation wait (FLOW-21).
+    /// Changes the portal guard during the handoff and verification (FLOW-21).
     fn set_guard(&mut self, on: bool) {
         let Some(portal) = self.portal.as_mut() else {
             return;
@@ -794,8 +801,6 @@ impl Controller {
             },
             Job::Handoff {
                 steps: handoff.steps,
-                // The destination verifies from M12 step d (ADR 0009).
-                verify: None,
                 request,
             },
         );
@@ -869,13 +874,18 @@ impl Controller {
                 });
             }
         }
-        let actions = self
-            .portal
-            .as_mut()
-            .and_then(|p| p.session.as_mut())
-            .map(|s| s.tick(now))
-            .unwrap_or_default();
-        self.run_source_actions(actions);
+        let events: Vec<_> = self
+            .verifiers
+            .iter_mut()
+            .filter_map(|(session, verifier)| match verifier {
+                Verifier::Prompt(prompt) => prompt.tick(now).map(|event| (*session, event)),
+                Verifier::Process(_) => None,
+            })
+            .collect();
+        for (session, event) in events {
+            let actions = self.verifier_actions(session, event);
+            self.run_target_actions_at(session, actions, now);
+        }
         self.update_clipboard();
         self.sync_clipboard();
     }
@@ -1110,7 +1120,7 @@ impl Controller {
             // To the source side.
             Message::SessionGranted { .. }
             | Message::SessionRefused { .. }
-            | Message::PromptShown { .. }
+            | Message::AckWanted { .. }
             | Message::Started { .. } => self.source_message(&peer, &message, now),
             Message::End { session, .. } if !self.incoming.contains_key(session) => {
                 self.source_message(&peer, &message, now)
@@ -1118,7 +1128,7 @@ impl Controller {
             // To the target side.
             Message::RequestSession { device } => self.request_session(peer, device.clone()),
             Message::HandoffDone { session }
-            | Message::Confirm { session }
+            | Message::Ack { session }
             | Message::Input { session, .. }
             | Message::ReleaseAll { session }
             | Message::KeyboardAway { session }
@@ -1131,8 +1141,19 @@ impl Controller {
                 if target.source() != &peer {
                     return;
                 }
+                if matches!(
+                    message,
+                    Message::End {
+                        reason: EndReason::HandoffPartial,
+                        ..
+                    }
+                ) && !target.is_finished()
+                {
+                    self.device_states
+                        .insert(target.device().clone(), VideoInput::Unknown);
+                }
                 let actions = target.on_message(&message);
-                self.run_target_actions(session, actions);
+                self.run_target_actions_at(session, actions, now);
             }
             Message::Hello { .. } | Message::Heartbeat => {}
         }
@@ -1255,8 +1276,60 @@ impl Controller {
     }
 
     fn run_target_actions(&mut self, session: SessionId, actions: Vec<TargetAction>) {
-        let mut queue: std::collections::VecDeque<_> = actions.into();
-        while let Some(action) = queue.pop_front() {
+        self.run_target_actions_at(session, actions, Instant::now());
+    }
+
+    /// Delivers events only to the session of a running process verifier.
+    pub fn on_verifier_event(&mut self, id: VerifierId, event: VerifierEvent) {
+        let session = self.verifiers.iter().find_map(|(session, verifier)| {
+            matches!(verifier, Verifier::Process(running) if *running == id).then_some(*session)
+        });
+        if let Some(session) = session {
+            let actions = self.verifier_actions(session, event);
+            self.run_target_actions(session, actions);
+        }
+    }
+
+    fn verifier_actions(&mut self, session: SessionId, event: VerifierEvent) -> Vec<TargetAction> {
+        if let Some(target) = self.incoming.get(&session)
+            && target.phase() == TargetPhase::Verifying
+        {
+            let state = match &event {
+                VerifierEvent::Done(true) => Some(VideoInput::Confirmed),
+                VerifierEvent::Done(false) | VerifierEvent::Failed(_) => Some(VideoInput::Unknown),
+                _ => None,
+            };
+            if let Some(state) = state {
+                self.device_states.insert(target.device().clone(), state);
+            }
+        }
+        if matches!(event, VerifierEvent::Done(_) | VerifierEvent::Failed(_)) {
+            self.verifiers.remove(&session);
+        }
+        self.target_mut(session)
+            .map(|t| t.on_verifier(event))
+            .unwrap_or_default()
+    }
+
+    fn run_target_actions_at(
+        &mut self,
+        session: SessionId,
+        actions: Vec<TargetAction>,
+        now: Instant,
+    ) {
+        let mut queue: std::collections::VecDeque<_> =
+            actions.into_iter().map(TargetWork::Action).collect();
+        while let Some(work) = queue.pop_front() {
+            let action = match work {
+                TargetWork::Action(action) => action,
+                TargetWork::Event(event) => {
+                    let actions = self.verifier_actions(session, event);
+                    for action in actions.into_iter().rev() {
+                        queue.push_front(TargetWork::Action(action));
+                    }
+                    continue;
+                }
+            };
             let Some(target) = self.incoming.get(&session) else {
                 return;
             };
@@ -1268,14 +1341,82 @@ impl Controller {
                         message,
                     });
                 }
-                TargetAction::ShowPrompt => {
+                TargetAction::StartVerifier => {
+                    self.device_states
+                        .insert(target.device().clone(), VideoInput::Unverified);
+                    let device = self
+                        .config
+                        .computer(&self.local)
+                        .and_then(|c| c.device_by_id(target.device()))
+                        .map(|(alias, device)| (alias.to_owned(), device.clone()));
+                    let Some((alias, device)) = device else {
+                        queue.push_front(TargetWork::Event(VerifierEvent::Failed(
+                            "the local device is gone".into(),
+                        )));
+                        continue;
+                    };
+                    let Some(operation) = device.verify else {
+                        let more = self.target_mut(session).map(TargetSession::on_no_verify);
+                        queue.extend(more.unwrap_or_default().into_iter().map(TargetWork::Action));
+                        continue;
+                    };
+                    match &operation.driver {
+                        Driver::Prompt => {
+                            let hint = self
+                                .config
+                                .computer(&self.local)
+                                .and_then(|c| c.hint.clone());
+                            let (prompt, events) = PromptVerifier::start(hint, now);
+                            self.verifiers.insert(session, Verifier::Prompt(prompt));
+                            for event in events.into_iter().rev() {
+                                queue.push_front(TargetWork::Event(event));
+                            }
+                        }
+                        Driver::Exec(_) | Driver::Command(_) => {
+                            let id = VerifierId(self.next_verifier);
+                            self.next_verifier += 1;
+                            self.verifiers.insert(session, Verifier::Process(id));
+                            let request = Request {
+                                computer_id: self.local.clone(),
+                                device: DeviceRef {
+                                    id: device.id,
+                                    alias,
+                                },
+                                source_computer_id: source,
+                                target_computer_id: Some(self.local.clone()),
+                                session_id: Some(session),
+                                portal: None,
+                                displays: self.displays(),
+                            };
+                            self.ports.verifiers.start(id, operation, request);
+                        }
+                        Driver::Extension { name, .. } => {
+                            queue.push_front(TargetWork::Event(VerifierEvent::Failed(format!(
+                                "the driver {name} is not available"
+                            ))));
+                        }
+                    }
+                }
+                TargetAction::AckVerifier => match self.verifiers.get_mut(&session) {
+                    Some(Verifier::Prompt(prompt)) => {
+                        if let Some(event) = prompt.ack() {
+                            queue.push_front(TargetWork::Event(event));
+                        }
+                    }
+                    Some(Verifier::Process(id)) => self.ports.verifiers.ack(*id),
+                    None => {}
+                },
+                TargetAction::StopVerifier => {
+                    if let Some(Verifier::Process(id)) = self.verifiers.remove(&session) {
+                        self.ports.verifiers.stop(id);
+                    }
+                }
+                TargetAction::ShowVerifier { text, ack_wanted } => {
                     let screen = PromptScreen {
                         source: self.label_of(&source),
                         confirm_key: self.labels.confirm_key.clone(),
-                        hint: self
-                            .config
-                            .computer(&self.local)
-                            .and_then(|c| c.hint.clone()),
+                        text,
+                        ack_wanted,
                     };
                     let shown = match self.find_display(session) {
                         Some(display) => self.ports.prompt.show(session, &display, &screen),
@@ -1286,10 +1427,12 @@ impl Controller {
                     }
                     let more = self
                         .target_mut(session)
-                        .map(|t| t.on_prompt_shown(shown.is_ok()));
-                    queue.extend(more.unwrap_or_default());
+                        .map(|t| t.on_verifier_shown(shown.is_ok()));
+                    for action in more.unwrap_or_default().into_iter().rev() {
+                        queue.push_front(TargetWork::Action(action));
+                    }
                 }
-                TargetAction::HidePrompt => self.ports.prompt.hide(session),
+                TargetAction::HideVerifier => self.ports.prompt.hide(session),
                 TargetAction::HoldKeyboard => {
                     let display = self.find_display(session);
                     let result = match (display, self.ports.focus_holder.as_mut()) {
@@ -1307,7 +1450,7 @@ impl Controller {
                         let more = self
                             .target_mut(session)
                             .map(|t| t.end(EndReason::PermissionLost));
-                        queue.extend(more.unwrap_or_default());
+                        queue.extend(more.unwrap_or_default().into_iter().map(TargetWork::Action));
                     }
                 }
                 TargetAction::ReleaseKeyboard => {
@@ -1333,7 +1476,7 @@ impl Controller {
                     let more = self
                         .target_mut(session)
                         .map(|t| t.on_display_checked(valid));
-                    queue.extend(more.unwrap_or_default());
+                    queue.extend(more.unwrap_or_default().into_iter().map(TargetWork::Action));
                 }
                 TargetAction::Inject(event) => {
                     if let Some(injector) = self.ports.injector.as_mut()
@@ -1433,6 +1576,13 @@ impl Controller {
 
     pub fn on_intent(&mut self, intent: Intent) {
         match intent {
+            Intent::DeviceIsBack { device } => {
+                if let Some(state) = self.device_states.get_mut(&device)
+                    && *state == VideoInput::Unknown
+                {
+                    *state = VideoInput::Confirmed;
+                }
+            }
             Intent::SetClipboard { on } => {
                 self.clipboard.set_enabled(on);
                 self.update_clipboard();
@@ -1542,7 +1692,7 @@ impl Controller {
         self.portal_phase() == Some(SourcePhase::Forwarding)
     }
 
-    /// True while the portal keeps the focus for confirmation (FLOW-21).
+    /// True while the portal keeps focus during handoff and verification (FLOW-21).
     pub fn guarded(&self) -> bool {
         self.portal.as_ref().is_some_and(|portal| portal.guarded)
     }
@@ -1565,7 +1715,7 @@ impl Controller {
             .unwrap_or_default();
         let session = portal.session.as_ref().map(|s| SessionRow {
             target: self.label_of(s.target()),
-            phase: self.phase_view(s.phase()),
+            phase: self.phase_view(s),
             video_input: s.video_input(),
         });
         Some(PortalScreen {
@@ -1577,15 +1727,14 @@ impl Controller {
         })
     }
 
-    fn phase_view(&self, phase: SourcePhase) -> SessionPhase {
-        match phase {
+    fn phase_view(&self, session: &SourceSession) -> SessionPhase {
+        match session.phase() {
             SourcePhase::Requesting => SessionPhase::Requesting,
             SourcePhase::HandingOff => SessionPhase::HandingOff,
-            SourcePhase::AwaitingPrompt => SessionPhase::WaitingForPrompt,
-            SourcePhase::AwaitingConfirm => SessionPhase::WaitingForConfirmation {
+            SourcePhase::Verifying if session.ack_wanted() => SessionPhase::WaitingForAck {
                 key: self.labels.confirm_key.clone(),
             },
-            SourcePhase::Starting => SessionPhase::Starting,
+            SourcePhase::Verifying => SessionPhase::Verifying,
             SourcePhase::Forwarding => SessionPhase::Forwarding,
             SourcePhase::Refused(reason) => SessionPhase::Ended {
                 reason: refuse_text(reason),
@@ -1608,6 +1757,19 @@ impl Controller {
                 token: d.token,
             })
             .collect();
+        let devices = self
+            .local_devices()
+            .into_iter()
+            .map(|(alias, device)| DeviceRow {
+                alias,
+                state: self
+                    .device_states
+                    .get(&device.id)
+                    .copied()
+                    .unwrap_or(VideoInput::Unchanged),
+                device: device.id,
+            })
+            .collect();
         let incoming = self
             .incoming
             .iter()
@@ -1621,6 +1783,7 @@ impl Controller {
             computer: self.label_of(&self.local),
             fingerprint: self.fingerprint.clone(),
             displays,
+            devices,
             incoming,
             clipboard: self
                 .ports
@@ -1670,8 +1833,9 @@ fn end_text(reason: EndReason) -> &'static str {
         EndReason::TargetDisconnected => "disconnected on the target",
         EndReason::TargetStopped => "the target stopped the session",
         EndReason::TargetRequestedControl => "the target took control back",
-        EndReason::ConfirmTimeout => "no confirmation in time",
+        EndReason::VerifyFailed => "the verification failed",
         EndReason::HandoffFailed => "the handoff failed",
+        EndReason::HandoffPartial => "the handoff stopped after some steps",
         EndReason::PromptFailed => "the target cannot show the prompt",
         EndReason::DisplayGone => "the target display is gone",
         EndReason::PortalGone => "the portal display is gone",
@@ -1686,7 +1850,7 @@ fn end_text(reason: EndReason) -> &'static str {
 fn target_phase_text(phase: TargetPhase) -> &'static str {
     match phase {
         TargetPhase::AwaitingHandoff => "switching the display",
-        TargetPhase::ShowingPrompt | TargetPhase::Prompting => "waiting for confirmation",
+        TargetPhase::Verifying => "verifying the display",
         TargetPhase::CheckingDisplay => "starting",
         TargetPhase::Forwarding => "controls this computer",
         TargetPhase::Ended(reason) => end_text(reason),

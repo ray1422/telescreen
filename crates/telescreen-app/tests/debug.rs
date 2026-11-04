@@ -20,7 +20,11 @@ fn parse(line: &str) -> Request {
 #[test]
 fn requests_without_arguments() {
     assert_eq!(parse(r#"{"cmd":"state"}"#), Request::State);
-    assert_eq!(parse(r#"{"cmd":"confirm"}"#), Request::Confirm);
+    assert_eq!(parse(r#"{"cmd":"ack"}"#), Request::Ack);
+    assert!(
+        parse_request(r#"{"cmd":"confirm"}"#).is_err(),
+        "the old name"
+    );
     assert_eq!(parse(r#"{"cmd":"quit"}"#), Request::Quit);
     assert_eq!(
         parse(r#"{"cmd":"release_keyboard"}"#),
@@ -101,6 +105,7 @@ fn report() -> StateReport {
             computer: "MacBook".into(),
             fingerprint: "sha256:00".into(),
             displays: vec![],
+            devices: vec![],
             incoming: vec![],
             notices: vec!["a notice".into()],
             clipboard: None,

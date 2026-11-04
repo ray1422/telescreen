@@ -135,7 +135,7 @@ impl WindowRenderer {
         self.draw(|ui| super::screens::portal(ui, screen))
     }
 
-    /// Draws the confirmation prompt (macOS prompt window).
+    /// Draws the verifier window (UI-5).
     pub fn draw_prompt(&mut self, screen: &PromptScreen) {
         self.draw(|ui| {
             super::screens::prompt(ui, screen);

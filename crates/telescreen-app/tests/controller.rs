@@ -9,11 +9,11 @@ use std::time::Instant;
 
 use serde_json::json;
 use telescreen_app::controller::{
-    Controller, Job, JobId, JobOutput, JobPort, Labels, NetPort, Ports,
+    Controller, Job, JobId, JobOutput, JobPort, Labels, NetPort, Ports, VerifierId, VerifierPort,
 };
 use telescreen_core::clipboard::{ClipboardChange, ClipboardItem};
-use telescreen_core::config::Config;
-use telescreen_core::driver::{OperationKind, Outcome};
+use telescreen_core::config::{Config, Driver, Operation};
+use telescreen_core::driver::{OperationKind, Outcome, Request};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::input::InputEvent;
 use telescreen_core::keys::Key;
@@ -24,10 +24,12 @@ use telescreen_core::platform::{
 use telescreen_core::pointer::{Normalized, Point, Rect};
 use telescreen_core::session::VideoInput;
 use telescreen_core::session::source::HandoffResult;
+use telescreen_core::verifier::VerifierEvent;
 use telescreen_core::wire::{EndReason, Message, RefuseReason};
 use telescreen_transport::{NetCommand, NetEvent};
 use telescreen_view::{Intent, Matching, PromptPresenter, PromptScreen, SessionPhase};
 
+/// The config of the tests. pc1 and the Mac verify with the `prompt` verifier.
 fn config() -> Config {
     let op = |name: &str| json!({"driver": "command", "command": [format!("/bin/{name}")]});
     serde_json::from_value(json!({
@@ -42,6 +44,7 @@ fn config() -> Config {
                         "id": "shared-lg",
                         "portal-match": op("match"),
                         "input-target": op("target"),
+                        "verify": {"driver": "prompt"},
                         "handoff": {"pc1": {"steps": [op("to-pc1")]}}
                     }
                 }
@@ -56,6 +59,7 @@ fn config() -> Config {
                         "id": "shared-lg",
                         "portal-match": op("match"),
                         "input-target": op("target"),
+                        "verify": {"driver": "prompt"},
                         "handoff": {"mac": {"steps": [op("to-mac")]}}
                     }
                 }
@@ -103,6 +107,8 @@ struct Log {
     clip_own: bool,
     /// `open`, `close`, and `clear` (a `clear_if_owned` that removed a text).
     clip_calls: Vec<&'static str>,
+    /// Calls of the verifier port: "start <id> <driver>", "ack <id>", "stop <id>".
+    verifier_calls: Vec<String>,
 }
 
 type Shared = Rc<RefCell<Log>>;
@@ -230,14 +236,45 @@ impl FocusHolder for Holder {
     }
 }
 
+struct Verifiers(Shared);
+impl VerifierPort for Verifiers {
+    fn start(&mut self, id: VerifierId, operation: Operation, request: Request) {
+        let driver = match operation.driver {
+            Driver::Exec(_) => "exec",
+            Driver::Command(_) => "command",
+            _ => "other",
+        };
+        // The destination verifies its own device for the source (ADR 0009).
+        assert_eq!(request.computer_id, ComputerId::from("pc1"));
+        assert_eq!(request.source_computer_id, ComputerId::from("mac"));
+        assert!(request.session_id.is_some());
+        self.0
+            .borrow_mut()
+            .verifier_calls
+            .push(format!("start {} {driver}", id.0));
+    }
+    fn ack(&mut self, id: VerifierId) {
+        self.0
+            .borrow_mut()
+            .verifier_calls
+            .push(format!("ack {}", id.0));
+    }
+    fn stop(&mut self, id: VerifierId) {
+        self.0
+            .borrow_mut()
+            .verifier_calls
+            .push(format!("stop {}", id.0));
+    }
+}
+
 struct Prompt(Shared);
 impl PromptPresenter for Prompt {
     fn show(&mut self, _: SessionId, _: &DisplayInfo, screen: &PromptScreen) -> Result<(), String> {
         let mut log = self.0.borrow_mut();
         log.prompts.push(format!(
             "{} | {}",
-            screen.title(),
-            screen.hint.clone().unwrap_or_default()
+            screen.title().unwrap_or_default(),
+            screen.text.clone().unwrap_or_default()
         ));
         log.prompt_visible = true;
         Ok(())
@@ -286,6 +323,16 @@ fn peer_full(
     capabilities: InputCapabilities,
     holder: bool,
 ) -> Peer {
+    peer_config(id, displays, capabilities, holder, config())
+}
+
+fn peer_config(
+    id: &str,
+    displays: Vec<DisplayInfo>,
+    capabilities: InputCapabilities,
+    holder: bool,
+    config: Config,
+) -> Peer {
     let log: Shared = Rc::default();
     let focus_holder: Option<Box<dyn FocusHolder>> = if holder {
         Some(Box::new(Holder(log.clone())))
@@ -301,6 +348,7 @@ fn peer_full(
         prompt: Box::new(Prompt(log.clone())),
         focus_holder,
         clipboard: Some(Box::new(Clip(log.clone()))),
+        verifiers: Box::new(Verifiers(log.clone())),
         capabilities,
     };
     let labels = Labels {
@@ -308,7 +356,7 @@ fn peer_full(
         release_shortcut: "Ctrl+Opt+Cmd+Esc".into(),
     };
     let controller = Controller::new(
-        config(),
+        config,
         ComputerId::from(id),
         std::env::temp_dir(),
         labels,
@@ -343,7 +391,7 @@ impl World {
             ),
             pc1: peer("pc1", vec![display("HDMI-A-2", 0.0, 2048.0)]),
             now: Instant::now(),
-            handoff: HandoffResult::Done { verified: None },
+            handoff: HandoffResult::Done,
         }
     }
 
@@ -474,7 +522,11 @@ impl World {
 
     fn advance_to_forwarding(&mut self) {
         self.advance_to_confirmation();
-        assert!(self.mac.controller.confirm());
+        self.advance_to_forwarding_from_confirmation();
+    }
+
+    fn advance_to_forwarding_from_confirmation(&mut self) {
+        assert!(self.mac.controller.acknowledge());
         self.mac
             .controller
             .on_captured(CapturedEvent::PointerEntered {
@@ -549,15 +601,19 @@ fn flow7_ac3_prompt_with_hint_on_target() {
     let mut w = World::new();
     w.advance_to_confirmation();
     let log = w.pc1.log.borrow();
+    // The prompt verifier shows the hint, then asks for an acknowledgement (VER-5).
     assert_eq!(
         log.prompts,
-        ["Press Return on MacBook to control this computer | Copy: Ctrl+C"]
+        [
+            " | Copy: Ctrl+C",
+            "Press Return on MacBook to control this computer | Copy: Ctrl+C"
+        ]
     );
     assert!(log.prompt_visible);
     drop(log);
     assert_eq!(
         w.phase(),
-        Some(SessionPhase::WaitingForConfirmation {
+        Some(SessionPhase::WaitingForAck {
             key: "Return".into()
         })
     );
@@ -581,13 +637,13 @@ fn flow7_ac3_prompt_with_hint_on_target() {
 fn ac6_confirmation_needs_prompt_and_focus() {
     let mut w = World::new();
     w.open_portal();
-    assert!(!w.mac.controller.confirm(), "no session: a normal key");
+    assert!(!w.mac.controller.acknowledge(), "no session: a normal key");
     w.mac.controller.start_handoff(ComputerId::from("pc1"));
     w.pump();
     w.mac.controller.set_portal_focus(false);
-    assert!(!w.mac.controller.confirm(), "no focus: a normal key");
+    assert!(!w.mac.controller.acknowledge(), "no focus: a normal key");
     w.mac.controller.set_portal_focus(true);
-    assert!(w.mac.controller.confirm());
+    assert!(w.mac.controller.acknowledge());
 }
 
 #[test]
@@ -801,7 +857,7 @@ fn flow16_ac15_release_shortcut_ends_both_sides() {
     w.pump();
     assert!(matches!(
         w.phase(),
-        Some(SessionPhase::WaitingForConfirmation { .. })
+        Some(SessionPhase::WaitingForAck { .. })
     ));
 }
 
@@ -809,7 +865,7 @@ fn flow16_ac15_release_shortcut_ends_both_sides() {
 fn flow11_ac7_timeout_removes_prompt() {
     let mut w = World::new();
     w.advance_to_confirmation();
-    w.mac
+    w.pc1
         .controller
         .tick(w.now + std::time::Duration::from_secs(61));
     w.pump();
@@ -830,7 +886,7 @@ fn flow21_ac26_guard_from_handoff_to_confirmation() {
 fn flow21_guard_ends_with_the_timeout() {
     let mut w = World::new();
     w.advance_to_confirmation();
-    w.mac
+    w.pc1
         .controller
         .tick(w.now + std::time::Duration::from_secs(61));
     w.pump();
@@ -924,7 +980,7 @@ fn flow17_ac23_control_from_here_starts_the_reverse_session() {
     let portal = w.pc1.controller.portal_screen().unwrap();
     assert_eq!(
         portal.session.unwrap().phase,
-        SessionPhase::WaitingForConfirmation {
+        SessionPhase::WaitingForAck {
             key: "Return".into()
         }
     );
@@ -1438,4 +1494,230 @@ fn clip1_no_clipboard_read_without_the_switch_or_a_session() {
         w.pc1.log.borrow().clip_set.is_empty(),
         "the copy while off is the new baseline (CLIP-3)"
     );
+}
+
+/// A world where `verify` of pc1 (the destination of the Mac) is `verify`, or absent.
+fn world_with_pc1_verify(verify: Option<serde_json::Value>) -> World {
+    let mut config = config();
+    let device = config
+        .computers
+        .get_mut(&ComputerId::from("pc1"))
+        .unwrap()
+        .devices
+        .get_mut("Monitor")
+        .unwrap();
+    device.verify = verify.map(|v| {
+        let wrapped: telescreen_core::config::Device =
+            serde_json::from_value(json!({"id": "shared-lg", "verify": v})).unwrap();
+        wrapped.verify.unwrap()
+    });
+    let mut w = World::new();
+    w.pc1 = peer_config(
+        "pc1",
+        vec![display("HDMI-A-2", 0.0, 2048.0)],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+        true,
+        config,
+    );
+    w
+}
+
+#[test]
+fn ver2_ac39_no_verify_starts_forwarding_unverified() {
+    let mut w = world_with_pc1_verify(None);
+    w.advance_to_confirmation();
+    assert!(w.pc1.log.borrow().prompts.is_empty(), "no prompt");
+    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
+    assert_eq!(session.phase, SessionPhase::Forwarding);
+    assert_eq!(session.video_input, VideoInput::Unverified);
+    assert!(!w.mac.controller.acknowledge(), "Return is a normal key");
+}
+
+#[test]
+fn ver3_a_process_verifier_runs_on_the_destination() {
+    let mut w = world_with_pc1_verify(Some(json!({"driver": "command", "command": "check"})));
+    w.advance_to_confirmation();
+    assert_eq!(w.pc1.log.borrow().verifier_calls, ["start 1 command"]);
+    assert!(w.mac.log.borrow().verifier_calls.is_empty());
+    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
+    assert_eq!(session.phase, SessionPhase::Verifying);
+
+    // The verifier shows a text and asks for an acknowledgement (VER-3, VER-4).
+    w.pc1
+        .controller
+        .on_verifier_event(VerifierId(1), VerifierEvent::Show("Is it here?".into()));
+    w.pc1
+        .controller
+        .on_verifier_event(VerifierId(1), VerifierEvent::WantAck);
+    w.pump();
+    assert!(w.pc1.log.borrow().prompt_visible);
+    assert_eq!(
+        w.pc1.log.borrow().prompts.last().unwrap(),
+        "Press Return on MacBook to control this computer | Is it here?"
+    );
+    assert!(w.mac.controller.acknowledge());
+    w.pump();
+    assert_eq!(
+        w.pc1.log.borrow().verifier_calls,
+        ["start 1 command", "ack 1"]
+    );
+
+    w.pc1
+        .controller
+        .on_verifier_event(VerifierId(1), VerifierEvent::Done(true));
+    w.mac.controller.on_captured(CapturedEvent::PointerEntered {
+        at: Point { x: 10.0, y: 10.0 },
+    });
+    w.pump();
+    assert!(!w.pc1.log.borrow().prompt_visible);
+    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
+    assert_eq!(session.phase, SessionPhase::Forwarding);
+    assert_eq!(session.video_input, VideoInput::Confirmed);
+}
+
+#[test]
+fn ver3_an_exec_verifier_with_no_user() {
+    let mut w = world_with_pc1_verify(Some(json!({"driver": "exec", "command": "check"})));
+    w.advance_to_confirmation();
+    assert_eq!(w.pc1.log.borrow().verifier_calls, ["start 1 exec"]);
+    w.pc1
+        .controller
+        .on_verifier_event(VerifierId(1), VerifierEvent::Done(true));
+    w.pump();
+    assert!(w.pc1.log.borrow().prompts.is_empty(), "no window");
+    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
+    assert_eq!(session.phase, SessionPhase::Forwarding);
+    assert_eq!(session.video_input, VideoInput::Confirmed);
+}
+
+#[test]
+fn flow11_ac10_a_failed_verification_ends_the_session() {
+    let mut w = world_with_pc1_verify(Some(json!({"driver": "command", "command": "check"})));
+    w.advance_to_confirmation();
+    w.pc1
+        .controller
+        .on_verifier_event(VerifierId(1), VerifierEvent::Failed("timeout".into()));
+    w.pump();
+    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
+    assert!(matches!(session.phase, SessionPhase::Ended { .. }));
+    assert_eq!(session.video_input, VideoInput::Unknown);
+    assert!(!w.mac.controller.guarded(), "the guard ends (FLOW-21)");
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+}
+
+#[test]
+fn flow16_an_end_while_verifying_stops_the_verifier() {
+    let mut w = world_with_pc1_verify(Some(json!({"driver": "command", "command": "check"})));
+    w.advance_to_confirmation();
+    w.mac.controller.on_intent(Intent::EndSession);
+    w.pump();
+    assert_eq!(
+        w.pc1.log.borrow().verifier_calls,
+        ["start 1 command", "stop 1"]
+    );
+    // A late event of the stopped verifier has no effect.
+    w.pc1
+        .controller
+        .on_verifier_event(VerifierId(1), VerifierEvent::Done(true));
+    w.pump();
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+}
+
+/// The device state of the shared display on pc1, the destination (VER-6).
+fn pc1_state(w: &World) -> VideoInput {
+    let screen = w.pc1.controller.control_screen();
+    let row = screen
+        .devices
+        .iter()
+        .find(|row| row.alias == "Monitor")
+        .expect("the device list has each local device");
+    assert_eq!(row.device, DeviceId::from("shared-lg"));
+    row.state
+}
+
+#[test]
+fn ver6_no_state_before_a_handoff() {
+    let w = World::new();
+    assert_eq!(pc1_state(&w), VideoInput::Unchanged);
+}
+
+#[test]
+fn ver6_ac5_an_acknowledged_prompt_confirms_the_device() {
+    let mut w = World::new();
+    w.advance_to_confirmation();
+    assert_eq!(pc1_state(&w), VideoInput::Unverified, "the steps succeeded");
+    w.advance_to_forwarding_from_confirmation();
+    assert_eq!(pc1_state(&w), VideoInput::Confirmed);
+    // The device state does not depend on the session.
+    w.mac.controller.on_intent(Intent::EndSession);
+    w.pump();
+    assert_eq!(pc1_state(&w), VideoInput::Confirmed);
+}
+
+#[test]
+fn ver2_ac39_no_verify_leaves_the_device_unverified() {
+    let mut w = world_with_pc1_verify(None);
+    w.advance_to_confirmation();
+    assert_eq!(pc1_state(&w), VideoInput::Unverified);
+    w.mac.controller.on_intent(Intent::EndSession);
+    w.pump();
+    assert_eq!(
+        pc1_state(&w),
+        VideoInput::Unverified,
+        "the end does not change it"
+    );
+}
+
+#[test]
+fn ac40_a_timeout_makes_the_device_unknown_and_it_is_back_confirms_it() {
+    let mut w = World::new();
+    w.advance_to_confirmation();
+    w.pc1
+        .controller
+        .tick(w.now + std::time::Duration::from_secs(61));
+    w.pump();
+    assert_eq!(pc1_state(&w), VideoInput::Unknown);
+    w.pc1.controller.on_intent(Intent::DeviceIsBack {
+        device: DeviceId::from("shared-lg"),
+    });
+    assert_eq!(pc1_state(&w), VideoInput::Confirmed);
+}
+
+#[test]
+fn ver6_it_is_back_needs_an_unknown_device() {
+    let mut w = world_with_pc1_verify(None);
+    w.advance_to_confirmation();
+    w.pc1.controller.on_intent(Intent::DeviceIsBack {
+        device: DeviceId::from("shared-lg"),
+    });
+    assert_eq!(pc1_state(&w), VideoInput::Unverified);
+}
+
+#[test]
+fn ac40_a_failed_process_verifier_makes_the_device_unknown() {
+    let mut w = world_with_pc1_verify(Some(json!({"driver": "exec", "command": "check"})));
+    w.advance_to_confirmation();
+    w.pc1
+        .controller
+        .on_verifier_event(VerifierId(1), VerifierEvent::Done(false));
+    w.pump();
+    assert_eq!(pc1_state(&w), VideoInput::Unknown);
+}
+
+#[test]
+fn flow12_a_partial_handoff_makes_the_device_unknown_on_the_destination() {
+    let mut w = World::new();
+    w.handoff = HandoffResult::Failed { completed_steps: 1 };
+    w.advance_to_confirmation();
+    assert_eq!(pc1_state(&w), VideoInput::Unknown);
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+
+    let mut w = World::new();
+    w.handoff = HandoffResult::Failed { completed_steps: 0 };
+    w.advance_to_confirmation();
+    assert_eq!(pc1_state(&w), VideoInput::Unchanged, "nothing switched");
 }

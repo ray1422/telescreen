@@ -262,8 +262,8 @@ impl Overlay {
         let pixels = crate::text::prompt(
             width,
             height,
-            &surface.screen.title(),
-            surface.screen.hint.as_deref(),
+            &surface.screen.title().unwrap_or_default(),
+            surface.screen.text.as_deref(),
         );
         let bytes: Vec<u8> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
         let file = shared_memory(bytes.len())?;

@@ -136,11 +136,11 @@ try_session() {
     *) intent "$src" "{\"SelectDevice\":{\"alias\":\"$TS_DEVICE\"}}"; sleep 1 ;;
   esac
   intent "$src" "{\"StartHandoff\":{\"target\":\"$(peer_id "$tgt")\"}}"
-  if ! wait_state "$src" portal 'WaitingForConfirmation' 40; then
+  if ! wait_state "$src" portal 'WaitingForAck' 40; then
     say "session $src->$tgt: no prompt; portal: $(state "$src" portal)"
     return 1
   fi
-  # The confirmation needs the focused portal (AC-6). OpenPortal does not
+  # The acknowledgement needs the focused portal (AC-6). OpenPortal does not
   # activate the Mac app when another app is in front. Without a click,
   # activate the running app with `open -a`.
   if [ "$src" = mac ] && ! portal_focused mac 3; then
@@ -151,7 +151,7 @@ try_session() {
     say "session $src->$tgt: the portal is not focused; windows: $(state "$src" windows)"
     return 1
   fi
-  say "confirm on $src: $(dbg "$src" '{"cmd":"confirm"}')"
+  say "ack on $src: $(dbg "$src" '{"cmd":"ack"}')"
   if ! wait_state "$src" portal 'phase: Forwarding' 10; then
     say "session $src->$tgt: no forwarding; portal: $(state "$src" portal)"
     return 1

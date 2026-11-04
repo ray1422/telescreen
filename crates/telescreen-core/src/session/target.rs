@@ -3,17 +3,16 @@
 use crate::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use crate::input::{HeldInputs, InputEvent};
 use crate::pointer::Normalized;
+use crate::verifier::VerifierEvent;
 use crate::wire::{EndReason, Message, PointerDatagram, PointerOrder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetPhase {
     /// The lease is granted; waiting for `HandoffDone`.
     AwaitingHandoff,
-    /// `ShowPrompt` is returned; waiting for [`TargetSession::on_prompt_shown`].
-    ShowingPrompt,
-    /// The prompt is visible; waiting for `Confirm`.
-    Prompting,
-    /// `Confirm` arrived; waiting for [`TargetSession::on_display_checked`].
+    /// The destination verifies the handoff, with optional text and acknowledgements.
+    Verifying,
+    /// Verification finished; waiting for [`TargetSession::on_display_checked`].
     CheckingDisplay,
     /// Input is injected.
     Forwarding,
@@ -26,10 +25,22 @@ pub enum TargetPhase {
 pub enum TargetAction {
     /// Send on the reliable channel to the source.
     Send(Message),
-    /// Show the prompt on the input-target display, then call
-    /// [`TargetSession::on_prompt_shown`].
-    ShowPrompt,
-    HidePrompt,
+    /// Start the verifier of the local device, then report its events with
+    /// [`TargetSession::on_verifier`], or call [`TargetSession::on_no_verify`]
+    /// if the device has no `verify`.
+    StartVerifier,
+    /// Stop the verifier; it sends no more events.
+    StopVerifier,
+    /// Show the window of the verifier on the input-target display, or update
+    /// it in place, then call [`TargetSession::on_verifier_shown`].
+    ShowVerifier {
+        text: Option<String>,
+        ack_wanted: bool,
+    },
+    /// Remove the window of the verifier.
+    HideVerifier,
+    /// Send the acknowledgement to the verifier.
+    AckVerifier,
     /// Check that the input-target display token is still valid, then call
     /// [`TargetSession::on_display_checked`].
     CheckDisplay,
@@ -53,6 +64,12 @@ pub struct TargetSession {
     held: HeldInputs,
     pointer_order: PointerOrder,
     keyboard_held: bool,
+    verifier_running: bool,
+    verifier_visible: bool,
+    verifier_text: Option<String>,
+    ack_wanted: bool,
+    ack_wanted_sent: bool,
+    verified: bool,
 }
 
 impl TargetSession {
@@ -77,6 +94,12 @@ impl TargetSession {
             held: HeldInputs::default(),
             pointer_order: PointerOrder::default(),
             keyboard_held: false,
+            verifier_running: false,
+            verifier_visible: false,
+            verifier_text: None,
+            ack_wanted: false,
+            ack_wanted_sent: false,
+            verified: false,
         };
         (target, actions)
     }
@@ -111,7 +134,7 @@ impl TargetSession {
     pub fn on_message(&mut self, message: &Message) -> Vec<TargetAction> {
         let session = match message {
             Message::HandoffDone { session }
-            | Message::Confirm { session }
+            | Message::Ack { session }
             | Message::Input { session, .. }
             | Message::ReleaseAll { session }
             | Message::KeyboardAway { session }
@@ -124,12 +147,18 @@ impl TargetSession {
         }
         match message {
             Message::HandoffDone { .. } if self.phase == TargetPhase::AwaitingHandoff => {
-                self.phase = TargetPhase::ShowingPrompt;
-                vec![TargetAction::ShowPrompt]
+                self.phase = TargetPhase::Verifying;
+                self.verifier_running = true;
+                vec![TargetAction::StartVerifier]
             }
-            Message::Confirm { .. } if self.phase == TargetPhase::Prompting => {
-                self.phase = TargetPhase::CheckingDisplay;
-                vec![TargetAction::CheckDisplay]
+            Message::Ack { .. }
+                if self.phase == TargetPhase::Verifying
+                    && self.ack_wanted
+                    && self.ack_wanted_sent =>
+            {
+                self.ack_wanted = false;
+                self.ack_wanted_sent = false;
+                vec![TargetAction::AckVerifier]
             }
             Message::Input { event, .. } if self.phase == TargetPhase::Forwarding => {
                 if self.held.record(event) {
@@ -153,26 +182,60 @@ impl TargetSession {
                 self.keyboard_held = false;
                 vec![TargetAction::ReleaseKeyboard]
             }
-            Message::End { reason, .. } => {
-                self.finish(*reason, false, self.prompt_can_be_visible())
-            }
+            Message::End { reason, .. } => self.finish(*reason, false),
             _ => Vec::new(),
         }
     }
 
-    /// Reports the result of `ShowPrompt`.
-    pub fn on_prompt_shown(&mut self, shown: bool) -> Vec<TargetAction> {
-        if self.phase != TargetPhase::ShowingPrompt {
+    /// Reports an event of the destination verifier. Late events have no effect.
+    pub fn on_verifier(&mut self, event: VerifierEvent) -> Vec<TargetAction> {
+        if self.phase != TargetPhase::Verifying {
+            return Vec::new();
+        }
+        match event {
+            VerifierEvent::Show(text) => {
+                self.verifier_text = Some(text);
+                vec![self.show_verifier()]
+            }
+            VerifierEvent::WantAck => {
+                self.ack_wanted = true;
+                self.ack_wanted_sent = false;
+                vec![self.show_verifier()]
+            }
+            VerifierEvent::Done(true) => self.check_display(true),
+            VerifierEvent::Done(false) | VerifierEvent::Failed(_) => {
+                // The verifier has already ended; it does not need stopping.
+                self.verifier_running = false;
+                self.end(EndReason::VerifyFailed)
+            }
+        }
+    }
+
+    /// The destination has no `verify`: continue with an unverified result (VER-2).
+    pub fn on_no_verify(&mut self) -> Vec<TargetAction> {
+        if self.phase != TargetPhase::Verifying {
+            return Vec::new();
+        }
+        self.check_display(false)
+    }
+
+    /// Reports the synchronous result of `ShowVerifier`. Only a visible window
+    /// can request an acknowledgement from the source (FLOW-8).
+    pub fn on_verifier_shown(&mut self, shown: bool) -> Vec<TargetAction> {
+        if self.phase != TargetPhase::Verifying {
             return self.unexpected_callback();
         }
         if !shown {
-            // The app confirmed that the prompt did not show, so there is nothing to hide.
-            return self.finish(EndReason::PromptFailed, true, false);
+            return self.end(EndReason::PromptFailed);
         }
-        self.phase = TargetPhase::Prompting;
-        vec![TargetAction::Send(Message::PromptShown {
-            session: self.session,
-        })]
+        self.verifier_visible = true;
+        if self.ack_wanted && !self.ack_wanted_sent {
+            self.ack_wanted_sent = true;
+            return vec![TargetAction::Send(Message::AckWanted {
+                session: self.session,
+            })];
+        }
+        Vec::new()
     }
 
     /// Reports the result of `CheckDisplay` (FLOW-10).
@@ -184,12 +247,16 @@ impl TargetSession {
             return self.end(EndReason::DisplayGone);
         }
         self.phase = TargetPhase::Forwarding;
-        vec![
-            TargetAction::HidePrompt,
-            TargetAction::Send(Message::Started {
-                session: self.session,
-            }),
-        ]
+        let mut actions = Vec::new();
+        if self.verifier_visible {
+            self.verifier_visible = false;
+            actions.push(TargetAction::HideVerifier);
+        }
+        actions.push(TargetAction::Send(Message::Started {
+            session: self.session,
+            verified: self.verified,
+        }));
+        actions
     }
 
     /// A pointer datagram. Returns `MovePointer` only while forwarding, only for this
@@ -210,17 +277,17 @@ impl TargetSession {
     ///
     /// The actions of each end, in this order: `Inject` up events for all held
     /// input, `ReleaseKeyboard` if the focus holder is held (FLOW-23),
-    /// `HidePrompt` if the prompt can be visible (`ShowingPrompt`, `Prompting`,
-    /// `CheckingDisplay`), `Send(End)` (only for an end on this peer), `ReleaseLease`.
+    /// `StopVerifier` if it runs, `HideVerifier` if its window is visible,
+    /// `Send(End)` (only for an end on this peer), `ReleaseLease`.
     /// An end of a finished session returns no actions.
     pub fn end(&mut self, reason: EndReason) -> Vec<TargetAction> {
-        self.finish(reason, true, self.prompt_can_be_visible())
+        self.finish(reason, true)
     }
 
     /// The connection to the source closed or its heartbeat timed out. The target
     /// releases all held input by itself (IN-4).
     pub fn on_peer_lost(&mut self) -> Vec<TargetAction> {
-        self.finish(EndReason::PeerLost, false, self.prompt_can_be_visible())
+        self.finish(EndReason::PeerLost, false)
     }
 
     fn release_held(&mut self) -> Vec<TargetAction> {
@@ -231,27 +298,27 @@ impl TargetSession {
             .collect()
     }
 
-    fn prompt_can_be_visible(&self) -> bool {
-        matches!(
-            self.phase,
-            TargetPhase::ShowingPrompt | TargetPhase::Prompting | TargetPhase::CheckingDisplay
-        )
+    fn show_verifier(&self) -> TargetAction {
+        TargetAction::ShowVerifier {
+            text: self.verifier_text.clone(),
+            ack_wanted: self.ack_wanted,
+        }
+    }
+
+    fn check_display(&mut self, verified: bool) -> Vec<TargetAction> {
+        self.verifier_running = false;
+        self.ack_wanted = false;
+        self.ack_wanted_sent = false;
+        self.verified = verified;
+        self.phase = TargetPhase::CheckingDisplay;
+        vec![TargetAction::CheckDisplay]
     }
 
     fn unexpected_callback(&mut self) -> Vec<TargetAction> {
-        self.finish(
-            EndReason::ProtocolError,
-            false,
-            self.prompt_can_be_visible(),
-        )
+        self.finish(EndReason::ProtocolError, false)
     }
 
-    fn finish(
-        &mut self,
-        reason: EndReason,
-        notify_source: bool,
-        hide_prompt: bool,
-    ) -> Vec<TargetAction> {
+    fn finish(&mut self, reason: EndReason, notify_source: bool) -> Vec<TargetAction> {
         if self.is_finished() {
             return Vec::new();
         }
@@ -260,8 +327,13 @@ impl TargetSession {
             self.keyboard_held = false;
             actions.push(TargetAction::ReleaseKeyboard);
         }
-        if hide_prompt {
-            actions.push(TargetAction::HidePrompt);
+        if self.verifier_running {
+            self.verifier_running = false;
+            actions.push(TargetAction::StopVerifier);
+        }
+        if self.verifier_visible {
+            self.verifier_visible = false;
+            actions.push(TargetAction::HideVerifier);
         }
         if notify_source {
             actions.push(TargetAction::Send(Message::End {
@@ -270,6 +342,8 @@ impl TargetSession {
             }));
         }
         actions.push(TargetAction::ReleaseLease);
+        self.ack_wanted = false;
+        self.ack_wanted_sent = false;
         self.phase = TargetPhase::Ended(reason);
         actions
     }
@@ -280,6 +354,7 @@ mod tests {
     use super::*;
     use crate::input::Button;
     use crate::keys::Key;
+    use crate::verifier::VerifierEvent;
 
     const SESSION: SessionId = SessionId(42);
 
@@ -294,14 +369,10 @@ mod tests {
             return target;
         }
         target.on_message(&Message::HandoffDone { session: SESSION });
-        if phase == TargetPhase::ShowingPrompt {
+        if phase == TargetPhase::Verifying {
             return target;
         }
-        target.on_prompt_shown(true);
-        if phase == TargetPhase::Prompting {
-            return target;
-        }
-        target.on_message(&Message::Confirm { session: SESSION });
+        target.on_no_verify();
         if phase == TargetPhase::CheckingDisplay {
             return target;
         }
@@ -313,14 +384,14 @@ mod tests {
     fn unexpected_callbacks_end_without_sending_and_release_held_input() {
         for phase in [
             TargetPhase::AwaitingHandoff,
-            TargetPhase::ShowingPrompt,
-            TargetPhase::Prompting,
+            TargetPhase::Verifying,
             TargetPhase::CheckingDisplay,
             TargetPhase::Forwarding,
         ] {
-            for prompt_callback in [false, true] {
-                if (prompt_callback && phase == TargetPhase::ShowingPrompt)
-                    || (!prompt_callback && phase == TargetPhase::CheckingDisplay)
+            for window_callback in [false, true] {
+                // The expected callback of each phase.
+                if (window_callback && phase == TargetPhase::Verifying)
+                    || (!window_callback && phase == TargetPhase::CheckingDisplay)
                 {
                     continue;
                 }
@@ -335,17 +406,12 @@ mod tests {
                     if phase == TargetPhase::Forwarding {
                         expected.push(TargetAction::Inject(InputEvent::Key { key, down: false }));
                     }
-                    if matches!(
-                        phase,
-                        TargetPhase::ShowingPrompt
-                            | TargetPhase::Prompting
-                            | TargetPhase::CheckingDisplay
-                    ) {
-                        expected.push(TargetAction::HidePrompt);
+                    if phase == TargetPhase::Verifying {
+                        expected.push(TargetAction::StopVerifier);
                     }
                     expected.push(TargetAction::ReleaseLease);
-                    let actions = if prompt_callback {
-                        target.on_prompt_shown(result)
+                    let actions = if window_callback {
+                        target.on_verifier_shown(result)
                     } else {
                         target.on_display_checked(result)
                     };
@@ -366,12 +432,14 @@ mod tests {
 
     #[test]
     fn callbacks_cannot_restart_a_finished_session() {
-        let mut target = at_phase(TargetPhase::ShowingPrompt);
+        let mut target = at_phase(TargetPhase::Verifying);
         target.on_peer_lost();
         for result in [false, true] {
-            assert!(target.on_prompt_shown(result).is_empty());
+            assert!(target.on_verifier_shown(result).is_empty());
             assert!(target.on_display_checked(result).is_empty());
+            assert!(target.on_verifier(VerifierEvent::Done(result)).is_empty());
         }
+        assert!(target.on_no_verify().is_empty());
         assert_eq!(target.phase(), TargetPhase::Ended(EndReason::PeerLost));
     }
 

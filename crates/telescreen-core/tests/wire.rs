@@ -28,9 +28,12 @@ fn messages_round_trip() {
             reason: RefuseReason::Busy,
         },
         Message::HandoffDone { session: s },
-        Message::PromptShown { session: s },
-        Message::Confirm { session: s },
-        Message::Started { session: s },
+        Message::AckWanted { session: s },
+        Message::Ack { session: s },
+        Message::Started {
+            session: s,
+            verified: true,
+        },
         Message::Input {
             session: s,
             event: InputEvent::Key {
@@ -104,9 +107,10 @@ fn net2_pointer_round_trip_and_order() {
 }
 
 #[test]
-fn protocol_version_4_has_the_concealed_clipboard_messages() {
-    // CLIP-7 changed the messages, so an older peer is refused.
-    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 4);
+fn protocol_version_5_has_the_verification_messages() {
+    // VER-3 changed the messages (AckWanted, Ack, Started.verified), so an older
+    // peer is refused.
+    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 5);
 }
 
 #[test]

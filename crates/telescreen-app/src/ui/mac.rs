@@ -147,7 +147,7 @@ impl Hooks {
                 self.raised = true;
             }
         } else if guarded {
-            // FLOW-21: keep the focus during the confirmation wait.
+            // FLOW-21: keep the focus during handoff and verification.
             window::activate_app();
             portal.focus_window();
         }

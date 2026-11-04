@@ -1,6 +1,7 @@
 //! The layout of each screen, as functions of an `egui::Ui` and a view model.
 //! They have no window or GPU code, so tests can run them on a headless context.
 
+use telescreen_core::session::VideoInput;
 use telescreen_view::{
     ControlScreen, Intent, Matching, PortalScreen, PromptScreen, SessionPhase, VideoInputText,
 };
@@ -29,6 +30,20 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
             }
         } else if ui.button("Open portal on this display").clicked() {
             intents.push(Intent::OpenPortal);
+        }
+        ui.heading("Devices");
+        for device in &screen.devices {
+            ui.push_id(&device.device, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&device.alias);
+                    ui.label(device.state.text());
+                    if device.state == VideoInput::Unknown && ui.button("It is back").clicked() {
+                        intents.push(Intent::DeviceIsBack {
+                            device: device.device.clone(),
+                        });
+                    }
+                });
+            });
         }
         for incoming in &screen.incoming {
             ui.push_id(incoming.session, |ui| {
@@ -115,10 +130,10 @@ pub(crate) fn portal(ui: &mut egui::Ui, screen: &PortalScreen) -> Vec<Intent> {
                     SessionPhase::HandingOff => {
                         ui.label("Handing off…");
                     }
-                    SessionPhase::WaitingForPrompt => {
-                        ui.label("Waiting for the prompt…");
+                    SessionPhase::Verifying => {
+                        ui.label("The target verifies the display.");
                     }
-                    SessionPhase::WaitingForConfirmation { key } => {
+                    SessionPhase::WaitingForAck { key } => {
                         ui.label(
                             egui::RichText::new(format!(
                                 "Press {key} or click here to take control of {}.",
@@ -126,9 +141,6 @@ pub(crate) fn portal(ui: &mut egui::Ui, screen: &PortalScreen) -> Vec<Intent> {
                             ))
                             .size(48.0),
                         );
-                    }
-                    SessionPhase::Starting => {
-                        ui.label("Starting input forwarding…");
                     }
                     SessionPhase::Forwarding => {
                         ui.label("Forwarding input.");
@@ -158,25 +170,28 @@ pub(crate) fn portal(ui: &mut egui::Ui, screen: &PortalScreen) -> Vec<Intent> {
 pub(crate) fn prompt(ui: &mut egui::Ui, screen: &PromptScreen) {
     let width = ui.available_width();
     let color = ui.visuals().text_color();
-    let title = ui.painter().layout(
-        screen.title(),
-        egui::FontId::proportional(48.0),
-        color,
-        width,
-    );
-    let hint = screen.hint.as_ref().map(|hint| {
+    let title = screen.title().map(|title| {
         ui.painter()
-            .layout(hint.clone(), egui::FontId::proportional(28.0), color, width)
+            .layout(title, egui::FontId::proportional(48.0), color, width)
     });
-    let height = title.size().y
-        + hint
-            .as_ref()
-            .map_or(0.0, |hint| ui.spacing().item_spacing.y + hint.size().y);
+    let text = screen.text.as_ref().map(|text| {
+        ui.painter()
+            .layout(text.clone(), egui::FontId::proportional(28.0), color, width)
+    });
+    let height = title.as_ref().map_or(0.0, |title| title.size().y)
+        + text.as_ref().map_or(0.0, |text| text.size().y)
+        + if title.is_some() && text.is_some() {
+            ui.spacing().item_spacing.y
+        } else {
+            0.0
+        };
     ui.add_space(((ui.available_height() - height) / 2.0).max(0.0));
     ui.vertical_centered(|ui| {
-        ui.label(title);
-        if let Some(hint) = hint {
-            ui.label(hint);
+        if let Some(title) = title {
+            ui.label(title);
+        }
+        if let Some(text) = text {
+            ui.label(text);
         }
     });
 }
@@ -185,7 +200,9 @@ pub(crate) fn prompt(ui: &mut egui::Ui, screen: &PromptScreen) {
 mod tests {
     use super::*;
     use telescreen_core::{ids::SessionId, session::VideoInput};
-    use telescreen_view::{CandidateRow, DeviceChoice, DisplayRow, IncomingRow, SessionRow};
+    use telescreen_view::{
+        CandidateRow, DeviceChoice, DeviceRow, DisplayRow, IncomingRow, SessionRow,
+    };
 
     fn assert_idle_frame(
         context: &egui::Context,
@@ -217,6 +234,18 @@ mod tests {
                         token: "shared".into(),
                         name: "Display".into(),
                         has_portal: true,
+                    },
+                ],
+                devices: vec![
+                    DeviceRow {
+                        alias: "Monitor".into(),
+                        device: "shared".into(),
+                        state: VideoInput::Unchanged,
+                    },
+                    DeviceRow {
+                        alias: "Hub".into(),
+                        device: "hub".into(),
+                        state: VideoInput::Unknown,
                     },
                 ],
                 incoming: vec![
@@ -291,11 +320,10 @@ mod tests {
         let phases = [
             SessionPhase::Requesting,
             SessionPhase::HandingOff,
-            SessionPhase::WaitingForPrompt,
-            SessionPhase::WaitingForConfirmation {
+            SessionPhase::Verifying,
+            SessionPhase::WaitingForAck {
                 key: "Return".into(),
             },
-            SessionPhase::Starting,
             SessionPhase::Forwarding,
             SessionPhase::Ended {
                 reason: "The target disconnected".into(),
@@ -325,20 +353,23 @@ mod tests {
     #[test]
     fn prompt_variants_render_without_input() {
         let context = egui::Context::default();
-        for hint in [
+        for text in [
             None,
             Some(String::new()),
             Some("**Copy**: Control+C\nPaste: Control+V".into()),
         ] {
-            let screen = PromptScreen {
-                source: "Source peer".into(),
-                confirm_key: "Return".into(),
-                hint,
-            };
-            assert_idle_frame(&context, |ui| {
-                prompt(ui, &screen);
-                Vec::new()
-            });
+            for ack_wanted in [false, true] {
+                let screen = PromptScreen {
+                    source: "Source peer".into(),
+                    confirm_key: "Return".into(),
+                    text: text.clone(),
+                    ack_wanted,
+                };
+                assert_idle_frame(&context, |ui| {
+                    prompt(ui, &screen);
+                    Vec::new()
+                });
+            }
         }
     }
 }

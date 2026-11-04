@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use serde_json::{Value, json};
-use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_view::{ControlScreen, Intent, PortalScreen};
 
 /// One request line.
@@ -26,8 +26,8 @@ pub enum Request {
     State,
     /// `{"cmd":"intent","intent":<intent>}`: the same as a click in the UI.
     Intent(Intent),
-    /// `{"cmd":"confirm"}`: the same as the confirmation key in the portal.
-    Confirm,
+    /// `{"cmd":"ack"}`: the same as the acknowledgement key in the portal.
+    Ack,
     /// `{"cmd":"hold_keyboard","display":"<token>"}`: takes keyboard focus (UI-7).
     HoldKeyboard { display: DisplayToken },
     /// `{"cmd":"release_keyboard"}`: removes the focus holder (UI-7).
@@ -81,7 +81,7 @@ pub fn parse_request(line: &str) -> Result<Request, DebugError> {
         serde_json::from_str(line).map_err(|error| DebugError::Request(error.to_string()))?;
     match string_field(&value, "cmd")? {
         "state" => Ok(Request::State),
-        "confirm" => Ok(Request::Confirm),
+        "ack" => Ok(Request::Ack),
         "hold_keyboard" => Ok(Request::HoldKeyboard {
             display: DisplayToken::from(string_field(&value, "display")?),
         }),
@@ -122,6 +122,9 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
         .next()
         .ok_or_else(|| DebugError::Request("missing intent variant".into()))?;
     match name.as_str() {
+        "DeviceIsBack" => Ok(Intent::DeviceIsBack {
+            device: DeviceId::from(string_field(arguments, "device")?),
+        }),
         "SetClipboard" => Ok(Intent::SetClipboard {
             on: arguments
                 .get("on")

@@ -7,7 +7,7 @@ use crate::input::{HeldInputs, InputEvent};
 use crate::pointer::Normalized;
 use crate::wire::{EndReason, Message, PointerDatagram, RefuseReason};
 
-use super::{CONFIRM_TIMEOUT, VideoInput};
+use super::VideoInput;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SourcePhase {
@@ -15,12 +15,8 @@ pub enum SourcePhase {
     Requesting,
     /// The lease is granted; the handoff steps run (FLOW-6).
     HandingOff,
-    /// `HandoffDone` is sent; waiting for `PromptShown` (FLOW-7).
-    AwaitingPrompt,
-    /// The prompt is visible on the target; waiting for the user (FLOW-8).
-    AwaitingConfirm,
-    /// `Confirm` is sent; waiting for `Started` (FLOW-10).
-    Starting,
+    /// `HandoffDone` is sent; the destination verifies until `Started` (FLOW-10).
+    Verifying,
     /// Input is captured, suppressed, and forwarded (FLOW-13).
     Forwarding,
     /// The target refused the session. Terminal.
@@ -34,7 +30,7 @@ pub enum SourcePhase {
 pub enum SourceAction {
     /// Send on the reliable channel to the target.
     Send(Message),
-    /// Run the handoff steps (and `verify`, if present) for this target on a
+    /// Run the handoff steps for this target on a
     /// worker, then call [`SourceSession::on_handoff_finished`].
     RunHandoff,
     /// Start to capture, suppress, and forward input.
@@ -43,12 +39,11 @@ pub enum SourceAction {
     StopForwarding,
 }
 
-/// The result of the handoff steps and `verify`.
+/// The result of the handoff steps. The destination verifies separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandoffResult {
-    /// All steps completed. `verified` is the `verify` result, or `None` if the
-    /// handoff has no `verify`.
-    Done { verified: Option<bool> },
+    /// All steps completed.
+    Done,
     /// A step failed after `completed_steps` steps completed.
     Failed { completed_steps: usize },
 }
@@ -60,7 +55,7 @@ pub struct SourceSession {
     session: Option<SessionId>,
     phase: SourcePhase,
     video: VideoInput,
-    confirm_deadline: Option<Instant>,
+    ack_wanted: bool,
     keyboard_in_portal: bool,
     held: HeldInputs,
     seq: u64,
@@ -82,7 +77,7 @@ impl SourceSession {
             session: None,
             phase: SourcePhase::Requesting,
             video: VideoInput::Unchanged,
-            confirm_deadline: None,
+            ack_wanted: false,
             keyboard_in_portal: true,
             held: HeldInputs::default(),
             seq: 0,
@@ -112,6 +107,11 @@ impl SourceSession {
         self.video
     }
 
+    /// Whether the verifier of the target waits for an acknowledgement.
+    pub fn ack_wanted(&self) -> bool {
+        self.ack_wanted
+    }
+
     pub fn is_finished(&self) -> bool {
         matches!(self.phase, SourcePhase::Refused(_) | SourcePhase::Ended(_))
     }
@@ -121,7 +121,7 @@ impl SourceSession {
     /// `SessionGranted` for this device after the session finished returns
     /// `Send(End { session, reason: SourceClosed })`, so that the target releases
     /// the lease.
-    pub fn on_message(&mut self, message: &Message, now: Instant) -> Vec<SourceAction> {
+    pub fn on_message(&mut self, message: &Message, _now: Instant) -> Vec<SourceAction> {
         match *message {
             Message::SessionGranted {
                 session,
@@ -144,19 +144,19 @@ impl SourceSession {
             {
                 self.phase = SourcePhase::Refused(reason);
             }
-            Message::PromptShown { session }
-                if self.session == Some(session) && self.phase == SourcePhase::AwaitingPrompt =>
+            Message::AckWanted { session }
+                if self.session == Some(session) && self.phase == SourcePhase::Verifying =>
             {
-                let Some(deadline) = now.checked_add(CONFIRM_TIMEOUT) else {
-                    return self.finish(EndReason::ProtocolError, false);
-                };
-                self.confirm_deadline = Some(deadline);
-                self.phase = SourcePhase::AwaitingConfirm;
+                self.ack_wanted = true;
             }
-            Message::Started { session }
-                if self.session == Some(session) && self.phase == SourcePhase::Starting =>
+            Message::Started { session, verified }
+                if self.session == Some(session) && self.phase == SourcePhase::Verifying =>
             {
                 self.phase = SourcePhase::Forwarding;
+                self.ack_wanted = false;
+                if verified {
+                    self.video = VideoInput::Confirmed;
+                }
                 self.last_pointer = None;
                 self.keyboard_in_portal = true;
                 return vec![SourceAction::StartForwarding];
@@ -178,47 +178,37 @@ impl SourceSession {
             return Vec::new();
         };
         match result {
-            HandoffResult::Done {
-                verified: Some(false),
-            } => {
-                self.video = VideoInput::Unknown;
-                self.end(EndReason::HandoffFailed)
-            }
             HandoffResult::Failed { completed_steps } => {
                 if completed_steps > 0 {
                     self.video = VideoInput::Unknown;
-                }
-                self.end(EndReason::HandoffFailed)
-            }
-            HandoffResult::Done { verified } => {
-                self.video = if verified == Some(true) {
-                    VideoInput::Confirmed
+                    self.end(EndReason::HandoffPartial)
                 } else {
-                    VideoInput::Unverified
-                };
-                self.phase = SourcePhase::AwaitingPrompt;
+                    self.end(EndReason::HandoffFailed)
+                }
+            }
+            HandoffResult::Done => {
+                self.video = VideoInput::Unverified;
+                self.phase = SourcePhase::Verifying;
                 vec![SourceAction::Send(Message::HandoffDone { session })]
             }
         }
     }
 
-    /// The user pressed the confirmation key or clicked in the portal (FLOW-8).
-    /// Returns `None` if this is not a confirmation: then the key is a normal key.
-    /// It is a confirmation only in `AwaitingConfirm` and only if the portal has
-    /// the window focus. The app suppresses a confirmation (FLOW-9).
-    pub fn confirm(&mut self, portal_focused: bool) -> Option<Vec<SourceAction>> {
-        if self.phase != SourcePhase::AwaitingConfirm || !portal_focused {
+    /// The user pressed Return or clicked in the portal (FLOW-8). Accepts one
+    /// acknowledgement per `AckWanted`, only while verifying with portal focus.
+    /// The app suppresses an accepted acknowledgement (FLOW-9). Otherwise this
+    /// returns `None`, and the key is a normal key.
+    pub fn acknowledge(&mut self, portal_focused: bool) -> Option<Vec<SourceAction>> {
+        if self.phase != SourcePhase::Verifying || !self.ack_wanted || !portal_focused {
             return None;
         }
         let session = self.session?;
-        self.phase = SourcePhase::Starting;
-        self.video = VideoInput::Confirmed;
-        self.confirm_deadline = None;
-        Some(vec![SourceAction::Send(Message::Confirm { session })])
+        self.ack_wanted = false;
+        Some(vec![SourceAction::Send(Message::Ack { session })])
     }
 
     /// Reports a keyboard focus change while forwarding (FLOW-22, FLOW-23).
-    /// The confirmation puts the keyboard in the portal at the start.
+    /// The keyboard starts in the portal when forwarding starts.
     pub fn on_keyboard(&mut self, in_portal: bool) -> Vec<SourceAction> {
         if self.phase != SourcePhase::Forwarding || self.keyboard_in_portal == in_portal {
             return Vec::new();
@@ -300,19 +290,6 @@ impl SourceSession {
         self.finish(EndReason::PeerLost, false)
     }
 
-    /// Checks the timers (FLOW-11).
-    pub fn tick(&mut self, now: Instant) -> Vec<SourceAction> {
-        if self.phase == SourcePhase::AwaitingConfirm
-            && self
-                .confirm_deadline
-                .is_some_and(|deadline| now >= deadline)
-        {
-            self.video = VideoInput::Unknown;
-            return self.end(EndReason::ConfirmTimeout);
-        }
-        Vec::new()
-    }
-
     fn finish(&mut self, reason: EndReason, notify_target: bool) -> Vec<SourceAction> {
         if self.is_finished() {
             return Vec::new();
@@ -325,7 +302,7 @@ impl SourceSession {
             actions.push(SourceAction::Send(Message::End { session, reason }));
         }
         let _ = self.held.release_all();
-        self.confirm_deadline = None;
+        self.ack_wanted = false;
         // An unverified switch is unknown after the end. An unchanged input stays
         // unchanged, and a confirmed input stays confirmed (FLOW-16).
         if self.video == VideoInput::Unverified {

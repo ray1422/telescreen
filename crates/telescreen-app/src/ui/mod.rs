@@ -25,6 +25,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use telescreen_core::config::Config;
 use telescreen_core::driver::{self, SearchPath};
 use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
+use telescreen_core::verifier::VerifierEvent;
 use telescreen_core::wire::{EndReason, Message};
 use telescreen_render_egui::{SharedGpu, WindowRenderer};
 use telescreen_transport::network::{Timing, TrustSource};
@@ -38,7 +39,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::monitor::MonitorHandle;
 use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
-use crate::controller::{Controller, JobId, JobOutput, Ports};
+use crate::controller::{Controller, JobId, JobOutput, Ports, VerifierId};
 use crate::paths;
 use prompt_queue::PromptRequest;
 
@@ -51,6 +52,7 @@ const DISPLAY_CHECK: Duration = Duration::from_secs(2);
 pub enum UserEvent {
     Net(NetEvent),
     Job(JobId, JobOutput),
+    Verifier(VerifierId, VerifierEvent),
     /// The input capture has events in its queue.
     Captured,
     /// A request of the debug protocol and the channel for its response line.
@@ -127,7 +129,15 @@ pub fn run(
     };
     let ports = Ports {
         net,
-        jobs: Box::new(ports::ThreadJobs { proxy, context }),
+        jobs: Box::new(ports::ThreadJobs {
+            proxy: proxy.clone(),
+            context: context.clone(),
+        }),
+        verifiers: Box::new(ports::ThreadVerifiers {
+            proxy,
+            context,
+            running: Default::default(),
+        }),
         displays: parts.displays,
         capture: parts.capture,
         injector: parts.injector,
@@ -248,7 +258,7 @@ struct App {
     portal: Option<PortalSurface>,
     prompts: HashMap<SessionId, PromptSurface>,
     last_display_check: Instant,
-    /// The release of a confirmation click must not go to the UI either (FLOW-9).
+    /// The release of an acknowledgement click must not go to the UI (FLOW-9).
     swallow_release: bool,
     drawn_control: Option<telescreen_view::ControlScreen>,
     drawn_portal: Option<telescreen_view::PortalScreen>,
@@ -438,6 +448,11 @@ impl App {
                 display,
                 screen,
             } => {
+                if let Some(prompt) = self.prompts.get_mut(&session) {
+                    prompt.screen = screen;
+                    prompt.surface.window.request_redraw();
+                    return;
+                }
                 let Some(bounds) = display.bounds else {
                     self.controller.prompt_failed(session);
                     return;
@@ -494,7 +509,7 @@ impl App {
     }
 
     /// Portal window events before the renderer sees them. Returns true if the
-    /// event was used here (a confirmation, or input of a Linux capture).
+    /// event was used here (an acknowledgement, or input of a Linux capture).
     fn portal_event(&mut self, event: &WindowEvent) -> bool {
         if self
             .hooks
@@ -517,7 +532,7 @@ impl App {
                 false
             }
             WindowEvent::Occluded(true) if self.controller.guarded() => {
-                // FLOW-21: keep the portal in place during the confirmation wait.
+                // FLOW-21: keep the portal in place during verification.
                 self.hooks.portal_focus(&window, false, true);
                 false
             }
@@ -533,18 +548,18 @@ impl App {
                         event.physical_key,
                         PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
                     )
-                    && self.controller.awaiting_confirmation() =>
+                    && self.controller.awaiting_ack() =>
             {
-                self.controller.confirm()
+                self.controller.acknowledge()
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.controller.awaiting_confirmation() => {
-                let confirmed = self.controller.confirm();
-                self.swallow_release = confirmed;
-                confirmed
+            } if self.controller.awaiting_ack() => {
+                let acknowledged = self.controller.acknowledge();
+                self.swallow_release = acknowledged;
+                acknowledged
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -594,13 +609,13 @@ impl App {
                 self.handle_intents(event_loop, vec![intent]);
                 debug::ok_response()
             }
-            Request::Confirm => {
-                if !self.controller.awaiting_confirmation() {
-                    debug::error_response("the portal does not wait for a confirmation")
-                } else if self.controller.confirm() {
+            Request::Ack => {
+                if !self.controller.awaiting_ack() {
+                    debug::error_response("the portal does not wait for an acknowledgement")
+                } else if self.controller.acknowledge() {
                     debug::ok_response()
                 } else {
-                    debug::error_response("not confirmed: the portal must have the focus")
+                    debug::error_response("the portal must have the focus to acknowledge")
                 }
             }
             Request::HoldKeyboard { display } => {
@@ -702,6 +717,7 @@ impl ApplicationHandler<UserEvent> for App {
                 log_job(&output);
                 self.controller.on_job_done(id, output);
             }
+            UserEvent::Verifier(id, event) => self.controller.on_verifier_event(id, event),
             UserEvent::Captured => {}
             #[cfg(feature = "debug-protocol")]
             UserEvent::Debug(request, reply) => {

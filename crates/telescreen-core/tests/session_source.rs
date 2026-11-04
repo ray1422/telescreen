@@ -1,14 +1,14 @@
 //! Source session rules. Spec IDs are in the test names.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests may panic on a failed setup.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
 use telescreen_core::input::{Button, InputEvent};
 use telescreen_core::keys::Key;
 use telescreen_core::pointer::Normalized;
+use telescreen_core::session::VideoInput;
 use telescreen_core::session::source::{HandoffResult, SourceAction, SourcePhase, SourceSession};
-use telescreen_core::session::{CONFIRM_TIMEOUT, VideoInput};
 use telescreen_core::wire::{EndReason, Message, RefuseReason};
 
 use SourceAction::{RunHandoff, Send, StartForwarding, StopForwarding};
@@ -46,29 +46,45 @@ fn granted(now: Instant) -> SourceSession {
     s
 }
 
-fn awaiting_confirm(now: Instant) -> SourceSession {
+/// The steps completed; the target verifies as the destination (VER-1).
+fn verifying(now: Instant) -> SourceSession {
     let mut s = granted(now);
-    let actions = s.on_handoff_finished(HandoffResult::Done { verified: None });
+    let actions = s.on_handoff_finished(HandoffResult::Done);
     assert_eq!(actions, vec![Send(Message::HandoffDone { session: S })]);
-    assert_eq!(s.phase(), SourcePhase::AwaitingPrompt);
+    assert_eq!(s.phase(), SourcePhase::Verifying);
     assert_eq!(s.video_input(), VideoInput::Unverified);
+    assert!(!s.ack_wanted());
+    s
+}
+
+/// The verifier of the target asks for an acknowledgement (FLOW-8).
+fn ack_wanted(now: Instant) -> SourceSession {
+    let mut s = verifying(now);
     assert!(
-        s.on_message(&Message::PromptShown { session: S }, now)
+        s.on_message(&Message::AckWanted { session: S }, now)
             .is_empty()
     );
-    assert_eq!(s.phase(), SourcePhase::AwaitingConfirm);
+    assert_eq!(s.phase(), SourcePhase::Verifying);
+    assert!(s.ack_wanted());
     s
 }
 
 fn forwarding(now: Instant) -> SourceSession {
-    let mut s = awaiting_confirm(now);
+    let mut s = ack_wanted(now);
     assert_eq!(
-        s.confirm(true),
-        Some(vec![Send(Message::Confirm { session: S })])
+        s.acknowledge(true),
+        Some(vec![Send(Message::Ack { session: S })])
     );
-    assert_eq!(s.phase(), SourcePhase::Starting);
+    assert!(!s.ack_wanted());
+    assert_eq!(s.phase(), SourcePhase::Verifying, "the verifier answers");
     assert_eq!(
-        s.on_message(&Message::Started { session: S }, now),
+        s.on_message(
+            &Message::Started {
+                session: S,
+                verified: true
+            },
+            now
+        ),
         vec![StartForwarding]
     );
     assert_eq!(s.phase(), SourcePhase::Forwarding);
@@ -108,7 +124,7 @@ fn flow_refusal_for_other_device_is_ignored() {
 }
 
 #[test]
-fn flow7_flow10_happy_path_confirms_video_input() {
+fn flow10_ver6_a_verified_handoff_is_confirmed() {
     let s = forwarding(Instant::now());
     assert_eq!(s.video_input(), VideoInput::Confirmed);
 }
@@ -124,31 +140,65 @@ fn flow14_no_pause_state() {
 }
 
 #[test]
-fn verify_true_confirms_video_input() {
+fn ver2_ac39_no_verify_starts_unverified() {
     let now = Instant::now();
-    let mut s = granted(now);
-    let actions = s.on_handoff_finished(HandoffResult::Done {
-        verified: Some(true),
-    });
-    assert_eq!(actions, vec![Send(Message::HandoffDone { session: S })]);
-    assert_eq!(s.video_input(), VideoInput::Confirmed);
+    let mut s = verifying(now);
+    assert_eq!(
+        s.on_message(
+            &Message::Started {
+                session: S,
+                verified: false
+            },
+            now
+        ),
+        vec![StartForwarding]
+    );
+    assert_eq!(s.phase(), SourcePhase::Forwarding);
+    assert_eq!(s.video_input(), VideoInput::Unverified);
 }
 
 #[test]
-fn flow12_ac10_verify_false_ends_without_forwarding() {
-    let mut s = granted(Instant::now());
-    let actions = s.on_handoff_finished(HandoffResult::Done {
-        verified: Some(false),
-    });
-    assert_eq!(
-        actions,
-        vec![Send(Message::End {
-            session: S,
-            reason: EndReason::HandoffFailed
-        })]
-    );
-    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandoffFailed));
+fn flow11_ac10_a_failed_verification_ends_without_forwarding() {
+    let now = Instant::now();
+    let mut s = ack_wanted(now);
+    let end = Message::End {
+        session: S,
+        reason: EndReason::VerifyFailed,
+    };
+    assert!(s.on_message(&end, now).is_empty());
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::VerifyFailed));
     assert_eq!(s.video_input(), VideoInput::Unknown);
+    assert_eq!(s.acknowledge(true), None);
+}
+
+#[test]
+fn flow8_ac6_ack_needs_ack_wanted_and_focus() {
+    let now = Instant::now();
+    let mut s = granted(now);
+    assert_eq!(s.acknowledge(true), None, "no handoff yet");
+    s.on_handoff_finished(HandoffResult::Done);
+    assert_eq!(s.acknowledge(true), None, "the verifier wants no ack yet");
+    s.on_message(&Message::AckWanted { session: S }, now);
+    assert_eq!(s.acknowledge(false), None, "portal has no focus");
+    assert!(s.acknowledge(true).is_some());
+    assert_eq!(s.acknowledge(true), None, "one ack for each AckWanted");
+    s.on_message(&Message::AckWanted { session: S }, now);
+    assert!(s.acknowledge(true).is_some(), "a verifier can ask again");
+}
+
+#[test]
+fn flow8_ack_wanted_only_while_verifying() {
+    let now = Instant::now();
+    let mut s = granted(now);
+    assert!(
+        s.on_message(&Message::AckWanted { session: S }, now)
+            .is_empty()
+    );
+    assert!(!s.ack_wanted());
+    let mut s = forwarding(now);
+    s.on_message(&Message::AckWanted { session: S }, now);
+    assert!(!s.ack_wanted());
+    assert_eq!(s.acknowledge(true), None);
 }
 
 #[test]
@@ -168,61 +218,22 @@ fn flow12_first_step_failed_leaves_video_input_unchanged() {
 #[test]
 fn flow12_partial_success_makes_video_input_unknown() {
     let mut s = granted(Instant::now());
-    s.on_handoff_finished(HandoffResult::Failed { completed_steps: 1 });
-    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandoffFailed));
-    assert_eq!(s.video_input(), VideoInput::Unknown);
-}
-
-#[test]
-fn flow8_ac6_confirm_needs_prompt_and_focus() {
-    let now = Instant::now();
-    let mut s = granted(now);
-    assert_eq!(s.confirm(true), None, "no prompt yet");
-    s.on_handoff_finished(HandoffResult::Done { verified: None });
-    assert_eq!(s.confirm(true), None, "prompt not shown yet");
-    s.on_message(&Message::PromptShown { session: S }, now);
-    assert_eq!(s.confirm(false), None, "portal has no focus");
-    assert_eq!(s.phase(), SourcePhase::AwaitingConfirm);
-    assert!(s.confirm(true).is_some());
-    assert_eq!(s.confirm(true), None, "only one confirmation");
-}
-
-#[test]
-fn flow11_ac7_confirm_timeout() {
-    let now = Instant::now();
-    let mut s = awaiting_confirm(now);
-    assert!(
-        s.tick(now + CONFIRM_TIMEOUT - Duration::from_millis(1))
-            .is_empty()
-    );
-    let actions = s.tick(now + CONFIRM_TIMEOUT);
+    // The target sets its device state to unknown (VER-6).
     assert_eq!(
-        actions,
+        s.on_handoff_finished(HandoffResult::Failed { completed_steps: 1 }),
         vec![Send(Message::End {
             session: S,
-            reason: EndReason::ConfirmTimeout
+            reason: EndReason::HandoffPartial
         })]
     );
-    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::ConfirmTimeout));
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandoffPartial));
     assert_eq!(s.video_input(), VideoInput::Unknown);
-    assert!(s.tick(now + CONFIRM_TIMEOUT * 2).is_empty());
-}
-
-#[test]
-fn flow11_timer_starts_when_prompt_shows() {
-    let now = Instant::now();
-    let mut s = granted(now);
-    s.on_handoff_finished(HandoffResult::Done { verified: None });
-    let later = now + Duration::from_secs(30);
-    s.on_message(&Message::PromptShown { session: S }, later);
-    assert!(s.tick(now + CONFIRM_TIMEOUT).is_empty());
-    assert!(!s.tick(later + CONFIRM_TIMEOUT).is_empty());
 }
 
 #[test]
 fn flow13_forwards_input_only_while_forwarding() {
     let now = Instant::now();
-    let mut s = awaiting_confirm(now);
+    let mut s = ack_wanted(now);
     assert!(s.on_input(key(30, true)).is_empty());
     assert!(s.pointer(Normalized { x: 0.5, y: 0.5 }).is_none());
 
@@ -333,7 +344,7 @@ fn in13_ac28_input_lost_releases_held_state() {
 
 #[test]
 fn in13_input_lost_outside_forwarding_does_nothing() {
-    let mut s = awaiting_confirm(Instant::now());
+    let mut s = ack_wanted(Instant::now());
     assert!(s.on_input_lost().is_empty());
     assert!(s.on_keyboard(false).is_empty());
 }
@@ -366,8 +377,8 @@ fn flow16_release_shortcut_while_forwarding() {
 }
 
 #[test]
-fn flow16_end_before_confirmation_makes_unverified_unknown() {
-    let mut s = awaiting_confirm(Instant::now());
+fn flow16_end_while_verifying_makes_unverified_unknown() {
+    let mut s = ack_wanted(Instant::now());
     let actions = s.end(EndReason::SourceClosed);
     assert_eq!(
         actions,
@@ -418,7 +429,7 @@ fn flow16_ac18_peer_lost() {
     assert_eq!(s.on_peer_lost(), vec![StopForwarding]);
     assert_eq!(s.phase(), SourcePhase::Ended(EndReason::PeerLost));
 
-    let mut s = awaiting_confirm(Instant::now());
+    let mut s = verifying(Instant::now());
     assert!(s.on_peer_lost().is_empty());
     assert_eq!(s.video_input(), VideoInput::Unknown);
 }
@@ -439,8 +450,14 @@ fn net6_stale_session_messages_are_ignored() {
         .is_empty()
     );
     assert!(
-        s.on_message(&Message::Started { session: old }, now)
-            .is_empty()
+        s.on_message(
+            &Message::Started {
+                session: old,
+                verified: true
+            },
+            now
+        )
+        .is_empty()
     );
     assert_eq!(s.phase(), SourcePhase::Forwarding);
 }
@@ -450,8 +467,14 @@ fn unexpected_message_for_phase_is_ignored() {
     let now = Instant::now();
     let mut s = granted(now);
     assert!(
-        s.on_message(&Message::Started { session: S }, now)
-            .is_empty()
+        s.on_message(
+            &Message::Started {
+                session: S,
+                verified: true
+            },
+            now
+        )
+        .is_empty()
     );
     assert_eq!(s.phase(), SourcePhase::HandingOff);
 }

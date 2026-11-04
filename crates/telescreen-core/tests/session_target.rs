@@ -6,11 +6,12 @@ use telescreen_core::input::{Button, InputEvent};
 use telescreen_core::keys::Key;
 use telescreen_core::pointer::Normalized;
 use telescreen_core::session::target::{TargetAction, TargetPhase, TargetSession};
+use telescreen_core::verifier::VerifierEvent;
 use telescreen_core::wire::{EndReason, Message, PointerDatagram};
 
 use TargetAction::{
-    CheckDisplay, HidePrompt, HoldKeyboard, Inject, MovePointer, ReleaseKeyboard, ReleaseLease,
-    Send, ShowPrompt,
+    AckVerifier, CheckDisplay, HideVerifier, HoldKeyboard, Inject, MovePointer, ReleaseKeyboard,
+    ReleaseLease, Send, ShowVerifier, StartVerifier, StopVerifier,
 };
 
 const S: SessionId = SessionId(42);
@@ -38,31 +39,67 @@ fn new() -> TargetSession {
     t
 }
 
-fn prompting() -> TargetSession {
+fn window(text: Option<&str>, ack_wanted: bool) -> TargetAction {
+    ShowVerifier {
+        text: text.map(str::to_owned),
+        ack_wanted,
+    }
+}
+
+/// The source finished the steps; this computer verifies as the destination (VER-1).
+fn verifying() -> TargetSession {
     let mut t = new();
     assert_eq!(
         t.on_message(&Message::HandoffDone { session: S }),
-        vec![ShowPrompt]
+        vec![StartVerifier]
     );
-    assert_eq!(t.phase(), TargetPhase::ShowingPrompt);
+    assert_eq!(t.phase(), TargetPhase::Verifying);
+    t
+}
+
+/// The `prompt` verifier: a text, then a request for an acknowledgement (VER-5).
+fn ack_wanted() -> TargetSession {
+    let mut t = verifying();
     assert_eq!(
-        t.on_prompt_shown(true),
-        vec![Send(Message::PromptShown { session: S })]
+        t.on_verifier(VerifierEvent::Show("hint".into())),
+        vec![window(Some("hint"), false)]
     );
-    assert_eq!(t.phase(), TargetPhase::Prompting);
+    assert!(t.on_verifier_shown(true).is_empty());
+    assert_eq!(
+        t.on_verifier(VerifierEvent::WantAck),
+        vec![window(Some("hint"), true)]
+    );
+    // AckWanted goes to the source only when the window is visible (FLOW-8).
+    assert_eq!(
+        t.on_verifier_shown(true),
+        vec![Send(Message::AckWanted { session: S })]
+    );
+    assert_eq!(t.phase(), TargetPhase::Verifying);
+    t
+}
+
+fn checking_display() -> TargetSession {
+    let mut t = ack_wanted();
+    assert_eq!(
+        t.on_message(&Message::Ack { session: S }),
+        vec![AckVerifier]
+    );
+    assert_eq!(t.on_verifier(VerifierEvent::Done(true)), vec![CheckDisplay]);
+    assert_eq!(t.phase(), TargetPhase::CheckingDisplay);
     t
 }
 
 fn forwarding() -> TargetSession {
-    let mut t = prompting();
-    assert_eq!(
-        t.on_message(&Message::Confirm { session: S }),
-        vec![CheckDisplay]
-    );
-    assert_eq!(t.phase(), TargetPhase::CheckingDisplay);
+    let mut t = checking_display();
     assert_eq!(
         t.on_display_checked(true),
-        vec![HidePrompt, Send(Message::Started { session: S })]
+        vec![
+            HideVerifier,
+            Send(Message::Started {
+                session: S,
+                verified: true
+            })
+        ]
     );
     assert_eq!(t.phase(), TargetPhase::Forwarding);
     t
@@ -88,13 +125,117 @@ fn datagram(session: SessionId, seq: u64, x: f32) -> PointerDatagram {
 }
 
 #[test]
-fn flow7_prompt_failure_ends_and_releases_lease() {
+fn ver2_ac39_no_verify_starts_unverified() {
+    let mut t = verifying();
+    assert_eq!(t.on_no_verify(), vec![CheckDisplay]);
+    assert_eq!(
+        t.on_display_checked(true),
+        vec![Send(Message::Started {
+            session: S,
+            verified: false
+        })],
+        "no window to hide"
+    );
+    assert_eq!(t.phase(), TargetPhase::Forwarding);
+}
+
+#[test]
+fn ver3_a_new_show_replaces_the_text_and_ack_wanted_goes_once() {
+    let mut t = ack_wanted();
+    assert_eq!(
+        t.on_verifier(VerifierEvent::Show("next".into())),
+        vec![window(Some("next"), true)]
+    );
+    assert!(t.on_verifier_shown(true).is_empty(), "AckWanted was sent");
+}
+
+#[test]
+fn ver3_want_with_no_show_opens_the_window() {
+    let mut t = verifying();
+    assert_eq!(
+        t.on_verifier(VerifierEvent::WantAck),
+        vec![window(None, true)]
+    );
+    assert_eq!(
+        t.on_verifier_shown(true),
+        vec![Send(Message::AckWanted { session: S })]
+    );
+}
+
+#[test]
+fn ver4_ack_only_after_ack_wanted() {
+    let mut t = verifying();
+    assert!(t.on_message(&Message::Ack { session: S }).is_empty());
+    t.on_verifier(VerifierEvent::WantAck);
+    assert!(
+        t.on_message(&Message::Ack { session: S }).is_empty(),
+        "the window is not visible yet"
+    );
+    t.on_verifier_shown(true);
+    assert_eq!(
+        t.on_message(&Message::Ack { session: S }),
+        vec![AckVerifier]
+    );
+    assert!(
+        t.on_message(&Message::Ack { session: S }).is_empty(),
+        "one ack for each want"
+    );
+}
+
+#[test]
+fn ver3_verifier_events_only_while_verifying() {
     let mut t = new();
-    t.on_message(&Message::HandoffDone { session: S });
-    let actions = t.on_prompt_shown(false);
+    assert!(t.on_verifier(VerifierEvent::WantAck).is_empty());
+    assert!(t.on_no_verify().is_empty());
+    let mut t = forwarding();
+    assert!(t.on_verifier(VerifierEvent::Show("x".into())).is_empty());
+    assert!(t.on_verifier(VerifierEvent::Done(false)).is_empty());
+    assert_eq!(t.phase(), TargetPhase::Forwarding);
+}
+
+#[test]
+fn flow11_ac7_ac10_a_failed_verification_ends() {
+    for event in [
+        VerifierEvent::Done(false),
+        VerifierEvent::Failed("timeout".into()),
+    ] {
+        let mut t = ack_wanted();
+        assert_eq!(
+            t.on_verifier(event),
+            vec![
+                HideVerifier,
+                Send(Message::End {
+                    session: S,
+                    reason: EndReason::VerifyFailed
+                }),
+                ReleaseLease
+            ]
+        );
+        assert_eq!(t.phase(), TargetPhase::Ended(EndReason::VerifyFailed));
+    }
+    // With no window, there is nothing to hide.
+    let mut t = verifying();
+    assert_eq!(
+        t.on_verifier(VerifierEvent::Done(false)),
+        vec![
+            Send(Message::End {
+                session: S,
+                reason: EndReason::VerifyFailed
+            }),
+            ReleaseLease
+        ]
+    );
+}
+
+#[test]
+fn flow7_window_failure_ends_and_releases_lease() {
+    let mut t = verifying();
+    t.on_verifier(VerifierEvent::WantAck);
+    let actions = t.on_verifier_shown(false);
     assert_eq!(
         actions,
         vec![
+            StopVerifier,
             Send(Message::End {
                 session: S,
                 reason: EndReason::PromptFailed
@@ -107,13 +248,12 @@ fn flow7_prompt_failure_ends_and_releases_lease() {
 
 #[test]
 fn flow10_invalid_display_ends() {
-    let mut t = prompting();
-    t.on_message(&Message::Confirm { session: S });
+    let mut t = checking_display();
     let actions = t.on_display_checked(false);
     assert_eq!(
         actions,
         vec![
-            HidePrompt,
+            HideVerifier,
             Send(Message::End {
                 session: S,
                 reason: EndReason::DisplayGone
@@ -126,7 +266,7 @@ fn flow10_invalid_display_ends() {
 
 #[test]
 fn flow10_no_injection_before_started() {
-    let mut t = prompting();
+    let mut t = ack_wanted();
     assert!(t.on_message(&input(key(30, true))).is_empty());
     assert!(t.on_pointer(&datagram(S, 1, 0.5)).is_none());
 }
@@ -219,7 +359,7 @@ fn flow23_keyboard_away_holds_and_back_releases() {
 
 #[test]
 fn flow23_keyboard_messages_need_forwarding_and_the_session() {
-    let mut t = prompting();
+    let mut t = ack_wanted();
     assert!(
         t.on_message(&Message::KeyboardAway { session: S })
             .is_empty()
@@ -278,14 +418,15 @@ fn in4_ac18_peer_lost_releases_held_input() {
 }
 
 #[test]
-fn flow11_source_end_while_prompting_hides_prompt() {
-    let mut t = prompting();
+fn flow16_source_end_while_verifying_stops_the_verifier() {
+    let mut t = ack_wanted();
     let actions = t.on_message(&Message::End {
         session: S,
-        reason: EndReason::ConfirmTimeout,
+        reason: EndReason::SourceClosed,
     });
-    assert_eq!(actions, vec![HidePrompt, ReleaseLease]);
-    assert_eq!(t.phase(), TargetPhase::Ended(EndReason::ConfirmTimeout));
+    assert_eq!(actions, vec![StopVerifier, HideVerifier, ReleaseLease]);
+    assert_eq!(t.phase(), TargetPhase::Ended(EndReason::SourceClosed));
+    assert!(t.on_verifier(VerifierEvent::Done(true)).is_empty());
 }
 
 #[test]
@@ -319,13 +460,14 @@ fn flow16_ac23_target_disconnect() {
 }
 
 #[test]
-fn flow17_request_control_while_prompting() {
-    let mut t = prompting();
+fn flow17_request_control_while_verifying() {
+    let mut t = ack_wanted();
     let actions = t.end(EndReason::TargetRequestedControl);
     assert_eq!(
         actions,
         vec![
-            HidePrompt,
+            StopVerifier,
+            HideVerifier,
             Send(Message::End {
                 session: S,
                 reason: EndReason::TargetRequestedControl
@@ -351,8 +493,8 @@ fn net6_stale_and_unexpected_messages_have_no_effect() {
         .is_empty()
     );
     assert!(
-        t.on_message(&Message::Confirm { session: S }).is_empty(),
-        "no prompt yet"
+        t.on_message(&Message::Ack { session: S }).is_empty(),
+        "no verifier yet"
     );
     assert_eq!(t.phase(), TargetPhase::AwaitingHandoff);
 }
