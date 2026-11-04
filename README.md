@@ -51,7 +51,7 @@ On Linux, the build needs the Wayland and xkbcommon development files. On macOS,
 3. On each computer, trust each other computer: `telescreen trust <computer-id> <fingerprint>`.
 4. On each computer, start Telescreen from the launcher, or run `telescreen`. At the first start, select this computer in the window. To select again, run `telescreen forget-computer`. For a different file or computer for one run: `telescreen run --config <file> --computer <id>`.
    On macOS, allow the Local Network request. If the peer stays "offline" with "no answer from", turn on Telescreen in System Settings, Privacy & Security, Local Network.
-5. On the source, open a portal on the shared display. Select the target. When the target shows the prompt, press Return in the portal (or click it).
+5. On the source, in the control window, select "Open portal" on the shared display. Select the target. When the target shows the prompt, press Return in the portal (or click it).
 
 To go back to the source, use one of these:
 
@@ -62,6 +62,22 @@ To go back to the source, use one of these:
 The safety exit (Escape 10 times in 5 seconds) only ends the session. It does not switch the display.
 
 macOS asks for Accessibility and Input Monitoring. Linux needs write access to `/dev/uinput` (for example the `input` group) and a compositor with the layer-shell and `ext-data-control-v1` protocols. Tested on niri and on KDE Plasma.
+
+### Addresses and discovery
+
+`endpoint.host` is one host or a list of hosts. A dial tries all of them, and the first one that connects wins.
+
+To find a computer when its address changes, add `discovery: mdns` to its `endpoint`:
+
+```yaml
+endpoint: {host: [192.0.2.10, my-computer.example], port: 24800, discovery: mdns}
+```
+
+- On the computer to find, select "Allow discovery" in the control window. It is discoverable for 10 minutes.
+- On the source, open a portal. The portal dials and searches at the same time. "Refresh" dials and searches again.
+- Telescreen uses the mDNS responder of the system: Bonjour on macOS, Avahi on Linux. With no responder, a notice gives the cause, and dials to the configured hosts still work.
+- While a computer is discoverable, computers on the same network can read its fingerprint and host name. A false record cannot connect: mutual TLS identifies each peer (`docs/adr/0011-discovery-with-the-system-responder.md`).
+- A version before 0.4.0 does not accept a config with `discovery` or a list of hosts. Update all computers.
 
 ## Troubleshooting
 
