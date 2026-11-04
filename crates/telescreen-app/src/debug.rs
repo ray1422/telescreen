@@ -130,7 +130,6 @@ fn number_field(value: &Value, field: &str) -> Result<f64, DebugError> {
 fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
     if let Some(name) = value.as_str() {
         return match name {
-            "OpenPortal" => Ok(Intent::OpenPortal),
             "ClosePortal" => Ok(Intent::ClosePortal),
             "Refresh" => Ok(Intent::Refresh),
             "AllowDiscovery" => Ok(Intent::AllowDiscovery),
@@ -148,6 +147,9 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
         .next()
         .ok_or_else(|| DebugError::Request("missing intent variant".into()))?;
     match name.as_str() {
+        "OpenPortal" => Ok(Intent::OpenPortal {
+            display: DisplayToken::from(string_field(arguments, "display")?),
+        }),
         "DeviceIsBack" => Ok(Intent::DeviceIsBack {
             device: DeviceId::from(string_field(arguments, "device")?),
         }),

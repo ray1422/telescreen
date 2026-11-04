@@ -49,7 +49,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 ### 4.1 Portal and candidates
 
 - **FLOW-1** Read and validate the config. Detect the local capabilities (input capture, injection, permissions).
-- **FLOW-2** The user opens a portal. The portal is not in the config. The portal opens on the display of the control window (user, 2026-10-27). To use a different display, move the control window to it first. On the display of the portal, evaluate `portal-match` of the local devices. No match: tell the user. More than one match: the user selects one. Do not use the first match silently.
+- **FLOW-2** The user opens a portal. The portal is not in the config. The control window lists the displays, and each display has its own "Open portal" button (user, 2026-11-05; this replaces the rule that the portal opens on the display of the control window). The control window can be on a different display. If a portal is open on a different display, the new portal replaces it, and the session of the old portal ends. On the display of the portal, evaluate `portal-match` of the local devices. No match: tell the user. More than one match: the user selects one. Do not use the first match silently.
 - **FLOW-3** Make the candidate targets: the local `handoff` keys that are also computers with the same device `id`. Show a candidate that is offline, that has no permission, or that has no `input-target` as unavailable, with the reason.
 - **FLOW-4** When the portal moves to a different display, or the display topology changes, evaluate `portal-match` again. The previous device binding and its coordinates must not continue to apply.
 
@@ -268,6 +268,7 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-46 | 10 minutes pass after "Allow discovery", or the user stops it | The service is removed, and a new search does not find the computer (NET-14) |
 | AC-47 | A search result has a fingerprint that is not in the trust list, or only public or IPv6 addresses | Telescreen does not dial it (NET-16) |
 | AC-48 | Linux has no running Avahi | "Allow discovery" and the search give a notice with the cause. Dials to the configured hosts work (NET-12) |
+| AC-49 | The control window is on one display, and the user selects "Open portal" on a different display | The portal opens on the selected display. The control window does not move. A portal on a third display closes (FLOW-2) |
 
 Performance: measure p50, p95, and p99 of capture to injection, event loss, and idle CPU/GPU. A network latency number must state how it was measured (round trip on one clock, or the clock synchronization method). There is no hard threshold yet.
 

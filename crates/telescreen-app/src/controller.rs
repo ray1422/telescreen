@@ -2366,7 +2366,7 @@ impl Controller {
                 self.clipboard.set_enabled(on);
                 self.update_clipboard();
             }
-            Intent::OpenPortal | Intent::ClosePortal => {
+            Intent::OpenPortal { .. } | Intent::ClosePortal => {
                 // The window layer opens and closes the portal window, then calls
                 // `open_portal` or `close_portal`.
             }

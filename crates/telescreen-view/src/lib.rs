@@ -191,8 +191,10 @@ pub enum Intent {
     SetClipboard {
         on: bool,
     },
-    /// Open the portal on the display of the control window (user, 2026-10-27).
-    OpenPortal,
+    /// Open the portal on this display (FLOW-2).
+    OpenPortal {
+        display: DisplayToken,
+    },
     ClosePortal,
     /// Dial each offline candidate of the portal again (NET-10), and search (NET-15).
     Refresh,

@@ -415,19 +415,16 @@ struct App {
 }
 
 impl App {
-    /// Opens the portal on the display of the control window (user, 2026-10-27).
-    /// FLOW-2 then uses the display where the window really is.
-    fn open_portal_window(&mut self, event_loop: &ActiveEventLoop) {
+    /// Opens the portal on the selected display. A different portal closes first
+    /// (FLOW-2).
+    fn open_portal_window(&mut self, event_loop: &ActiveEventLoop, token: DisplayToken) {
         self.close_portal_window();
-        let monitor = self
-            .control
-            .as_ref()
-            .and_then(|control| control.window.current_monitor());
-        let Some((monitor, token)) =
-            monitor.and_then(|m| platform::monitor_token(&m).map(|token| (m, token)))
-        else {
+        let monitor = event_loop
+            .available_monitors()
+            .find(|monitor| platform::monitor_token(monitor).as_ref() == Some(&token));
+        let Some(monitor) = monitor else {
             self.controller
-                .add_notice("Cannot find the display of the control window.".into());
+                .add_notice(format!("Cannot find the display {token}."));
             return;
         };
         self.create_portal_window(event_loop, monitor, token, false);
@@ -554,7 +551,7 @@ impl App {
     fn handle_intents(&mut self, event_loop: &ActiveEventLoop, intents: Vec<Intent>) {
         for intent in intents {
             match intent {
-                Intent::OpenPortal => self.open_portal_window(event_loop),
+                Intent::OpenPortal { display } => self.open_portal_window(event_loop, display),
                 Intent::ClosePortal => self.close_portal_window(),
                 other => self.controller.on_intent(other),
             }
