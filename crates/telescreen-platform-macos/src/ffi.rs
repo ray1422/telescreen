@@ -59,10 +59,12 @@ pub const FIELD_SCROLL_POINT_DELTA_1: u32 = 96;
 pub const FIELD_SCROLL_POINT_DELTA_2: u32 = 97;
 
 // Event flags (CGEventFlags) and the device-dependent bits of IOLLEvent.h.
+pub const FLAG_ALPHA_SHIFT: u64 = 0x0001_0000;
 pub const FLAG_SHIFT: u64 = 0x0002_0000;
 pub const FLAG_CONTROL: u64 = 0x0004_0000;
 pub const FLAG_ALTERNATE: u64 = 0x0008_0000;
 pub const FLAG_COMMAND: u64 = 0x0010_0000;
+pub const FLAG_NUMERIC_PAD: u64 = 0x0020_0000;
 pub const FLAG_SECONDARY_FN: u64 = 0x0080_0000;
 pub const DEVICE_LCTL: u64 = 0x0000_0001;
 pub const DEVICE_LSHIFT: u64 = 0x0000_0002;
@@ -97,6 +99,7 @@ unsafe extern "C" {
     pub fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
     pub fn CGEventCreate(source: CGEventSourceRef) -> CGEventRef;
     pub fn CGEventSourceCreate(state: i32) -> CGEventSourceRef;
+    pub fn CGEventSourceFlagsState(state: i32) -> u64;
     pub fn CGEventCreateKeyboardEvent(
         source: CGEventSourceRef,
         keycode: u16,

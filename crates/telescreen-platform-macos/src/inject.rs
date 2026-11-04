@@ -21,6 +21,9 @@ pub struct MacInjector {
     buttons: Vec<Button>,
     /// The modifier keys that are down, as event flags.
     flags: u64,
+    /// Caps Lock is on. A posted key event does not change the lock state of the
+    /// system, so the injector keeps it and sets it on each event.
+    caps_lock: bool,
     last_click: Option<(Button, Instant, Point, i64)>,
 }
 
@@ -46,6 +49,10 @@ impl MacInjector {
             position: Point { x: at.x, y: at.y },
             buttons: Vec::new(),
             flags: 0,
+            // SAFETY: reads the current flags of the hardware state.
+            caps_lock: unsafe { ffi::CGEventSourceFlagsState(ffi::EVENT_SOURCE_HID_STATE) }
+                & ffi::FLAG_ALPHA_SHIFT
+                != 0,
             last_click: None,
         })
     }
@@ -73,7 +80,14 @@ impl MacInjector {
         let Some(code) = keys::to_mac(key) else {
             return Ok(()); // A key that macOS does not have.
         };
-        if let Some(flag) = modifier_flag(key) {
+        if key == Key::CAPS_LOCK {
+            // macOS reports Caps Lock as one flags-changed event that toggles
+            // the lock. The release has no event.
+            if !down {
+                return Ok(());
+            }
+            self.caps_lock = !self.caps_lock;
+        } else if let Some(flag) = modifier_flag(key) {
             if down {
                 self.flags |= flag;
             } else {
@@ -83,10 +97,20 @@ impl MacInjector {
         // SAFETY: the source is valid; the event is released by post.
         let event = unsafe { ffi::CGEventCreateKeyboardEvent(self.source, code, down) };
         if !event.is_null() {
+            let flags = self.event_flags() | key_flags(code);
             // SAFETY: the event is valid.
-            unsafe { ffi::CGEventSetFlags(event, self.flags) };
+            unsafe { ffi::CGEventSetFlags(event, flags) };
         }
         self.post(event)
+    }
+
+    /// The flags of the held modifier keys and of Caps Lock.
+    fn event_flags(&self) -> u64 {
+        if self.caps_lock {
+            self.flags | ffi::FLAG_ALPHA_SHIFT
+        } else {
+            self.flags
+        }
     }
 
     fn button(&mut self, button: Button, down: bool) -> Result<(), PlatformError> {
@@ -118,7 +142,7 @@ impl MacInjector {
                     ffi::FIELD_BUTTON_NUMBER,
                     i64::from(number),
                 );
-                ffi::CGEventSetFlags(event, self.flags);
+                ffi::CGEventSetFlags(event, self.event_flags());
             }
         }
         self.post(event)
@@ -165,6 +189,34 @@ impl MacInjector {
     }
 }
 
+/// The flags that a hardware keyboard sets on a key, by macOS key code. Input
+/// methods use them, for example to select a candidate with an arrow key.
+fn key_flags(code: u16) -> u64 {
+    match code {
+        // The arrow keys.
+        0x7B..=0x7E => ffi::FLAG_SECONDARY_FN | ffi::FLAG_NUMERIC_PAD,
+        // Help, Home, Page Up, Forward Delete, End, Page Down, and F1 to F20.
+        0x72..=0x7A
+        | 0x60..=0x65
+        | 0x67
+        | 0x69
+        | 0x6A
+        | 0x6B
+        | 0x6D
+        | 0x6F
+        | 0x71
+        | 0x40
+        | 0x4F
+        | 0x50
+        | 0x5A => ffi::FLAG_SECONDARY_FN,
+        // The keypad.
+        0x41 | 0x43 | 0x45 | 0x47 | 0x4B | 0x4C | 0x4E | 0x51..=0x59 | 0x5B | 0x5C => {
+            ffi::FLAG_NUMERIC_PAD
+        }
+        _ => 0,
+    }
+}
+
 /// The event flag of a modifier key, with its device-dependent bit.
 fn modifier_flag(key: Key) -> Option<u64> {
     Some(match key {
@@ -204,7 +256,7 @@ impl Injector for MacInjector {
         let event = self.mouse(kind, number);
         if !event.is_null() {
             // SAFETY: the event is valid.
-            unsafe { ffi::CGEventSetFlags(event, self.flags) };
+            unsafe { ffi::CGEventSetFlags(event, self.event_flags()) };
         }
         self.post(event)
     }
@@ -221,5 +273,26 @@ impl Injector for MacInjector {
 impl Drop for MacInjector {
     fn drop(&mut self) {
         ffi::release(self.source);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hardware_flags_of_keys() {
+        let both = ffi::FLAG_SECONDARY_FN | ffi::FLAG_NUMERIC_PAD;
+        for arrow in 0x7B..=0x7E {
+            assert_eq!(key_flags(arrow), both);
+        }
+        assert_eq!(key_flags(0x73), ffi::FLAG_SECONDARY_FN, "Home");
+        assert_eq!(key_flags(0x7A), ffi::FLAG_SECONDARY_FN, "F1");
+        assert_eq!(key_flags(0x6F), ffi::FLAG_SECONDARY_FN, "F12");
+        assert_eq!(key_flags(0x52), ffi::FLAG_NUMERIC_PAD, "keypad 0");
+        assert_eq!(key_flags(0x4C), ffi::FLAG_NUMERIC_PAD, "keypad Enter");
+        assert_eq!(key_flags(0x00), 0, "A");
+        assert_eq!(key_flags(0x24), 0, "Return");
+        assert_eq!(key_flags(0x39), 0, "Caps Lock");
     }
 }

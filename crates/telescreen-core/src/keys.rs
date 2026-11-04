@@ -13,6 +13,7 @@ pub struct Key(pub u16);
 
 impl Key {
     pub const ESC: Key = Key(1);
+    pub const CAPS_LOCK: Key = Key(58);
     pub const ENTER: Key = Key(28);
     pub const LEFT_CTRL: Key = Key(29);
     pub const LEFT_SHIFT: Key = Key(42);
