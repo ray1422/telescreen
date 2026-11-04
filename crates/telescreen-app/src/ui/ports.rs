@@ -1,10 +1,10 @@
 //! The ports of the controller that do not depend on the OS: the network and the
 //! driver job runner.
 
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::thread;
 
+use telescreen_core::driver;
 use telescreen_transport::{NetCommand, Network};
 use winit::event_loop::EventLoopProxy;
 
@@ -29,17 +29,17 @@ impl NetPort for NetHandle {
 /// path or the UI thread), and sends the result to the event loop.
 pub struct ThreadJobs {
     pub proxy: EventLoopProxy<UserEvent>,
-    pub cwd: PathBuf,
+    pub context: driver::Context,
 }
 
 impl JobPort for ThreadJobs {
     fn spawn(&mut self, id: JobId, job: Job) {
         let proxy = self.proxy.clone();
-        let cwd = self.cwd.clone();
+        let context = self.context.clone();
         let started = thread::Builder::new()
             .name("telescreen-driver".into())
             .spawn(move || {
-                let output = run_job(&job, &cwd);
+                let output = run_job(&job, &context);
                 let _ = proxy.send_event(UserEvent::Job(id, output));
             });
         if let Err(e) = started {

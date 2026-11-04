@@ -72,14 +72,14 @@ pub trait JobPort {
 }
 
 /// Runs a job. The job runner of the app calls it on a worker thread.
-pub fn run_job(job: &Job, default_cwd: &std::path::Path) -> JobOutput {
+pub fn run_job(job: &Job, context: &driver::Context) -> JobOutput {
     match job {
         Job::Operation {
             operation,
             kind,
             request,
         } => JobOutput::Operation(
-            driver::run(operation, *kind, request, default_cwd).map_err(|e| e.to_string()),
+            driver::run(operation, *kind, request, context).map_err(|e| e.to_string()),
         ),
         Job::Handoff {
             steps,
@@ -87,7 +87,7 @@ pub fn run_job(job: &Job, default_cwd: &std::path::Path) -> JobOutput {
             request,
         } => {
             for (completed_steps, step) in steps.iter().enumerate() {
-                if let Err(e) = driver::run(step, OperationKind::Handoff, request, default_cwd) {
+                if let Err(e) = driver::run(step, OperationKind::Handoff, request, context) {
                     return JobOutput::Handoff {
                         result: HandoffResult::Failed { completed_steps },
                         error: Some(e.to_string()),
@@ -100,7 +100,7 @@ pub fn run_job(job: &Job, default_cwd: &std::path::Path) -> JobOutput {
                     error: None,
                 };
             };
-            match driver::run(verify, OperationKind::Verify, request, default_cwd) {
+            match driver::run(verify, OperationKind::Verify, request, context) {
                 Ok(Outcome::Matched(matched)) => JobOutput::Handoff {
                     result: HandoffResult::Done {
                         verified: Some(matched),

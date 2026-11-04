@@ -62,7 +62,8 @@ Each operation has its own timer. On timeout, you must stop the child process tr
 ### Programs and the search path
 
 - A program with a `/` must be an absolute path. Telescreen does not find it in the search path.
-- A program name with no `/` is found in the search path (user, 2026-10-27). If the computer section has `path`, use it. Else read `PATH` from the login shell of the user one time at the start. Reason: an app that macOS starts from Finder or `open` has only the system directories in its own `PATH`.
+- A program name with no `/` is found in the search path (user, 2026-10-27). If the computer section has `path`, use it. Else read `PATH` from the login shell of the user one time at the start: `$SHELL -l -c` with a command that prints `PATH`. Reason: an app that macOS starts from Finder or `open` has only the system directories in its own `PATH`.
+- The program gets the search path as its `PATH`, so that a script finds the same programs. `env` can replace it (Claude decides, 2026-10-27).
 - If Telescreen cannot read the `PATH` of the login shell, it uses its own `PATH` and shows a notice in the control window (Claude decides, 2026-10-27).
 - `open` on macOS starts an app through Launch Services and returns at once. The output of the app does not come back, and the exit code is the exit code of `open`. Use the executable in the app bundle, or `open --stdout`.
 
@@ -125,7 +126,7 @@ Each line is one UTF-8 JSON object and ends with `\n`. The verifier talks with t
    - `{"ok":true}` or `{"ok":false}`: the result. It is the last line. Then the verifier exits with 0.
 3. The core closes stdin after the result, or when it stops the verifier.
 
-`show` and `want` need an `input-target` of the device on the destination, because the window shows on that display. Without it, they are errors. Each other line, a missing result, a non-zero exit, and a timeout are errors. An error, `{"ok":false}`, and a timeout all make the device state unknown (spec VER-6). The protocol has no other user input (spec VER-7).
+The window opens at the first `show` or `want`. With no `show`, it shows only how to acknowledge (Claude decides, 2026-10-27). The core sends one `ack` for each `want`, after the user acknowledges. `show` and `want` need an `input-target` of the device on the destination, because the window shows on that display. Without it, they are errors. Each other line, a missing result, a non-zero exit, and a timeout are errors. An error, `{"ok":false}`, and a timeout all make the device state unknown (spec VER-6). The protocol has no other user input (spec VER-7).
 
 The built-in `prompt` verifier does the same as this verifier: `{"show":"<hint>"}`, `{"want":"ack"}`, then `{"ok":true}` after the acknowledgement, or `{"ok":false}` after 60 seconds.
 

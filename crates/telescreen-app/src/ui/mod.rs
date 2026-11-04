@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telescreen_core::config::Config;
+use telescreen_core::driver::{self, SearchPath};
 use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
 use telescreen_core::wire::{EndReason, Message};
 use telescreen_render_egui::{SharedGpu, WindowRenderer};
@@ -95,12 +96,38 @@ pub fn run(
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(1);
+    let mut path_notice = None;
+    let search_path = match config
+        .computer(&local)
+        .and_then(|computer| computer.path.as_ref())
+    {
+        Some(path) => SearchPath(path.clone()),
+        None => {
+            let result = match std::env::var_os("SHELL") {
+                Some(shell) => {
+                    SearchPath::from_shell(&PathBuf::from(shell), Duration::from_secs(5))
+                        .map_err(|e| e.to_string())
+                }
+                None => Err("SHELL is not set".into()),
+            };
+            match result {
+                Ok(path) => path,
+                Err(cause) => {
+                    path_notice = Some(format!(
+                        "Cannot read PATH from the login shell ({cause}). Telescreen uses its own PATH."
+                    ));
+                    SearchPath::from_env()
+                }
+            }
+        }
+    };
+    let context = driver::Context {
+        default_cwd: config_dir.clone(),
+        search_path,
+    };
     let ports = Ports {
         net,
-        jobs: Box::new(ports::ThreadJobs {
-            proxy,
-            cwd: config_dir.clone(),
-        }),
+        jobs: Box::new(ports::ThreadJobs { proxy, context }),
         displays: parts.displays,
         capture: parts.capture,
         injector: parts.injector,
@@ -118,6 +145,9 @@ pub fn run(
         first_generation,
         ports,
     );
+    if let Some(notice) = path_notice {
+        controller.add_notice(notice);
+    }
     for notice in parts.notices {
         controller.add_notice(notice);
     }
