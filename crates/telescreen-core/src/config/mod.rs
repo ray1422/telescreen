@@ -70,6 +70,9 @@ pub struct Computer {
     /// Clipboard sync of this computer (CLIP-1).
     #[serde(default)]
     pub clipboard: ClipboardConfig,
+    /// The multiplier for each scroll that this computer receives (IN-14).
+    #[serde(default = "one")]
+    pub scroll_speed: f32,
     pub endpoint: Endpoint,
     /// Keys are local aliases. They have no OS meaning.
     pub devices: BTreeMap<String, Device>,
@@ -92,6 +95,10 @@ impl Default for ClipboardConfig {
 
 fn on() -> bool {
     true
+}
+
+fn one() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -55,6 +55,9 @@ class ConfigContract(unittest.TestCase):
             'long hint': lambda c: c['computers']['pc1'].update(hint='x' * 501),
             'non-boolean clipboard text': lambda c: c['computers']['pc1'].update(clipboard={'text': 'yes'}),
             'unknown clipboard key': lambda c: c['computers']['pc1'].update(clipboard={'image': True}),
+            'zero scroll speed': lambda c: c['computers']['pc1'].update({'scroll-speed': 0}),
+            'large scroll speed': lambda c: c['computers']['pc1'].update({'scroll-speed': 11}),
+            'non-number scroll speed': lambda c: c['computers']['pc1'].update({'scroll-speed': 'fast'}),
             'version': lambda c: c.update(version=2),
             'unknown field': lambda c: device(c).update(portal_match={}),
             'duplicate device id': lambda c: c['computers']['mac']['devices'].update(

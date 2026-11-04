@@ -54,6 +54,7 @@ fn config() -> Config {
                 "label": "Linux",
                 "hint": "Copy: Ctrl+C",
                 "clipboard": {"text": true},
+                "scroll-speed": 0.5,
                 "endpoint": {"host": "pc1.test", "port": 24800},
                 "devices": {
                     "Monitor": {
@@ -584,6 +585,26 @@ fn key(code: u16, down: bool) -> InputEvent {
         key: Key(code),
         down,
     }
+}
+
+#[test]
+fn in14_the_target_multiplies_a_scroll_by_its_speed() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::Input(InputEvent::Scroll {
+            dx: -2.0,
+            dy: 8.0,
+        }));
+    w.mac
+        .controller
+        .on_captured(CapturedEvent::Input(key(30, true)));
+    w.pump();
+    assert_eq!(
+        w.pc1.log.borrow().injected,
+        [InputEvent::Scroll { dx: -1.0, dy: 4.0 }, key(30, true)]
+    );
 }
 
 #[test]

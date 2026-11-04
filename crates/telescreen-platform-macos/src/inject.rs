@@ -25,6 +25,8 @@ pub struct MacInjector {
     /// system, so the injector keeps it and sets it on each event.
     caps_lock: bool,
     last_click: Option<(Button, Instant, Point, i64)>,
+    /// The parts of a pixel that the last scrolls did not inject (IN-14).
+    scroll_rest: (f32, f32),
 }
 
 impl MacInjector {
@@ -54,6 +56,7 @@ impl MacInjector {
                 & ffi::FLAG_ALPHA_SHIFT
                 != 0,
             last_click: None,
+            scroll_rest: (0.0, 0.0),
         })
     }
 
@@ -170,10 +173,13 @@ impl MacInjector {
         count
     }
 
-    fn scroll(&self, dx: f32, dy: f32) -> Result<(), PlatformError> {
+    fn scroll(&mut self, dx: f32, dy: f32) -> Result<(), PlatformError> {
         // macOS: a positive wheel value scrolls up or left. The wire is the opposite.
-        let wheel1 = -(dy.round() as i32);
-        let wheel2 = -(dx.round() as i32);
+        let wheel1 = -whole_pixels(dy, &mut self.scroll_rest.1);
+        let wheel2 = -whole_pixels(dx, &mut self.scroll_rest.0);
+        if wheel1 == 0 && wheel2 == 0 {
+            return Ok(());
+        }
         // SAFETY: the source is valid; the event is released by post.
         let event = unsafe {
             ffi::CGEventCreateScrollWheelEvent2(
@@ -187,6 +193,14 @@ impl MacInjector {
         };
         self.post(event)
     }
+}
+
+/// The whole pixels of a scroll value. The remainder stays for the next scroll.
+fn whole_pixels(value: f32, rest: &mut f32) -> i32 {
+    let total = value + *rest;
+    let whole = total.round();
+    *rest = total - whole;
+    whole as i32
 }
 
 /// The flags that a hardware keyboard sets on a key, by macOS key code. Input
@@ -279,6 +293,13 @@ impl Drop for MacInjector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn in14_a_slow_scroll_is_not_lost() {
+        let mut rest = 0.0;
+        let pixels: Vec<i32> = (0..5).map(|_| whole_pixels(0.4, &mut rest)).collect();
+        assert_eq!(pixels.iter().sum::<i32>(), 2, "{pixels:?}");
+    }
 
     #[test]
     fn hardware_flags_of_keys() {

@@ -348,6 +348,25 @@ fn syntax_error_is_a_yaml_error() {
 }
 
 #[test]
+fn in14_the_scroll_speed_defaults_to_one() {
+    let mut value = example_value();
+    let computers = value["computers"].as_object_mut().unwrap();
+    for computer in computers.values_mut() {
+        computer.as_object_mut().unwrap().remove("scroll-speed");
+    }
+    computers["pc1"]["scroll-speed"] = json!(0.4);
+    let config: Config = serde_json::from_value(value).unwrap();
+    assert_eq!(
+        config.computers[&ComputerId("pc1".into())].scroll_speed,
+        0.4
+    );
+    assert_eq!(
+        config.computers[&ComputerId("mac".into())].scroll_speed,
+        1.0
+    );
+}
+
+#[test]
 fn clip1_the_clipboard_switch_starts_on_by_default() {
     let mut value = example_value();
     let computers = value["computers"].as_object_mut().unwrap();

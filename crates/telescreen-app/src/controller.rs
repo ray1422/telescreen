@@ -12,6 +12,7 @@ use telescreen_core::clipboard::{ClipboardChange, ClipboardSync, Outgoing};
 use telescreen_core::config::{Config, Device, Driver, Operation};
 use telescreen_core::driver::{self, DeviceRef, OperationKind, Outcome, PortalInfo, Request};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
+use telescreen_core::input::InputEvent;
 use telescreen_core::platform::{
     Capability, CapturedEvent, Clipboard, DisplayInfo, Displays, FocusHolder, Injector,
     InputCapabilities, InputCapture, PlatformError,
@@ -397,6 +398,18 @@ impl Controller {
             .computer(computer)
             .and_then(|c| c.label.clone())
             .unwrap_or_else(|| computer.0.clone())
+    }
+
+    /// A forwarded scroll, multiplied by the speed of this computer (IN-14).
+    fn scaled(&self, event: InputEvent) -> InputEvent {
+        let speed = self.config.computers[&self.local].scroll_speed;
+        match event {
+            InputEvent::Scroll { dx, dy } => InputEvent::Scroll {
+                dx: dx * speed,
+                dy: dy * speed,
+            },
+            other => other,
+        }
     }
 
     fn local_devices(&self) -> Vec<(String, Device)> {
@@ -1660,6 +1673,7 @@ impl Controller {
                     queue.extend(more.unwrap_or_default().into_iter().map(TargetWork::Action));
                 }
                 TargetAction::Inject(event) => {
+                    let event = self.scaled(event);
                     if let Some(injector) = self.ports.injector.as_mut()
                         && let Err(e) = injector.input(&event)
                     {
