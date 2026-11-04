@@ -44,24 +44,42 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
         // Not a choice of computer: the label of this peer.
         ui.heading(format!("This computer: {}", screen.computer));
         ui.add(egui::Label::new(&screen.fingerprint).selectable(true));
+        if let Some(discovery) = screen.discovery {
+            ui.horizontal(|ui| {
+                if let Some(seconds) = discovery.remaining_seconds {
+                    ui.label(format!(
+                        "Discoverable for {}:{:02}",
+                        seconds / 60,
+                        seconds % 60
+                    ));
+                    if ui.button("Stop").clicked() {
+                        intents.push(Intent::StopDiscovery);
+                    }
+                } else if ui.button("Allow discovery").clicked() {
+                    intents.push(Intent::AllowDiscovery);
+                }
+            });
+        }
         if let Some(mut on) = screen.clipboard
             && ui.checkbox(&mut on, "Sync text clipboard").changed()
         {
             intents.push(Intent::SetClipboard { on });
         }
         for display in &screen.displays {
-            if display.has_portal {
-                ui.label(format!("{} (portal)", display.name));
-            } else {
-                ui.label(&display.name);
-            }
-        }
-        if screen.displays.iter().any(|d| d.has_portal) {
-            if ui.button("Close portal").clicked() {
-                intents.push(Intent::ClosePortal);
-            }
-        } else if ui.button("Open portal on this display").clicked() {
-            intents.push(Intent::OpenPortal);
+            ui.push_id(&display.token, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&display.name);
+                    if display.has_portal {
+                        if ui.button("Close portal").clicked() {
+                            intents.push(Intent::ClosePortal);
+                        }
+                    } else if ui.button("Open portal").clicked() {
+                        intents.push(Intent::OpenPortal {
+                            display: display.token.clone(),
+                        });
+                    }
+                });
+            });
         }
         ui.heading("Devices");
         for device in &screen.devices {
@@ -164,6 +182,13 @@ pub(crate) fn portal(ui: &mut egui::Ui, screen: &PortalScreen) -> Vec<Intent> {
                     }
                 });
             }
+            if screen.show_refresh
+                && ui
+                    .add_enabled(screen.can_refresh, egui::Button::new("Refresh"))
+                    .clicked()
+            {
+                intents.push(Intent::Refresh);
+            }
             if let Some(session) = &screen.session {
                 ui.label(format!("Target: {}", session.target));
                 match &session.phase {
@@ -244,7 +269,7 @@ mod tests {
     use super::*;
     use telescreen_core::{ids::SessionId, session::VideoInput};
     use telescreen_view::{
-        CandidateRow, DeviceChoice, DeviceRow, DisplayRow, IncomingRow, SessionRow,
+        CandidateRow, DeviceChoice, DeviceRow, DiscoveryRow, DisplayRow, IncomingRow, SessionRow,
     };
 
     fn assert_idle_frame(
@@ -339,6 +364,15 @@ mod tests {
                 ],
                 notices: vec!["Older notice.".into(), "Newer notice.".into()],
                 clipboard: Some(true),
+                discovery: Some(DiscoveryRow {
+                    remaining_seconds: Some(90),
+                }),
+            },
+            ControlScreen {
+                discovery: Some(DiscoveryRow {
+                    remaining_seconds: None,
+                }),
+                ..ControlScreen::default()
             },
         ];
         for screen in screens {
@@ -384,6 +418,8 @@ mod tests {
                         unavailable: Some("This peer is offline.".into()),
                     },
                 ],
+                show_refresh: true,
+                can_refresh: true,
                 notice: Some("A display changed.".into()),
                 ..Default::default()
             };

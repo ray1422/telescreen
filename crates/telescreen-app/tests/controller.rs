@@ -19,7 +19,7 @@ use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken};
 use telescreen_core::input::InputEvent;
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{
-    Capability, CapturedEvent, Clipboard, DisplayInfo, Displays, FocusHolder, Injector,
+    Capability, CapturedEvent, Clipboard, Discovery, DisplayInfo, Displays, FocusHolder, Injector,
     InputCapabilities, InputCapture, PlatformError,
 };
 use telescreen_core::pointer::{Normalized, Point, Rect};
@@ -27,7 +27,7 @@ use telescreen_core::session::VideoInput;
 use telescreen_core::session::source::HandoffResult;
 use telescreen_core::verifier::VerifierEvent;
 use telescreen_core::wire::{EndReason, HandBackOutcome, Message, PointerDatagram, RefuseReason};
-use telescreen_transport::{NetCommand, NetEvent};
+use telescreen_transport::{DialTarget, NetCommand, NetEvent};
 use telescreen_view::{Intent, Matching, PromptId, PromptPresenter, PromptScreen, SessionPhase};
 
 /// The config of the tests. pc1 and the Mac verify with the `prompt` verifier.
@@ -97,6 +97,10 @@ fn config() -> Config {
 
 #[derive(Default)]
 struct Log {
+    /// The calls of the discovery port, in sequence.
+    discovery: Vec<String>,
+    /// The next `announce` and `search` calls fail.
+    discovery_fails: bool,
     net: VecDeque<NetCommand>,
     jobs: VecDeque<(JobId, Job)>,
     capture: Vec<String>,
@@ -325,6 +329,37 @@ struct Peer {
     log: Shared,
 }
 
+struct FakeDiscovery(Shared);
+
+impl FakeDiscovery {
+    fn call(&self, text: String) -> Result<(), PlatformError> {
+        let mut log = self.0.borrow_mut();
+        if log.discovery_fails {
+            return Err(PlatformError::Unsupported("no responder".into()));
+        }
+        log.discovery.push(text);
+        Ok(())
+    }
+}
+
+impl Discovery for FakeDiscovery {
+    fn announce(&mut self, port: u16, fingerprint: &str) -> Result<(), PlatformError> {
+        self.call(format!("announce {port} {fingerprint}"))
+    }
+
+    fn stop_announce(&mut self) {
+        self.0.borrow_mut().discovery.push("stop_announce".into());
+    }
+
+    fn search(&mut self) -> Result<(), PlatformError> {
+        self.call("search".into())
+    }
+
+    fn stop_search(&mut self) {
+        self.0.borrow_mut().discovery.push("stop_search".into());
+    }
+}
+
 fn peer(id: &str, displays: Vec<DisplayInfo>) -> Peer {
     let capabilities = InputCapabilities {
         capture: Capability::Available,
@@ -370,6 +405,7 @@ fn peer_config(
         focus_holder,
         clipboard: Some(Box::new(Clip(log.clone()))),
         verifiers: Box::new(Verifiers(log.clone())),
+        discovery: Box::new(FakeDiscovery(log.clone())),
         capabilities,
     };
     let labels = Labels {
@@ -550,6 +586,15 @@ impl World {
 
     fn phase(&self) -> Option<SessionPhase> {
         Some(self.mac.controller.portal_screen()?.session?.phase)
+    }
+
+    /// Completes the portal match and delivers no network command.
+    fn pump_until_dial(&mut self) {
+        let job = self.mac.log.borrow_mut().jobs.pop_front();
+        let (id, _) = job.unwrap();
+        self.mac
+            .controller
+            .on_job_done(id, JobOutput::Operation(Ok(Outcome::Matched(true))));
     }
 
     fn open_portal(&mut self) {
@@ -2241,4 +2286,511 @@ fn flow24_a_portal_on_another_display_stays_open() {
     pc4_takes_the_display(&mut w);
     assert!(w.mac.controller.has_portal());
     assert_eq!(w.mac.controller.control_screen().incoming.len(), 1);
+}
+
+#[test]
+fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
+    let mut w = World::new();
+    let pc1 = ComputerId::from("pc1");
+    let dials = |w: &World| {
+        w.mac
+            .log
+            .borrow()
+            .net
+            .iter()
+            .filter(|c| matches!(c, NetCommand::Dial { .. }))
+            .count()
+    };
+    w.open_portal();
+    let candidate = |w: &World| {
+        let screen = w.mac.controller.portal_screen().unwrap();
+        (screen.candidates[0].unavailable.clone(), screen.can_refresh)
+    };
+    assert_eq!(candidate(&w), (None, false), "connected");
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(dials(&w), 0, "a connected candidate needs no dial");
+
+    w.mac.controller.on_net(
+        NetEvent::Disconnected {
+            peer: pc1.clone(),
+            reason: "test".into(),
+        },
+        w.now,
+    );
+    assert_eq!(candidate(&w), (Some("offline".into()), true));
+    assert_eq!(dials(&w), 0, "no automatic dial");
+
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(dials(&w), 1);
+    assert_eq!(candidate(&w), (Some("connecting".into()), false));
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(dials(&w), 1, "one dial at a time");
+
+    w.mac.controller.on_net(
+        NetEvent::DialFailed {
+            peer: pc1.clone(),
+            reason: "test".into(),
+        },
+        w.now,
+    );
+    assert_eq!(candidate(&w), (Some("offline".into()), true));
+    w.mac.log.borrow_mut().net.clear();
+
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(dials(&w), 1, "the user can try again");
+    w.pump();
+    assert_eq!(candidate(&w), (None, false));
+}
+
+#[test]
+fn net10_refresh_without_a_portal_does_not_dial() {
+    let mut w = World::new();
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert!(w.mac.log.borrow().net.is_empty());
+}
+
+const PC1: &str = "pc1";
+
+/// A world where `change` edited the endpoint of pc1 and the config of `id` for both peers.
+fn world_with(change: impl Fn(&mut Config)) -> World {
+    let capabilities = || InputCapabilities {
+        capture: Capability::Available,
+        suppress: Capability::Available,
+        inject: Capability::Available,
+    };
+    let mut changed = config();
+    change(&mut changed);
+    let mut w = World::new();
+    w.mac = peer_config(
+        "mac",
+        vec![
+            display("builtin", -1500.0, 1500.0),
+            display("lg", 0.0, 3400.0),
+        ],
+        capabilities(),
+        true,
+        changed.clone(),
+    );
+    w.pc1 = peer_config(
+        "pc1",
+        vec![display("HDMI-A-2", 0.0, 2048.0)],
+        capabilities(),
+        true,
+        changed,
+    );
+    w
+}
+
+fn endpoint_of<'a>(config: &'a mut Config, id: &str) -> &'a mut telescreen_core::config::Endpoint {
+    &mut config
+        .computers
+        .get_mut(&ComputerId::from(id))
+        .unwrap()
+        .endpoint
+}
+
+fn mdns_world(hosts: &[&str]) -> World {
+    let hosts: Vec<String> = hosts.iter().map(|h| (*h).to_owned()).collect();
+    world_with(move |config| {
+        let endpoint = endpoint_of(config, PC1);
+        endpoint.hosts = hosts.clone();
+        endpoint.discovery = Some(telescreen_core::config::Discovery::Mdns);
+    })
+}
+
+/// Opens the portal with pc1 offline. No dial is pending at the end.
+fn offline_portal(w: &mut World) {
+    let pc1 = ComputerId::from(PC1);
+    w.mac.controller.tick(w.now);
+    w.mac.controller.open_portal(display("lg", 0.0, 3400.0));
+    w.pump();
+    // The fake network connected the dial, if any. Make pc1 offline.
+    w.mac.controller.on_net(
+        NetEvent::Disconnected {
+            peer: pc1,
+            reason: "test".into(),
+        },
+        w.now,
+    );
+    w.mac.log.borrow_mut().net.clear();
+    // Let the search of the portal end.
+    w.now += Duration::from_secs(31);
+    w.mac.controller.tick(w.now);
+    w.mac.log.borrow_mut().discovery.clear();
+}
+
+fn dials(w: &World) -> Vec<Vec<DialTarget>> {
+    w.mac
+        .log
+        .borrow()
+        .net
+        .iter()
+        .filter_map(|c| match c {
+            NetCommand::Dial { targets, .. } => Some(targets.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn dial_target(host: &str) -> DialTarget {
+    DialTarget {
+        host: host.into(),
+        port: 24800,
+    }
+}
+
+fn status(w: &World) -> Option<String> {
+    w.mac.controller.portal_screen().unwrap().candidates[0]
+        .unavailable
+        .clone()
+}
+
+fn discovery_calls(w: &World) -> Vec<String> {
+    w.mac.log.borrow().discovery.clone()
+}
+
+fn fail_dial(w: &mut World) {
+    w.mac.log.borrow_mut().net.clear();
+    w.mac.controller.on_net(
+        NetEvent::DialFailed {
+            peer: ComputerId::from(PC1),
+            reason: "test".into(),
+        },
+        w.now,
+    );
+}
+
+#[test]
+fn net11_a_dial_has_all_hosts_in_sequence() {
+    let mut w = world_with(|config| {
+        endpoint_of(config, PC1).hosts = vec!["a.test".into(), "b.test".into()];
+    });
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(
+        dials(&w),
+        [vec![dial_target("a.test"), dial_target("b.test")]]
+    );
+}
+
+#[test]
+fn net15_refresh_with_no_discovery_key_does_not_search() {
+    let mut w = World::new();
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert!(discovery_calls(&w).is_empty());
+    assert_eq!(status(&w), Some("connecting".into()));
+}
+
+#[test]
+fn net15_opening_a_portal_dials_and_searches_at_the_same_time() {
+    let mut w = mdns_world(&["pc1.test"]);
+    w.mac.controller.open_portal(display("lg", 0.0, 3400.0));
+    w.pump_until_dial();
+    assert_eq!(dials(&w).len(), 1);
+    assert_eq!(discovery_calls(&w), ["search"]);
+    assert_eq!(status(&w), Some("connecting".into()));
+    let screen = w.mac.controller.portal_screen().unwrap();
+    assert!(screen.show_refresh);
+    assert!(!screen.can_refresh, "the dial and the search run");
+}
+
+#[test]
+fn net15_a_connection_ends_the_search() {
+    let mut w = mdns_world(&["pc1.test"]);
+    w.open_portal();
+    assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
+    assert_eq!(status(&w), None);
+    assert!(!w.mac.controller.portal_screen().unwrap().show_refresh);
+}
+
+#[test]
+fn net15_a_portal_with_no_discovery_candidate_does_not_search() {
+    let mut w = World::new();
+    w.open_portal();
+    assert!(discovery_calls(&w).is_empty());
+}
+
+#[test]
+fn net15_refresh_during_a_dial_starts_a_search() {
+    let mut w = mdns_world(&["pc1.test"]);
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac.log.borrow_mut().net.clear();
+    w.mac.controller.tick(w.now + Duration::from_secs(31));
+    assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
+    assert_eq!(status(&w), Some("connecting".into()));
+    assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert!(dials(&w).is_empty(), "one dial at a time");
+    assert_eq!(discovery_calls(&w), ["search", "stop_search", "search"]);
+}
+
+#[test]
+fn net10_refresh_is_shown_but_not_available_during_a_dial_with_no_discovery() {
+    let mut w = World::new();
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    let screen = w.mac.controller.portal_screen().unwrap();
+    assert!(screen.show_refresh);
+    assert!(!screen.can_refresh);
+}
+
+#[test]
+fn net15_refresh_searches_for_30_seconds_and_the_candidate_shows_it() {
+    let mut w = mdns_world(&[]);
+    offline_portal(&mut w);
+    assert_eq!(status(&w), Some("offline".into()));
+    assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
+
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(discovery_calls(&w), ["search"]);
+    assert!(dials(&w).is_empty(), "no host and no known address");
+    assert_eq!(status(&w), Some("searching".into()));
+    assert!(!w.mac.controller.portal_screen().unwrap().can_refresh);
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(discovery_calls(&w), ["search"], "one search at a time");
+
+    w.mac.controller.tick(w.now + Duration::from_secs(29));
+    assert_eq!(discovery_calls(&w), ["search"]);
+    w.mac.controller.tick(w.now + Duration::from_secs(31));
+    assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
+    assert_eq!(status(&w), Some("offline".into()));
+    assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
+}
+
+#[test]
+fn net16_a_result_dials_the_found_address_first() {
+    let mut w = mdns_world(&["pc1.test"]);
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    fail_dial(&mut w);
+    w.mac
+        .controller
+        .on_discovered(ComputerId::from(PC1), vec![dial_target("192.168.0.9")]);
+    assert_eq!(
+        dials(&w),
+        [vec![dial_target("192.168.0.9"), dial_target("pc1.test")]]
+    );
+    assert_eq!(status(&w), Some("connecting".into()));
+}
+
+#[test]
+fn net16_a_result_during_a_dial_joins_its_race() {
+    let mut w = mdns_world(&["pc1.test"]);
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac.log.borrow_mut().net.clear();
+    w.mac
+        .controller
+        .on_discovered(ComputerId::from(PC1), vec![dial_target("192.168.0.9")]);
+    assert_eq!(
+        dials(&w),
+        [vec![dial_target("192.168.0.9"), dial_target("pc1.test")]]
+    );
+    assert_eq!(status(&w), Some("connecting".into()));
+}
+
+#[test]
+fn net16_a_lost_connection_does_not_dial_again() {
+    let mut w = mdns_world(&["pc1.test"]);
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_discovered(ComputerId::from(PC1), vec![dial_target("192.168.0.9")]);
+    w.mac.log.borrow_mut().net.clear();
+    w.mac.controller.on_net(
+        NetEvent::Connected {
+            peer: ComputerId::from(PC1),
+        },
+        w.now,
+    );
+    assert!(dials(&w).is_empty());
+    w.mac.controller.on_net(
+        NetEvent::Disconnected {
+            peer: ComputerId::from(PC1),
+            reason: "test".into(),
+        },
+        w.now,
+    );
+    assert!(dials(&w).is_empty(), "no automatic dial (NET-10)");
+}
+
+#[test]
+fn net16_a_new_result_replaces_the_previous_one_and_later_dials_use_it() {
+    let mut w = mdns_world(&["pc1.test"]);
+    offline_portal(&mut w);
+    let pc1 = ComputerId::from(PC1);
+    w.mac.controller.on_intent(Intent::Refresh);
+    fail_dial(&mut w);
+    w.mac
+        .controller
+        .on_discovered(pc1.clone(), vec![dial_target("192.168.0.8")]);
+    fail_dial(&mut w);
+    w.mac
+        .controller
+        .on_discovered(pc1, vec![dial_target("192.168.0.9")]);
+    fail_dial(&mut w);
+    w.mac.controller.tick(w.now + Duration::from_secs(31));
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(
+        dials(&w),
+        [vec![dial_target("192.168.0.9"), dial_target("pc1.test")]]
+    );
+}
+
+#[test]
+fn net16_a_result_that_is_not_an_offline_candidate_does_not_dial() {
+    let mut w = mdns_world(&["pc1.test"]);
+    w.mac
+        .controller
+        .on_discovered(ComputerId::from(PC1), vec![dial_target("192.168.0.9")]);
+    assert!(dials(&w).is_empty(), "no portal");
+    w.open_portal();
+    w.mac.log.borrow_mut().net.clear();
+    w.mac
+        .controller
+        .on_discovered(ComputerId::from(PC1), vec![dial_target("192.168.0.9")]);
+    assert!(dials(&w).is_empty(), "connected");
+    w.mac
+        .controller
+        .on_discovered(ComputerId::from("pc2"), vec![dial_target("192.168.0.7")]);
+    w.mac.controller.on_discovered(
+        ComputerId::from("unknown"),
+        vec![dial_target("192.168.0.7")],
+    );
+    assert!(dials(&w).is_empty(), "no route to these computers");
+}
+
+#[test]
+fn net15_closing_the_portal_stops_the_search() {
+    let mut w = mdns_world(&[]);
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac.controller.close_portal(EndReason::SourceClosed);
+    assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
+}
+
+#[test]
+fn net12_ac48_a_search_error_gives_a_notice_and_the_dial_still_runs() {
+    let mut w = mdns_world(&["pc1.test"]);
+    offline_portal(&mut w);
+    w.mac.log.borrow_mut().discovery_fails = true;
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert_eq!(dials(&w).len(), 1);
+    assert_eq!(status(&w), Some("connecting".into()));
+    assert!(
+        w.mac
+            .controller
+            .control_screen()
+            .notices
+            .iter()
+            .any(|n| n.contains("no responder"))
+    );
+}
+
+#[test]
+fn net12_a_search_that_stops_with_an_error_ends_the_searching_state() {
+    let mut w = mdns_world(&[]);
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac.controller.on_discovery_failed("gone".into());
+    assert_eq!(status(&w), Some("offline".into()));
+    assert!(
+        w.mac
+            .controller
+            .control_screen()
+            .notices
+            .iter()
+            .any(|n| n.contains("gone"))
+    );
+}
+
+#[test]
+fn net14_allow_discovery_needs_the_key_of_this_computer() {
+    let mut w = World::new();
+    assert_eq!(w.mac.controller.control_screen().discovery, None);
+    w.mac.controller.on_intent(Intent::AllowDiscovery);
+    assert!(discovery_calls(&w).is_empty());
+    // The key of a different computer does not count.
+    let mut w = mdns_world(&["pc1.test"]);
+    assert_eq!(w.mac.controller.control_screen().discovery, None);
+    w.mac.controller.on_intent(Intent::AllowDiscovery);
+    assert!(discovery_calls(&w).is_empty());
+}
+
+fn discoverable_mac() -> World {
+    world_with(|config| {
+        endpoint_of(config, "mac").discovery = Some(telescreen_core::config::Discovery::Mdns);
+    })
+}
+
+fn remaining(w: &World) -> Option<u64> {
+    w.mac
+        .controller
+        .control_screen()
+        .discovery
+        .unwrap()
+        .remaining_seconds
+}
+
+#[test]
+fn net14_ac46_allow_discovery_ends_after_10_minutes() {
+    let mut w = discoverable_mac();
+    w.mac.controller.tick(w.now);
+    assert_eq!(remaining(&w), None);
+    w.mac.controller.on_intent(Intent::AllowDiscovery);
+    let calls = discovery_calls(&w);
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].starts_with("announce 24800 "), "{calls:?}");
+    assert_eq!(remaining(&w), Some(600));
+
+    w.mac.controller.tick(w.now + Duration::from_secs(599));
+    assert_eq!(remaining(&w), Some(1));
+    assert_eq!(discovery_calls(&w).len(), 1);
+    w.mac.controller.tick(w.now + Duration::from_secs(601));
+    assert_eq!(remaining(&w), None);
+    assert_eq!(discovery_calls(&w)[1], "stop_announce");
+    w.mac.controller.tick(w.now + Duration::from_secs(602));
+    assert_eq!(discovery_calls(&w).len(), 2, "one stop");
+}
+
+#[test]
+fn net14_ac46_the_user_can_stop_it() {
+    let mut w = discoverable_mac();
+    w.mac.controller.tick(w.now);
+    w.mac.controller.on_intent(Intent::AllowDiscovery);
+    w.mac.controller.on_intent(Intent::StopDiscovery);
+    assert_eq!(remaining(&w), None);
+    assert_eq!(discovery_calls(&w)[1], "stop_announce");
+    w.mac.controller.tick(w.now + Duration::from_secs(601));
+    assert_eq!(discovery_calls(&w).len(), 2);
+}
+
+#[test]
+fn net14_selecting_it_again_restarts_the_time_with_one_record() {
+    let mut w = discoverable_mac();
+    w.mac.controller.tick(w.now);
+    w.mac.controller.on_intent(Intent::AllowDiscovery);
+    w.mac.controller.tick(w.now + Duration::from_secs(100));
+    w.mac.controller.on_intent(Intent::AllowDiscovery);
+    assert_eq!(remaining(&w), Some(600));
+    assert_eq!(discovery_calls(&w).len(), 1);
+}
+
+#[test]
+fn net12_ac48_an_announce_error_gives_a_notice() {
+    let mut w = discoverable_mac();
+    w.mac.log.borrow_mut().discovery_fails = true;
+    w.mac.controller.on_intent(Intent::AllowDiscovery);
+    assert_eq!(remaining(&w), None);
+    assert!(
+        w.mac
+            .controller
+            .control_screen()
+            .notices
+            .iter()
+            .any(|n| n.contains("no responder"))
+    );
 }

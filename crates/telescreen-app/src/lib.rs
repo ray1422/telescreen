@@ -4,6 +4,7 @@
 pub mod controller;
 #[cfg(feature = "debug-protocol")]
 pub mod debug;
+pub mod discovery;
 pub mod paths;
 pub mod pointer_mailbox;
 pub mod startup;

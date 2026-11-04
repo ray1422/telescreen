@@ -52,6 +52,8 @@ cat >"$app/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Telescreen connects to your other computers on the local network to forward the keyboard and the mouse.</string>
+  <key>NSBonjourServices</key>
+  <array><string>_telescreen._udp</string></array>
 </dict>
 </plist>
 PLIST

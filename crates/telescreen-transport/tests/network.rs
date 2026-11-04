@@ -4,14 +4,15 @@
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, channel};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use telescreen_core::config::Endpoint;
 use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
 use telescreen_core::pointer::Normalized;
 use telescreen_core::wire::{Message, PointerDatagram};
 use telescreen_transport::network::{Timing, TrustSource};
-use telescreen_transport::{Identity, NetCommand, NetConfig, NetEvent, Network, TrustStore};
+use telescreen_transport::{
+    DialTarget, Identity, NetCommand, NetConfig, NetEvent, Network, TrustStore,
+};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -63,11 +64,11 @@ fn trusting(pairs: &[(&str, &Identity)]) -> TrustStore {
     store
 }
 
-fn endpoint(peer: &Peer) -> Endpoint {
-    Endpoint {
+fn endpoint(peer: &Peer) -> Vec<DialTarget> {
+    vec![DialTarget {
         host: "127.0.0.1".into(),
         port: peer.network.local_addr().port(),
-    }
+    }]
 }
 
 fn next(peer: &Peer) -> NetEvent {
@@ -82,7 +83,7 @@ fn connected_pair() -> (Peer, Peer) {
     let pc1 = start("pc1", pc1_id.clone(), trusting(&[("mac", &mac_id)]));
     mac.network.send(NetCommand::Dial {
         peer: pc1.id.clone(),
-        endpoint: endpoint(&pc1),
+        targets: endpoint(&pc1),
     });
     assert_eq!(
         next(&mac),
@@ -181,7 +182,7 @@ fn dial_when_connected_reports_connected() {
     let (mac, pc1) = connected_pair();
     mac.network.send(NetCommand::Dial {
         peer: pc1.id.clone(),
-        endpoint: endpoint(&pc1),
+        targets: endpoint(&pc1),
     });
     assert_eq!(
         next(&mac),
@@ -217,7 +218,7 @@ fn ac21_unknown_dialer_is_refused_on_both_sides() {
     let pc1 = start("pc1", pc1_id, TrustStore::empty());
     mac.network.send(NetCommand::Dial {
         peer: pc1.id.clone(),
-        endpoint: endpoint(&pc1),
+        targets: endpoint(&pc1),
     });
     assert!(matches!(next(&mac), NetEvent::DialFailed { .. }));
     assert!(matches!(next(&pc1), NetEvent::Refused { .. }));
@@ -233,7 +234,7 @@ fn ac21_unknown_listener_is_refused_on_both_sides() {
     let pc1 = start("pc1", pc1_id, trusting(&[("mac", &mac_id)]));
     mac.network.send(NetCommand::Dial {
         peer: pc1.id.clone(),
-        endpoint: endpoint(&pc1),
+        targets: endpoint(&pc1),
     });
     assert!(matches!(next(&mac), NetEvent::DialFailed { .. }));
     assert!(matches!(next(&pc1), NetEvent::Refused { .. }));
@@ -248,7 +249,7 @@ fn net3_trusted_key_with_the_wrong_computer_id_is_refused() {
     let pc1 = start("pc1", pc1_id, trusting(&[("pc2", &mac_id)]));
     mac.network.send(NetCommand::Dial {
         peer: pc1.id.clone(),
-        endpoint: endpoint(&pc1),
+        targets: endpoint(&pc1),
     });
     assert!(matches!(next(&pc1), NetEvent::Refused { .. }));
     assert!(!matches!(next(&mac), NetEvent::Connected { .. }));
@@ -264,7 +265,7 @@ fn net3_listener_that_names_a_different_computer_is_refused() {
     let pc1 = start("pc1", pc1_id, trusting(&[("mac", &mac_id)]));
     mac.network.send(NetCommand::Dial {
         peer: ComputerId::from("pc2"),
-        endpoint: endpoint(&pc1),
+        targets: endpoint(&pc1),
     });
     assert!(matches!(next(&mac), NetEvent::DialFailed { .. }));
     let _ = pc1.identity.fingerprint();
@@ -344,7 +345,7 @@ fn ac18_hung_peer_times_out() {
     let pc1 = start("pc1", pc1_id, trusting(&[("mac", &mac_id)]));
     mac.network.send(NetCommand::Dial {
         peer: pc1.id.clone(),
-        endpoint: endpoint(&pc1),
+        targets: endpoint(&pc1),
     });
     assert_eq!(
         next(&mac),
@@ -363,4 +364,166 @@ fn ac18_hung_peer_times_out() {
         other => panic!("{other:?}"),
     }
     assert!(matches!(next(&mac), NetEvent::Disconnected { .. }));
+}
+
+fn target(host: &str, port: u16) -> DialTarget {
+    DialTarget {
+        host: host.into(),
+        port,
+    }
+}
+
+fn trusted_pair() -> (Peer, Peer) {
+    let mac_id = Identity::generate().unwrap();
+    let pc1_id = Identity::generate().unwrap();
+    let mac = start("mac", mac_id.clone(), trusting(&[("pc1", &pc1_id)]));
+    let pc1 = start("pc1", pc1_id, trusting(&[("mac", &mac_id)]));
+    (mac, pc1)
+}
+
+/// The events of a peer for a short time. A losing attempt can give `Refused`.
+fn drain(peer: &Peer) -> Vec<NetEvent> {
+    let mut events = Vec::new();
+    while let Ok(event) = peer.events.recv_timeout(Duration::from_millis(600)) {
+        if !matches!(event, NetEvent::Refused { .. }) {
+            events.push(event);
+        }
+    }
+    events
+}
+
+#[test]
+fn net11_ac43_a_later_address_connects_with_no_wait_for_the_timeout() {
+    let (mac, pc1) = trusted_pair();
+    let port = pc1.network.local_addr().port();
+    let start = Instant::now();
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("192.0.2.1", port), target("127.0.0.1", port)],
+    });
+    assert_eq!(
+        next(&mac),
+        NetEvent::Connected {
+            peer: pc1.id.clone()
+        }
+    );
+    assert!(start.elapsed() < timing().timeout);
+}
+
+#[test]
+fn net11_an_address_of_a_different_computer_does_not_stop_the_dial() {
+    let (mac, pc1) = trusted_pair();
+    let other = start("pc2", Identity::generate().unwrap(), TrustStore::empty());
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![
+            target("127.0.0.1", other.network.local_addr().port()),
+            target("127.0.0.1", pc1.network.local_addr().port()),
+        ],
+    });
+    assert_eq!(
+        next(&mac),
+        NetEvent::Connected {
+            peer: pc1.id.clone()
+        }
+    );
+}
+
+#[test]
+fn net11_ac43_two_addresses_of_one_peer_make_one_connection() {
+    let (mac, pc1) = trusted_pair();
+    let port = pc1.network.local_addr().port();
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("127.0.0.1", port), target("localhost", port)],
+    });
+    assert_eq!(
+        drain(&mac),
+        [NetEvent::Connected {
+            peer: pc1.id.clone()
+        }]
+    );
+    assert_eq!(
+        drain(&pc1),
+        [NetEvent::Connected {
+            peer: mac.id.clone()
+        }]
+    );
+}
+
+#[test]
+fn net11_ac44_a_failure_gives_the_reason_of_each_address() {
+    let (mac, pc1) = trusted_pair();
+    let port = pc1.network.local_addr().port();
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![
+            target("first.invalid", port),
+            target("second.invalid", port),
+        ],
+    });
+    let NetEvent::DialFailed { reason, .. } = next(&mac) else {
+        panic!("a dial failure");
+    };
+    assert!(reason.contains("first.invalid"), "{reason}");
+    assert!(reason.contains("second.invalid"), "{reason}");
+}
+
+#[test]
+fn net11_a_dial_with_no_address_fails() {
+    let (mac, pc1) = trusted_pair();
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: Vec::new(),
+    });
+    assert!(matches!(next(&mac), NetEvent::DialFailed { .. }));
+}
+
+#[test]
+fn net11_a_new_target_joins_the_running_dial() {
+    let (mac, pc1) = trusted_pair();
+    let port = pc1.network.local_addr().port();
+    let start = Instant::now();
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("192.0.2.1", port)],
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("192.0.2.1", port), target("127.0.0.1", port)],
+    });
+    assert_eq!(
+        drain(&mac),
+        [NetEvent::Connected {
+            peer: pc1.id.clone()
+        }]
+    );
+    assert!(start.elapsed() < timing().timeout + Duration::from_millis(600));
+    assert_eq!(
+        drain(&pc1),
+        [NetEvent::Connected {
+            peer: mac.id.clone()
+        }]
+    );
+}
+
+#[test]
+fn net11_a_joined_target_is_in_the_one_failure() {
+    let (mac, pc1) = trusted_pair();
+    let port = pc1.network.local_addr().port();
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("192.0.2.1", port)],
+    });
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("second.invalid", port)],
+    });
+    let NetEvent::DialFailed { reason, .. } = next(&mac) else {
+        panic!("a dial failure");
+    };
+    assert!(reason.contains("192.0.2.1"), "{reason}");
+    assert!(reason.contains("second.invalid"), "{reason}");
+    assert_eq!(drain(&mac), [], "one failure");
 }

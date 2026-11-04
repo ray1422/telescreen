@@ -61,6 +61,8 @@ pub enum UserEvent {
     Verifier(VerifierId, VerifierEvent),
     /// The input capture has events in its queue.
     Captured,
+    /// A report of the discovery backend (NET-12).
+    Discovery(telescreen_core::platform::DiscoveryEvent),
     /// A request of the debug protocol and the channel for its response line.
     #[cfg(feature = "debug-protocol")]
     Debug(crate::debug::Request, crossbeam_channel::Sender<String>),
@@ -275,6 +277,7 @@ fn start_app(
         focus_holder: parts.focus_holder,
         clipboard: parts.clipboard,
         prompt: parts.prompt,
+        discovery: parts.discovery,
         capabilities: parts.capabilities,
     };
     let mut controller = Controller::new(
@@ -412,19 +415,16 @@ struct App {
 }
 
 impl App {
-    /// Opens the portal on the display of the control window (user, 2026-10-27).
-    /// FLOW-2 then uses the display where the window really is.
-    fn open_portal_window(&mut self, event_loop: &ActiveEventLoop) {
+    /// Opens the portal on the selected display. A different portal closes first
+    /// (FLOW-2).
+    fn open_portal_window(&mut self, event_loop: &ActiveEventLoop, token: DisplayToken) {
         self.close_portal_window();
-        let monitor = self
-            .control
-            .as_ref()
-            .and_then(|control| control.window.current_monitor());
-        let Some((monitor, token)) =
-            monitor.and_then(|m| platform::monitor_token(&m).map(|token| (m, token)))
-        else {
+        let monitor = event_loop
+            .available_monitors()
+            .find(|monitor| platform::monitor_token(monitor).as_ref() == Some(&token));
+        let Some(monitor) = monitor else {
             self.controller
-                .add_notice("Cannot find the display of the control window.".into());
+                .add_notice(format!("Cannot find the display {token}."));
             return;
         };
         self.create_portal_window(event_loop, monitor, token, false);
@@ -551,7 +551,7 @@ impl App {
     fn handle_intents(&mut self, event_loop: &ActiveEventLoop, intents: Vec<Intent>) {
         for intent in intents {
             match intent {
-                Intent::OpenPortal => self.open_portal_window(event_loop),
+                Intent::OpenPortal { display } => self.open_portal_window(event_loop, display),
                 Intent::ClosePortal => self.close_portal_window(),
                 other => self.controller.on_intent(other),
             }
@@ -902,6 +902,28 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Verifier(id, event) => self.controller.on_verifier_event(id, event),
             UserEvent::Captured => {}
+            UserEvent::Discovery(event) => match event {
+                telescreen_core::platform::DiscoveryEvent::Found(found) => {
+                    let trust = paths::trust_file().and_then(|path| {
+                        telescreen_transport::TrustStore::load(&path).map_err(|e| e.to_string())
+                    });
+                    match trust {
+                        Ok(trust) => {
+                            for (peer, targets) in crate::discovery::accepted(&found, &trust) {
+                                eprintln!("telescreen: discovered {peer}: {targets:?}");
+                                self.controller.on_discovered(peer, targets);
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("telescreen: cannot load the trust list: {error}");
+                        }
+                    }
+                }
+                telescreen_core::platform::DiscoveryEvent::Failed(reason) => {
+                    eprintln!("telescreen: discovery failed: {reason}");
+                    self.controller.on_discovery_failed(reason);
+                }
+            },
             #[cfg(feature = "debug-protocol")]
             UserEvent::Debug(request, reply) => {
                 let response = self.debug_request(event_loop, request);
@@ -952,7 +974,11 @@ impl ApplicationHandler<UserEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
         self.hooks.heartbeat();
+        let discovery_active = self.controller.discovery_active();
         self.controller.tick(now);
+        if discovery_active {
+            self.sync(event_loop);
+        }
         if now.duration_since(self.last_display_check) >= DISPLAY_CHECK {
             self.last_display_check = now;
             self.controller.displays_changed();
@@ -1019,6 +1045,7 @@ pub(crate) struct Parts {
     pub focus_holder: Option<Box<dyn telescreen_core::platform::FocusHolder>>,
     pub clipboard: Option<Box<dyn telescreen_core::platform::Clipboard>>,
     pub prompt: Box<dyn telescreen_view::PromptPresenter>,
+    pub discovery: Box<dyn telescreen_core::platform::Discovery>,
     pub capabilities: telescreen_core::platform::InputCapabilities,
     pub labels: crate::controller::Labels,
     pub hooks: platform::Hooks,

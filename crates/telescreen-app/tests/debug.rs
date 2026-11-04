@@ -70,7 +70,12 @@ fn ui7_hold_keyboard_names_a_display() {
 #[test]
 fn intents() {
     let cases = [
-        (json!("OpenPortal"), Intent::OpenPortal),
+        (
+            json!({"OpenPortal": {"display": "cg-2"}}),
+            Intent::OpenPortal {
+                display: DisplayToken::from("cg-2"),
+            },
+        ),
         (json!("ClosePortal"), Intent::ClosePortal),
         (json!("EndSession"), Intent::EndSession),
         (
@@ -133,6 +138,7 @@ fn report() -> StateReport {
             incoming: vec![],
             notices: vec!["a notice".into()],
             clipboard: None,
+            discovery: None,
         },
         portal: None,
         windows: vec![

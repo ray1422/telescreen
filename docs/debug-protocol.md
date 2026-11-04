@@ -21,7 +21,7 @@ Each request and each response is one line of JSON. One connection can send more
 | `{"cmd":"pointer_stats"}` | none (NET-9) | `{"ok":true,"stats":<summary or null>}`: the pointer statistics of the current incoming session, else of the last one |
 | `{"cmd":"quit"}` | the same as closing the control window | `{"ok":true}` |
 | `{"cmd":"choose_computer","computer":<id>}` | the same as the click in the start window (UI-8). All other requests except `quit` are errors while the start window is open | `{"ok":true}` |
-| `{"cmd":"move_control","x":<x>,"y":<y>}` | moves the control window, in logical pixels. The portal opens on the display of this window. Wayland ignores it | `{"ok":true}` |
+| `{"cmd":"move_control","x":<x>,"y":<y>}` | moves the control window, in logical pixels. Wayland ignores it | `{"ok":true}` |
 | `{"cmd":"hold_keyboard","display":<display token>}` | calls the focus holder of this peer directly (UI-7), with no session | `{"ok":true}`, or an error if the peer has no focus holder or no such display |
 | `{"cmd":"release_keyboard"}` | removes the focus holder | `{"ok":true}` |
 
@@ -31,7 +31,7 @@ An invalid request gets `{"ok":false,"error":<text>}`.
 
 A window is `{"role":"control"|"portal"|"prompt","monitor":<display token or null>,"fullscreen":<bool>,"focused":<bool>,"position":[x,y] or null,"size":[w,h]}`. Position and size are logical pixels. Wayland does not report the position.
 
-An intent is one of: `"OpenPortal"`, `"ClosePortal"`, `"EndSession"`, `{"StartHandoff":{"target":<computer id>}}`, `{"SelectDevice":{"alias":<device alias>}}`, `{"HandBack":{"session":<id>}}`, `{"StopSession":{"session":<id>}}` ("Disconnect"), `{"ControlFromHere":{"session":<id>}}`, `{"SetClipboard":{"on":<bool>}}`, `{"DeviceIsBack":{"device":<device id>}}`.
+An intent is one of: `{"OpenPortal":{"display":<display token>}}`, `"ClosePortal"`, `"Refresh"`, `"AllowDiscovery"`, `"StopDiscovery"`, `"EndSession"`, `{"StartHandoff":{"target":<computer id>}}`, `{"SelectDevice":{"alias":<device alias>}}`, `{"HandBack":{"session":<id>}}`, `{"StopSession":{"session":<id>}}` ("Disconnect"), `{"ControlFromHere":{"session":<id>}}`, `{"SetClipboard":{"on":<bool>}}`, `{"DeviceIsBack":{"device":<device id>}}`.
 
 Example with `socat`:
 

@@ -236,7 +236,7 @@ pub(crate) struct Hooks {
     prompts: Option<PromptQueue>,
 }
 
-pub(crate) fn parts(_proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
+pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> {
     let mut notices = Vec::new();
     let clipboard: Option<Box<dyn telescreen_core::platform::Clipboard>> =
         match LinuxClipboard::start() {
@@ -300,6 +300,11 @@ pub(crate) fn parts(_proxy: EventLoopProxy<UserEvent>) -> Result<Parts, String> 
         focus_holder,
         clipboard,
         prompt,
+        discovery: Box::new(telescreen_platform_linux::discovery::AvahiDiscovery::new(
+            std::sync::Arc::new(move |event| {
+                let _ = proxy.send_event(UserEvent::Discovery(event));
+            }),
+        )),
         capabilities,
         labels: Labels {
             confirm_key: "Return".into(),

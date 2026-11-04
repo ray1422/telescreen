@@ -166,3 +166,52 @@ pub trait InputCapture {
     /// suppression when the heartbeat stops (IN-9).
     fn heartbeat(&mut self) {}
 }
+
+/// The mDNS service type of Telescreen (NET-14).
+pub const DISCOVERY_SERVICE: &str = "_telescreen._udp";
+
+/// A record of a search (NET-15). It is only a hint for an address (NET-13).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FoundPeer {
+    /// The text of the TXT key `fp`.
+    pub fingerprint: String,
+    pub addresses: Vec<std::net::IpAddr>,
+    pub port: u16,
+}
+
+/// A report of the discovery backend. It can come from any thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryEvent {
+    Found(FoundPeer),
+    /// A running search or record stopped because of an error.
+    Failed(String),
+}
+
+/// Receives the reports of a discovery backend.
+pub type DiscoverySink = std::sync::Arc<dyn Fn(DiscoveryEvent) + Send + Sync>;
+
+/// Finds peers through the mDNS responder of the system (NET-12). A method must
+/// not block for long: the app calls it on the main thread.
+pub trait Discovery {
+    /// Registers this computer until `stop_announce` (NET-14).
+    fn announce(&mut self, port: u16, fingerprint: &str) -> Result<(), PlatformError>;
+    fn stop_announce(&mut self);
+    /// Searches until `stop_search`, and reports each record (NET-15).
+    fn search(&mut self) -> Result<(), PlatformError>;
+    fn stop_search(&mut self);
+}
+
+/// A random instance name for a record (NET-14). It is not a secret.
+pub fn discovery_instance_name() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    let value = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    format!("telescreen-{value:016x}")
+}
+
+/// The value of the TXT key `fp` in one TXT entry.
+pub fn fingerprint_of_txt(entry: &[u8]) -> Option<String> {
+    let value = entry.strip_prefix(b"fp=")?;
+    String::from_utf8(value.to_vec()).ok()
+}

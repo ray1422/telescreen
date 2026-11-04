@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::ids::{ComputerId, DeviceId};
@@ -101,11 +101,36 @@ fn one() -> f32 {
     1.0
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
-    pub host: String,
+    /// The `host` key: one host or a list (NET-11). It is empty only with `discovery`.
+    #[serde(rename = "host", default, deserialize_with = "one_or_many")]
+    pub hosts: Vec<String>,
     pub port: u16,
+    /// Other computers can find this computer (NET-13).
+    #[serde(default)]
+    pub discovery: Option<Discovery>,
+}
+
+/// The `endpoint.discovery` key (NET-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Discovery {
+    Mdns,
+}
+
+fn one_or_many<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Hosts {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Hosts::deserialize(deserializer)? {
+        Hosts::One(host) => vec![host],
+        Hosts::Many(hosts) => hosts,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

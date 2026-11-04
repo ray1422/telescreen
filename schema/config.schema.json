@@ -123,20 +123,49 @@
           "type": "object",
           "properties": {
             "host": {
-              "type": "string",
-              "minLength": 1
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1
+                },
+                {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              ]
             },
             "port": {
               "type": "integer",
               "minimum": 1,
               "maximum": 65535
+            },
+            "discovery": {
+              "enum": [
+                "mdns"
+              ]
             }
           },
           "required": [
-            "host",
             "port"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "anyOf": [
+            {
+              "required": [
+                "host"
+              ]
+            },
+            {
+              "required": [
+                "discovery"
+              ]
+            }
+          ]
         },
         "devices": {
           "type": "object",

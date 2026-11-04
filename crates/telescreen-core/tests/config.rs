@@ -393,3 +393,44 @@ fn clip1_the_clipboard_switch_starts_on_by_default() {
         .clone();
     assert!(text(&other.0), "no clipboard key");
 }
+
+fn endpoint_of(yaml_endpoint: &str) -> Result<telescreen_core::config::Endpoint, String> {
+    let text = format!(
+        "version: 1\ncomputers:\n  mac:\n    endpoint: {yaml_endpoint}\n    devices:\n      D: {{id: d}}\n"
+    );
+    Config::parse(&text)
+        .map(|c| {
+            c.computer(&ComputerId::from("mac"))
+                .unwrap()
+                .endpoint
+                .clone()
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[test]
+fn net11_host_is_one_host_or_a_list() {
+    assert_eq!(
+        endpoint_of("{host: a.test, port: 1}").unwrap().hosts,
+        ["a.test"]
+    );
+    assert_eq!(
+        endpoint_of("{host: [a.test, 192.0.2.1], port: 1}")
+            .unwrap()
+            .hosts,
+        ["a.test", "192.0.2.1"]
+    );
+    assert!(endpoint_of("{host: [], port: 1}").is_err());
+}
+
+#[test]
+fn net13_host_is_optional_only_with_discovery() {
+    let endpoint = endpoint_of("{port: 1, discovery: mdns}").unwrap();
+    assert!(endpoint.hosts.is_empty());
+    assert_eq!(
+        endpoint.discovery,
+        Some(telescreen_core::config::Discovery::Mdns)
+    );
+    assert!(endpoint_of("{port: 1}").is_err());
+    assert!(endpoint_of("{host: a.test, port: 1, discovery: dns}").is_err());
+}

@@ -23,8 +23,17 @@ pub struct ControlScreen {
     pub incoming: Vec<IncomingRow>,
     /// The text clipboard switch, or `None` without a backend (CLIP-1, CLIP-8).
     pub clipboard: Option<bool>,
+    /// `None` if this computer has no `endpoint.discovery` (NET-14).
+    pub discovery: Option<DiscoveryRow>,
     /// Problems and limits that the user must know (IN-12), newest last.
     pub notices: Vec<String>,
+}
+
+/// "Allow discovery" (NET-14).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiscoveryRow {
+    /// The seconds until the end, or `None` if this computer is not discoverable.
+    pub remaining_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +69,10 @@ pub struct PortalScreen {
     pub display: String,
     pub matching: Matching,
     pub candidates: Vec<CandidateRow>,
+    /// True if a candidate has no connection (NET-10).
+    pub show_refresh: bool,
+    /// True if "Refresh" can start a dial or a search (NET-10, NET-15).
+    pub can_refresh: bool,
     pub session: Option<SessionRow>,
     pub notice: Option<String>,
 }
@@ -180,9 +193,17 @@ pub enum Intent {
     SetClipboard {
         on: bool,
     },
-    /// Open the portal on the display of the control window (user, 2026-10-27).
-    OpenPortal,
+    /// Open the portal on this display (FLOW-2).
+    OpenPortal {
+        display: DisplayToken,
+    },
     ClosePortal,
+    /// Dial each offline candidate of the portal again (NET-10), and search (NET-15).
+    Refresh,
+    /// Make this computer discoverable for 10 minutes (NET-14).
+    AllowDiscovery,
+    /// Stop "Allow discovery" before the end (NET-14).
+    StopDiscovery,
     SelectDevice {
         alias: String,
     },

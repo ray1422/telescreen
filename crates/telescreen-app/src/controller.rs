@@ -14,7 +14,7 @@ use telescreen_core::driver::{self, DeviceRef, OperationKind, Outcome, PortalInf
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::input::InputEvent;
 use telescreen_core::platform::{
-    Capability, CapturedEvent, Clipboard, DisplayInfo, Displays, FocusHolder, Injector,
+    Capability, CapturedEvent, Clipboard, Discovery, DisplayInfo, Displays, FocusHolder, Injector,
     InputCapabilities, InputCapture, PlatformError,
 };
 use telescreen_core::pointer::{self, Point, Rect};
@@ -27,10 +27,11 @@ use telescreen_core::session::target::{TargetAction, TargetPhase, TargetSession}
 use telescreen_core::verification::{Verification, VerificationAction, VerificationResult};
 use telescreen_core::verifier::{PromptVerifier, VerifierEvent};
 use telescreen_core::wire::{EndReason, HandBackOutcome, Message, RefuseReason};
-use telescreen_transport::{NetCommand, NetEvent};
+use telescreen_transport::{DialTarget, NetCommand, NetEvent};
 use telescreen_view::{
-    CandidateRow, ControlScreen, DeviceChoice, DeviceRow, DisplayRow, IncomingRow, Intent,
-    Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase, SessionRow,
+    CandidateRow, ControlScreen, DeviceChoice, DeviceRow, DiscoveryRow, DisplayRow, IncomingRow,
+    Intent, Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase,
+    SessionRow,
 };
 
 use crate::pointer_mailbox::ReceivedPointer;
@@ -161,6 +162,8 @@ pub struct Ports {
     /// `None` if this peer has no clipboard backend (CLIP-8).
     pub clipboard: Option<Box<dyn Clipboard>>,
     pub prompt: Box<dyn PromptPresenter>,
+    /// The system mDNS responder (NET-12).
+    pub discovery: Box<dyn Discovery>,
     pub capabilities: InputCapabilities,
 }
 
@@ -228,6 +231,16 @@ pub struct Controller {
     portal_window_request: Option<DisplayToken>,
     next_portal: u64,
     connected: BTreeSet<ComputerId>,
+    /// The peers with a dial that did not report a result (NET-10).
+    dialing: BTreeSet<ComputerId>,
+    /// The newest search result of each peer (NET-16).
+    found: HashMap<ComputerId, Vec<DialTarget>>,
+    /// The end of the running search (NET-15).
+    search_deadline: Option<Instant>,
+    /// The end of "Allow discovery" (NET-14).
+    discovery_deadline: Option<Instant>,
+    /// The time of the last `tick`.
+    now: Instant,
     leases: LeaseTable,
     incoming: BTreeMap<SessionId, TargetSession>,
     incoming_pointer_stats: BTreeMap<SessionId, PointerStats>,
@@ -254,6 +267,8 @@ pub struct Controller {
 const MAX_NOTICES: usize = 8;
 /// ADR 0007: the heartbeat interval. The transport closes a connection after 5 s.
 const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(1);
+const DISCOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
+const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Controller {
     /// Holds keyboard focus on the named local display (UI-7).
@@ -309,6 +324,11 @@ impl Controller {
             portal_window_request: None,
             next_portal: 1,
             connected: BTreeSet::new(),
+            dialing: BTreeSet::new(),
+            found: HashMap::new(),
+            search_deadline: None,
+            discovery_deadline: None,
+            now: Instant::now(),
             leases: LeaseTable::new(first_generation),
             incoming: BTreeMap::new(),
             incoming_pointer_stats: BTreeMap::new(),
@@ -364,6 +384,7 @@ impl Controller {
         }
         self.is_shutdown = true;
         self.close_portal(EndReason::SourceClosed);
+        self.stop_discovery();
         let sessions: Vec<_> = self.incoming.keys().copied().collect();
         for session in sessions {
             self.end_incoming(session, EndReason::TargetDisconnected);
@@ -624,23 +645,92 @@ impl Controller {
         let Some(device) = self.portal_device() else {
             return;
         };
-        let targets: Vec<_> = routes::candidates(&self.config, &device)
+        let peers: Vec<_> = routes::candidates(&self.config, &device)
             .iter()
-            .filter_map(|r| {
-                Some((
-                    r.target.clone(),
-                    self.config.computer(r.target)?.endpoint.clone(),
-                ))
-            })
+            .map(|r| r.target.clone())
             .collect();
-        for (peer, endpoint) in targets {
-            if !self.connected.contains(&peer) {
-                self.ports.net.send(NetCommand::Dial { peer, endpoint });
+        for peer in peers {
+            if !self.dialing.contains(&peer) {
+                self.dial_peer(peer);
+            }
+        }
+        self.start_search();
+    }
+
+    /// Dials the peer, or adds its targets to the race of a running dial (NET-11).
+    fn dial_peer(&mut self, peer: ComputerId) {
+        if self.connected.contains(&peer) {
+            return;
+        }
+        let Some(computer) = self.config.computer(&peer) else {
+            return;
+        };
+        let mut targets = Vec::new();
+        for target in self.found.get(&peer).into_iter().flatten().cloned().chain(
+            computer.endpoint.hosts.iter().map(|host| DialTarget {
+                host: host.clone(),
+                port: computer.endpoint.port,
+            }),
+        ) {
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+        if !targets.is_empty() {
+            self.dialing.insert(peer.clone());
+            self.ports.net.send(NetCommand::Dial { peer, targets });
+        }
+    }
+
+    fn discovery_enabled(&self, peer: &ComputerId) -> bool {
+        self.config
+            .computer(peer)
+            .is_some_and(|c| c.endpoint.discovery.is_some())
+    }
+
+    fn searching(&self, peer: &ComputerId) -> bool {
+        self.search_deadline.is_some() && self.discovery_enabled(peer)
+    }
+
+    /// True if a candidate of the portal has no connection and can be found.
+    fn candidate_to_search(&self) -> bool {
+        self.portal_device().is_some_and(|device| {
+            routes::candidates(&self.config, &device)
+                .iter()
+                .any(|route| {
+                    !self.connected.contains(route.target) && self.discovery_enabled(route.target)
+                })
+        })
+    }
+
+    fn start_search(&mut self) {
+        if self.search_deadline.is_none() && self.candidate_to_search() {
+            match self.ports.discovery.search() {
+                Ok(()) => self.search_deadline = Some(self.now + SEARCH_TIME),
+                Err(error) => self.notice(format!("Cannot search: {error}")),
             }
         }
     }
 
+    fn stop_search(&mut self) {
+        if self.search_deadline.take().is_some() {
+            self.ports.discovery.stop_search();
+        }
+    }
+
+    fn stop_discovery(&mut self) {
+        if self.discovery_deadline.take().is_some() {
+            self.ports.discovery.stop_announce();
+        }
+    }
+
+    /// True while discovery has a timer that can change a screen.
+    pub fn discovery_active(&self) -> bool {
+        self.search_deadline.is_some() || self.discovery_deadline.is_some()
+    }
+
     pub fn close_portal(&mut self, reason: EndReason) {
+        self.stop_search();
         self.portal_window_request = None;
         self.end_portal_session(reason);
         if self.portal.take().is_some() {
@@ -739,7 +829,15 @@ impl Controller {
         if let Capability::Missing(reason) = &self.ports.capabilities.suppress {
             return Some(format!("input suppress: {reason}"));
         }
-        (!self.connected.contains(target)).then(|| "offline".into())
+        if self.connected.contains(target) {
+            None
+        } else if self.dialing.contains(target) {
+            Some("connecting".into())
+        } else if self.searching(target) {
+            Some("searching".into())
+        } else {
+            Some("offline".into())
+        }
     }
 
     /// Ends the unfinished session of the portal if it uses this device.
@@ -950,6 +1048,16 @@ impl Controller {
     /// to each connected peer once a second, from this thread, so that a hung app
     /// stops its heartbeat and the other peer ends the sessions (ADR 0007, AC-18).
     pub fn tick(&mut self, now: Instant) {
+        self.now = now;
+        if self.search_deadline.is_some_and(|deadline| now >= deadline) {
+            self.stop_search();
+        }
+        if self
+            .discovery_deadline
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.stop_discovery();
+        }
         if self
             .last_heartbeat
             .is_none_or(|t| now.duration_since(t) >= HEARTBEAT)
@@ -1182,10 +1290,39 @@ impl Controller {
         }
     }
 
+    /// A search found the addresses of a trusted computer (NET-16).
+    pub fn on_discovered(&mut self, peer: ComputerId, targets: Vec<DialTarget>) {
+        self.found.insert(peer.clone(), targets);
+        if self.is_offline_candidate(&peer) {
+            self.dial_peer(peer);
+        }
+    }
+
+    fn is_offline_candidate(&self, peer: &ComputerId) -> bool {
+        !self.connected.contains(peer)
+            && self.portal_device().is_some_and(|device| {
+                routes::candidates(&self.config, &device)
+                    .iter()
+                    .any(|route| route.target == peer)
+            })
+    }
+
+    /// The discovery backend stopped because of an error (NET-12).
+    pub fn on_discovery_failed(&mut self, reason: String) {
+        self.notice(format!("Discovery failed: {reason}"));
+        // The responder failed, so neither a search nor a record is certain now.
+        self.stop_search();
+        self.stop_discovery();
+    }
+
     pub fn on_net(&mut self, event: NetEvent, now: Instant) {
         match event {
             NetEvent::Connected { peer } => {
+                self.dialing.remove(&peer);
                 self.connected.insert(peer);
+                if !self.candidate_to_search() {
+                    self.stop_search();
+                }
             }
             NetEvent::Disconnected { peer, reason } => {
                 self.connected.remove(&peer);
@@ -1193,6 +1330,7 @@ impl Controller {
                 self.notice(format!("{} disconnected: {reason}", self.label_of(&peer)));
             }
             NetEvent::DialFailed { peer, reason } => {
+                self.dialing.remove(&peer);
                 self.notice(format!(
                     "Cannot connect to {}: {reason}",
                     self.label_of(&peer)
@@ -2243,10 +2381,28 @@ impl Controller {
                 self.clipboard.set_enabled(on);
                 self.update_clipboard();
             }
-            Intent::OpenPortal | Intent::ClosePortal => {
+            Intent::OpenPortal { .. } | Intent::ClosePortal => {
                 // The window layer opens and closes the portal window, then calls
                 // `open_portal` or `close_portal`.
             }
+            Intent::Refresh => self.dial_candidates(),
+            Intent::AllowDiscovery => {
+                if self.discovery_enabled(&self.local) {
+                    if self.discovery_deadline.is_some() {
+                        self.discovery_deadline = Some(self.now + DISCOVERY_WINDOW);
+                    } else if let Some(computer) = self.config.computer(&self.local) {
+                        match self
+                            .ports
+                            .discovery
+                            .announce(computer.endpoint.port, &self.fingerprint)
+                        {
+                            Ok(()) => self.discovery_deadline = Some(self.now + DISCOVERY_WINDOW),
+                            Err(error) => self.notice(format!("Cannot allow discovery: {error}")),
+                        }
+                    }
+                }
+            }
+            Intent::StopDiscovery => self.stop_discovery(),
             Intent::SelectDevice { alias } => {
                 if let Some(portal) = self.portal.as_mut()
                     && let Matching::Ambiguous(choices) = &portal.matching
@@ -2400,19 +2556,24 @@ impl Controller {
     pub fn portal_screen(&self) -> Option<PortalScreen> {
         let portal = self.portal.as_ref()?;
         let device = self.portal_device();
-        let candidates = device
+        let routes = device
             .as_ref()
-            .map(|device| {
-                routes::candidates(&self.config, device)
-                    .into_iter()
-                    .map(|route| CandidateRow {
-                        target: route.target.clone(),
-                        label: self.label_of(route.target),
-                        unavailable: self.candidate_unavailable(route.target),
-                    })
-                    .collect()
-            })
+            .map(|device| routes::candidates(&self.config, device))
             .unwrap_or_default();
+        let show_refresh = routes.iter().any(|r| !self.connected.contains(r.target));
+        let can_refresh = routes.iter().any(|r| {
+            !self.connected.contains(r.target)
+                && (!self.dialing.contains(r.target) && !self.searching(r.target)
+                    || self.discovery_enabled(r.target) && self.search_deadline.is_none())
+        });
+        let candidates = routes
+            .into_iter()
+            .map(|route| CandidateRow {
+                target: route.target.clone(),
+                label: self.label_of(route.target),
+                unavailable: self.candidate_unavailable(route.target),
+            })
+            .collect();
         let session = portal.session.as_ref().map(|s| SessionRow {
             target: self.label_of(s.target()),
             phase: self.phase_view(s),
@@ -2422,6 +2583,8 @@ impl Controller {
             display: display_name(&portal.display),
             matching: portal.matching.clone(),
             candidates,
+            show_refresh,
+            can_refresh,
             session,
             notice: portal.notice.clone(),
         })
@@ -2491,6 +2654,12 @@ impl Controller {
                 .clipboard
                 .as_ref()
                 .map(|_| self.clipboard.enabled()),
+            discovery: self.discovery_enabled(&self.local).then(|| DiscoveryRow {
+                remaining_seconds: self.discovery_deadline.map(|deadline| {
+                    let remaining = deadline.saturating_duration_since(self.now);
+                    remaining.as_secs() + u64::from(remaining.subsec_nanos() != 0)
+                }),
+            }),
             notices: self.notices.clone(),
         }
     }
