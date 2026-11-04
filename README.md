@@ -48,7 +48,7 @@ To go back to the source, use one of these:
 
 The safety exit (Escape 10 times in 5 seconds) only ends the session. It does not switch the display.
 
-macOS asks for Accessibility and Input Monitoring. Linux needs write access to `/dev/uinput` (for example the `input` group) and a compositor with the wlroots virtual pointer and layer-shell protocols.
+macOS asks for Accessibility and Input Monitoring. Linux needs write access to `/dev/uinput` (for example the `input` group) and a compositor with the layer-shell and `ext-data-control-v1` protocols. Tested on niri and on KDE Plasma.
 
 ## Troubleshooting
 

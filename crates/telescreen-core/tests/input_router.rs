@@ -116,3 +116,12 @@ fn in13_clear_forgets_the_routes_but_not_the_focus() {
     assert!(r.keyboard_in_portal());
     assert_eq!(r.route(&key(42, false), OUTSIDE), local(), "forgotten down");
 }
+
+#[test]
+fn in14_a_slow_scroll_is_not_lost() {
+    let mut rest = 0.0;
+    let units: Vec<i32> = (0..5)
+        .map(|_| telescreen_core::input::whole_units(0.4, &mut rest))
+        .collect();
+    assert_eq!(units.iter().sum::<i32>(), 2, "{units:?}");
+}

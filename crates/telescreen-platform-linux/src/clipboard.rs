@@ -17,11 +17,11 @@ use wayland_client::backend::{ObjectId, WaylandError};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
-use wayland_protocols_wlr::data_control::v1::client::{
-    zwlr_data_control_device_v1::{self, ZwlrDataControlDeviceV1 as DataDevice},
-    zwlr_data_control_manager_v1::ZwlrDataControlManagerV1 as DataManager,
-    zwlr_data_control_offer_v1::{self, ZwlrDataControlOfferV1 as DataOffer},
-    zwlr_data_control_source_v1::{self, ZwlrDataControlSourceV1 as DataSource},
+use wayland_protocols::ext::data_control::v1::client::{
+    ext_data_control_device_v1::{self, ExtDataControlDeviceV1 as DataDevice},
+    ext_data_control_manager_v1::ExtDataControlManagerV1 as DataManager,
+    ext_data_control_offer_v1::{self, ExtDataControlOfferV1 as DataOffer},
+    ext_data_control_source_v1::{self, ExtDataControlSourceV1 as DataSource},
 };
 
 const TEXT_TYPES: [&str; 3] = ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"];
@@ -173,8 +173,8 @@ impl Backend {
             .map_err(|error| format!("Wayland registry: {error}"))?;
         let qh = queue.handle();
         let manager: DataManager = list
-            .bind(&qh, 1..=2, ())
-            .map_err(|error| format!("cannot bind zwlr_data_control_manager_v1: {error}"))?;
+            .bind(&qh, 1..=1, ())
+            .map_err(|error| format!("cannot bind ext_data_control_manager_v1: {error}"))?;
         let seat: wl_seat::WlSeat = list
             .bind(&qh, 1..=7, ())
             .map_err(|error| format!("cannot bind the first wl_seat: {error}"))?;
@@ -348,19 +348,19 @@ wayland_client::delegate_noop!(State: ignore DataManager);
 
 impl Dispatch<DataDevice, ()> for State {
     wayland_client::event_created_child!(State, DataDevice, [
-        zwlr_data_control_device_v1::EVT_DATA_OFFER_OPCODE => (DataOffer, ())
+        ext_data_control_device_v1::EVT_DATA_OFFER_OPCODE => (DataOffer, ())
     ]);
 
     fn event(
         state: &mut Self,
         device: &DataDevice,
-        event: zwlr_data_control_device_v1::Event,
+        event: ext_data_control_device_v1::Event,
         _: &(),
         connection: &Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwlr_data_control_device_v1::Event::DataOffer { id } => {
+            ext_data_control_device_v1::Event::DataOffer { id } => {
                 state.offers.insert(
                     id.id(),
                     Offer {
@@ -369,7 +369,7 @@ impl Dispatch<DataDevice, ()> for State {
                     },
                 );
             }
-            zwlr_data_control_device_v1::Event::Selection { id } => {
+            ext_data_control_device_v1::Event::Selection { id } => {
                 state.pending = None;
                 if let Some(previous) = state.selection.take() {
                     state.offers.remove(&previous.id());
@@ -393,11 +393,11 @@ impl Dispatch<DataDevice, ()> for State {
                 }
                 state.selection = id;
             }
-            zwlr_data_control_device_v1::Event::PrimarySelection { id: Some(offer) } => {
+            ext_data_control_device_v1::Event::PrimarySelection { id: Some(offer) } => {
                 state.offers.remove(&offer.id());
                 offer.destroy();
             }
-            zwlr_data_control_device_v1::Event::Finished => {
+            ext_data_control_device_v1::Event::Finished => {
                 device.destroy();
                 state.finished = true;
                 state.pending = None;
@@ -411,12 +411,12 @@ impl Dispatch<DataOffer, ()> for State {
     fn event(
         state: &mut Self,
         offer: &DataOffer,
-        event: zwlr_data_control_offer_v1::Event,
+        event: ext_data_control_offer_v1::Event,
         _: &(),
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let zwlr_data_control_offer_v1::Event::Offer { mime_type } = event
+        if let ext_data_control_offer_v1::Event::Offer { mime_type } = event
             && let Some(data) = state.offers.get_mut(&offer.id())
         {
             data.types.push(mime_type);
@@ -428,13 +428,13 @@ impl Dispatch<DataSource, Arc<SourceData>> for State {
     fn event(
         state: &mut Self,
         source: &DataSource,
-        event: zwlr_data_control_source_v1::Event,
+        event: ext_data_control_source_v1::Event,
         data: &Arc<SourceData>,
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
         match event {
-            zwlr_data_control_source_v1::Event::Send { mime_type, fd } => {
+            ext_data_control_source_v1::Event::Send { mime_type, fd } => {
                 // The hint gives the mark, never the text (CLIP-7).
                 let hint = mime_type == PASSWORD_HINT && data.concealed;
                 if !hint && !TEXT_TYPES.contains(&mime_type.as_str()) {
@@ -457,7 +457,7 @@ impl Dispatch<DataSource, Arc<SourceData>> for State {
                     eprintln!("telescreen: cannot start a clipboard writer: {error}");
                 }
             }
-            zwlr_data_control_source_v1::Event::Cancelled => {
+            ext_data_control_source_v1::Event::Cancelled => {
                 state.sources.retain(|active| active != source);
                 if state.own.as_ref() == Some(source) {
                     state.own = None;

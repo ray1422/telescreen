@@ -2,13 +2,14 @@
 //!
 //! - [`clipboard`]: the regular text clipboard through data-control.
 //! - [`displays`]: the outputs, with their names and logical coordinates.
-//! - [`inject`]: the wlroots virtual pointer (absolute motion on the input-target
-//!   output) and a uinput keyboard.
+//! - [`inject`]: a uinput keyboard, and the wlroots virtual pointer (niri) or a
+//!   uinput absolute pointer (KWin).
 //! - [`prompt`]: the layer-shell confirmation prompt.
 //! - [`focus`]: the invisible layer-shell keyboard focus holder.
 //! - [`inhibit`]: keyboard shortcut inhibition for the portal window.
 //!
-//! Tested only on niri 26.04 (`docs/spikes.md`). Do not claim other compositors.
+//! Tested only on niri 26.04 and KDE Plasma (`docs/spec.md` section 8.2). Do not
+//! claim other compositors.
 #![cfg(target_os = "linux")]
 
 pub mod clipboard;
@@ -37,14 +38,13 @@ pub fn capabilities() -> InputCapabilities {
         .write(true)
         .open("/dev/uinput")
         .is_ok();
-    let inject = match (has("zwlr_virtual_pointer_manager_v1"), uinput) {
-        (true, true) => Capability::Available,
-        (false, _) => {
-            Capability::Missing("the compositor has no zwlr_virtual_pointer_manager_v1".into())
-        }
-        (_, false) => Capability::Missing(
+    // Both pointer backends and the keyboard need only uinput or a global (IN-15).
+    let inject = if uinput {
+        Capability::Available
+    } else {
+        Capability::Missing(
             "cannot open /dev/uinput for writing (add the user to the group of /dev/uinput)".into(),
-        ),
+        )
     };
     InputCapabilities {
         capture: window(

@@ -92,7 +92,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 - **CLIP-10** A paste on the receiving peer needs no extra authentication (user, 2026-10-27). Reason: the peers are paired (ADR 0004), and the user confirmed the session at the prompt. Also, a pushed text is already on the local clipboard, so Telescreen cannot see the paste.
 - **CLIP-11** When the session ends, for each cause, a peer clears its clipboard if it still holds a text that it set from the other peer (user, 2026-10-27). This includes texts with no concealed mark. Reason: the connection ends, and the text must not stay. The peer does the same when its switch goes off (Claude decides, delegated by the user, 2026-10-27). This is local: the peer sends nothing (CLIP-5). If the app stops unexpectedly, the peer cannot clear. On Wayland, the text also goes off the clipboard when Telescreen quits, because Telescreen provides it.
 - **CLIP-12** Only the clipboard selection syncs. The Linux primary selection (select and middle-click paste) does not sync (Claude decides, delegated by the user, 2026-10-27). Reason: macOS has no primary selection.
-- **CLIP-8** The clipboard is a platform capability behind an interface. macOS uses `NSPasteboard`. Linux uses the data-control protocol on its own Wayland connection. v0.2.0 uses `zwlr-data-control-unstable-v1`; `ext-data-control-v1` can come later. If the compositor does not have it (for example GNOME), the capability is missing. Then the control window does not show the switch, and it shows a notice with the cause from the start (Claude decides, delegated by the user, 2026-10-27). The input callbacks never read the clipboard (IN-2).
+- **CLIP-8** The clipboard is a platform capability behind an interface. macOS uses `NSPasteboard`. Linux uses the data-control protocol on its own Wayland connection. Linux uses `ext-data-control-v1` (user, 2026-11-04). KWin has only this protocol, and niri and Hyprland also have it. If the compositor does not have it (for example GNOME), the capability is missing. Then the control window does not show the switch, and it shows a notice with the cause from the start (Claude decides, delegated by the user, 2026-10-27). The input callbacks never read the clipboard (IN-2).
 
 ### 4.5 Verification (v0.3.0)
 
@@ -128,6 +128,7 @@ ADR 0009. The **destination** is the computer that a handoff switches the device
 - **IN-10** While forwarding on macOS, suppress all gestures and shortcuts that switch Spaces or applications, or that open Mission Control, by the rules of FLOW-13: shortcuts while the portal has the keyboard focus, and gestures while the cursor is in the portal. Do not forward gestures (ADR 0003). At other times, they go to macOS.
 - **IN-11** Pointer position: the source maps the pointer position in the portal, normalized to the portal size, to the input-target display of the target. The backends handle scale, rotation, negative origins, and pixel coordinates. The pointer must not leave the input-target display on the target.
 - **IN-14** The target multiplies each forwarded scroll by the `scroll-speed` of its own computer section (`docs/config.md`). The default is 1. The value applies only to forwarded scrolls: local input of the target does not change. Reason: the correct speed depends on the applications and on the compositor of the target (user, 2026-11-04). A target that can inject only whole pixels keeps the remainder for the next scroll, so that a slow scroll does not get lost.
+- **IN-15** On Linux, the pointer injection does not need the wlroots virtual pointer (user, 2026-11-04). If the compositor has `zwlr_virtual_pointer_manager_v1` (niri), the injector uses it. Else the injector makes a uinput absolute pointer (KWin). The compositor maps the range of that device to all outputs together, so the injector computes the position from the logical bounds of the outputs, for each motion. Its scroll is a wheel scroll with high-resolution values.
 - **IN-12** If the OS blocks capture (for example macOS Secure Event Input, or a missing permission), report it clearly. Do not claim that capture works.
 - **IN-13** Input lost: if the capture can no longer see the up events of the forwarded keys, the source releases all held state of the session and sends `ReleaseAll`. The session continues. Examples: the Linux portal loses the keyboard focus (other windows get the up events), macOS turns on Secure Event Input during the session, and macOS disables the event tap for a time.
 
@@ -177,7 +178,7 @@ ADR 0009. The **destination** is the computer that a handoff switches the device
 | --- | --- | --- |
 | Portal window | winit native fullscreen + AppKit window level | winit fullscreen window |
 | Capture and suppress | CGEventTap at the HID location (Accessibility, Input Monitoring) | Window input of the portal + keyboard shortcuts inhibit |
-| Pointer injection | `CGEventPost` | wlroots virtual pointer, absolute motion on the input-target output |
+| Pointer injection | `CGEventPost` | wlroots virtual pointer, absolute motion on the input-target output. Else a uinput absolute pointer (IN-15) |
 | Key injection | `CGEventPost` | uinput keyboard (the compositor keymap applies) |
 | Prompt window (VER-5) | AppKit window above the fullscreen level | layer-shell overlay |
 | Focus holder (UI-7) | transparent key window | layer-shell surface, exclusive keyboard |
@@ -191,6 +192,7 @@ Record each environment that passed the acceptance criteria. At this time only s
 | Environment | Status |
 | --- | --- |
 | macOS 27.0.1, Apple silicon | Spikes 1, 2, 4 passed. Product not tested. |
+| Linux, KDE Plasma with KWin 6.7.4 (Wayland), x86_64 | Mac to Linux: handoff, pointer, buttons, keys, scroll, and clipboard passed a manual test (user, 2026-11-04). One known problem: the top-left hot corner (`docs/plan.md`, backlog). |
 | Linux, niri 26.04 (Wayland), x86_64 | Spike 3 (pointer) passed. Product not tested. Keyboard injection, layer-shell prompt, and capture not tested. |
 | Linux X11, KDE, GNOME, sway, Hyprland, Windows | Not tested. Do not claim support. |
 

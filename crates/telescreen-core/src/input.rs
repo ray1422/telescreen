@@ -87,3 +87,12 @@ impl HeldInputs {
             .collect()
     }
 }
+
+/// The whole units of a scroll value. The remainder stays for the next scroll, so
+/// that a slow scroll does not get lost (IN-14).
+pub fn whole_units(value: f32, rest: &mut f32) -> i32 {
+    let total = value + *rest;
+    let whole = total.round();
+    *rest = total - whole;
+    whole as i32
+}

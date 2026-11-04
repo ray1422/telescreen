@@ -1,5 +1,7 @@
 //! A Wayland connection with the globals that this crate uses, and the output data.
 
+use telescreen_core::pointer::Rect;
+use wayland_client::backend::WaylandError;
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
@@ -57,6 +59,25 @@ impl State {
             .map(|o| &mut o.data)
     }
 
+    /// The logical bounds of an output, and of all outputs together.
+    pub fn bounds(&self, name: &str) -> Option<(Rect, Rect)> {
+        let rect = |data: &OutputData| {
+            let ((x, y), (width, height)) = (data.logical_position?, data.logical_size?);
+            Some(Rect {
+                x: f64::from(x),
+                y: f64::from(y),
+                width: f64::from(width),
+                height: f64::from(height),
+            })
+        };
+        let output = self
+            .outputs
+            .iter()
+            .find(|o| o.data.name.as_deref() == Some(name))?;
+        let rects: Vec<Rect> = self.outputs.iter().filter_map(|o| rect(&o.data)).collect();
+        Some((rect(&output.data)?, layout(&rects)?))
+    }
+
     pub fn by_name(&self, name: &str) -> Option<&wl_output::WlOutput> {
         self.outputs
             .iter()
@@ -96,6 +117,25 @@ impl State {
             output.proxy.release();
         }
     }
+}
+
+/// The smallest rectangle that has all rectangles in it.
+pub fn layout(rects: &[Rect]) -> Option<Rect> {
+    let first = rects.first()?;
+    let (mut left, mut top) = (first.x, first.y);
+    let (mut right, mut bottom) = (first.x + first.width, first.y + first.height);
+    for rect in rects {
+        left = left.min(rect.x);
+        top = top.min(rect.y);
+        right = right.max(rect.x + rect.width);
+        bottom = bottom.max(rect.y + rect.height);
+    }
+    Some(Rect {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
 }
 
 /// A connection, its queue, and the globals.
@@ -168,6 +208,24 @@ impl Globals {
             }
         }
         Err(format!("no output {name}"))
+    }
+
+    /// Applies the events that wait on the socket. It does not wait.
+    pub fn poll(&mut self) -> Result<(), String> {
+        self.connection
+            .flush()
+            .map_err(|e| format!("Wayland: {e}"))?;
+        if let Some(guard) = self.queue.prepare_read() {
+            match guard.read() {
+                Ok(_) => {}
+                Err(WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(format!("Wayland: {e}")),
+            }
+        }
+        self.queue
+            .dispatch_pending(&mut self.state)
+            .map(|_| ())
+            .map_err(|e| format!("Wayland: {e}"))
     }
 
     pub fn roundtrip(&mut self) -> Result<(), String> {
