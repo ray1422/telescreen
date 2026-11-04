@@ -72,6 +72,7 @@ Each step is one commit or more. Claude writes the tests first; Codex implements
 The user plans a new design of the UI later (user, 2026-10-27). Until then, do not spend time on UI details. The pairing UI is not scheduled:
 
 - A pairing UI. Until then, pairing stays manual with `telescreen trust` (ADR 0004).
+- A question on the first use of the clipboard sync (user, 2026-10-27). Until then, the switch starts on (CLIP-1).
 
 ## Rules for each milestone
 

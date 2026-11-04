@@ -346,3 +346,25 @@ fn syntax_error_is_a_yaml_error() {
         Err(ConfigError::Yaml(_))
     ));
 }
+
+#[test]
+fn clip1_the_clipboard_switch_starts_on_by_default() {
+    let mut value = example_value();
+    let computers = value["computers"].as_object_mut().unwrap();
+    for computer in computers.values_mut() {
+        computer.as_object_mut().unwrap().remove("clipboard");
+    }
+    computers["pc1"]["clipboard"] = json!({"text": false});
+    computers["mac"]["clipboard"] = json!({});
+    let config = Config::from_value(value).unwrap();
+    let text = |id: &str| config.computer(&ComputerId::from(id)).unwrap().clipboard.text;
+    assert!(text("mac"), "an empty clipboard key");
+    assert!(!text("pc1"), "the user turned it off");
+    let other = config
+        .computers
+        .keys()
+        .find(|id| id.0 != "mac" && id.0 != "pc1")
+        .unwrap()
+        .clone();
+    assert!(text(&other.0), "no clipboard key");
+}

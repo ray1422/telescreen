@@ -21,7 +21,7 @@ v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user,
 | Version | Content |
 | --- | --- |
 | v0.1.0 | Display handoff, confirmation prompt with the hint, and keyboard and mouse forwarding, in both directions: macOS to Linux, and Linux to macOS. |
-| v0.2.0 | Opt-in text clipboard sync. It syncs only in an active, authenticated session, with no loops between the peers, and it sends nothing after the user disables it or after a disconnect. |
+| v0.2.0 | Text clipboard sync. It syncs only in an active, authenticated session, with no loops between the peers, and it sends nothing after the user disables it or after a disconnect. |
 | v0.3.0 | Hand back, FLOW-24, the verification model, and the operation drivers (section 10; user, 2026-10-27). |
 | v0.4.0 (candidate) | Separate clipboard stream: image clipboard (PNG) and texts larger than 256 KiB (CLIP-6). An image is sent only when the other peer pastes, with a "Pasting from <label>…" overlay. |
 
@@ -81,7 +81,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 
 ### 4.4 Text clipboard (v0.2.0)
 
-- **CLIP-1** Text clipboard sync is opt-in. The config key `clipboard.text` of each computer gives the start value (default `false`). The control window has a switch that changes it while the app runs (user, 2026-10-27). The switch is not saved.
+- **CLIP-1** Text clipboard sync is on by default (user, 2026-10-27). Reason: the sync works only in a session that the user started, and Telescreen does not keep the texts. The config key `clipboard.text` of each computer gives the start value (default `true`). The control window has a switch that changes it while the app runs (user, 2026-10-27). The switch is not saved.
 - **CLIP-2** The sync works in both directions (user, 2026-10-27), only while a session is in forwarding, and only on the authenticated connection of that session. A peer sends its text only while its own switch is on. A peer applies a received text only while its own switch is on.
 - **CLIP-3** A peer sends its clipboard text when the local clipboard changes during the session. It does not send the text that was on the clipboard before the session started (user, 2026-10-27). Reason: privacy. A text from before the session can be old, and the user did not copy it for this session.
 - **CLIP-4** No loops: a peer does not send back a text that it set from the other peer.

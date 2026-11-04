@@ -97,7 +97,7 @@
           "properties": {
             "text": {
               "type": "boolean",
-              "default": false,
+              "default": true,
               "description": "The start value of the text clipboard switch. The control window can change it while the app runs."
             }
           },

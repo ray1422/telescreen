@@ -76,12 +76,22 @@ pub struct Computer {
 }
 
 /// The `clipboard` key of a computer (CLIP-1).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClipboardConfig {
-    /// The start value of the text clipboard switch. The default is off.
-    #[serde(default)]
+    /// The start value of the text clipboard switch. The default is on.
+    #[serde(default = "on")]
     pub text: bool,
+}
+
+impl Default for ClipboardConfig {
+    fn default() -> Self {
+        Self { text: on() }
+    }
+}
+
+fn on() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

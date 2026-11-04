@@ -7,7 +7,7 @@ This document and `schema/config.schema.json` together define the contract. The 
 - `version: 1`: the config format version. Reject unknown versions at load time.
 - `computers`: the keys are stable computer IDs. Specify the local ID explicitly at startup. You must not guess it from the hostname.
 - `hint`: optional plain text, 1 to 500 characters. The `prompt` verifier of this computer shows it after a handoff to this computer (spec VER-5). Example: the copy/paste shortcuts of this computer. It is not a template and not markup.
-- `clipboard`: optional. `clipboard.text` (boolean, default `false`) is the start value of the text clipboard switch of this computer (CLIP-1). The control window can change the switch while the app runs; the change is not saved. No other key is permitted in `clipboard`.
+- `clipboard`: optional. `clipboard.text` (boolean, default `true`) is the start value of the text clipboard switch of this computer (CLIP-1). The control window can change the switch while the app runs; the change is not saved. No other key is permitted in `clipboard`.
 - `path`: optional list of absolute directories. Telescreen finds a program name with no `/` in these directories, in this sequence (see "Programs and the search path"). If `path` is absent, Telescreen uses the `PATH` of the login shell of the user.
 - `endpoint: {host, port}`: the connection address of the agent. It does not represent a trusted identity. Keep the pairing identity in local runtime data. Do not write secrets to this file.
 - `devices`: a mapping. Its keys are local aliases. The aliases have no OS-identification semantics at all.
