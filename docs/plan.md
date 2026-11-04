@@ -59,6 +59,10 @@ v0.3.0 is the current code (user, 2026-11-04). Steps f and g of M12 move to a la
 
 Tested locally: the archive and `install.sh` on both computers (also a wrong checksum on macOS), and `makepkg` on Linux. `actionlint` reports no problem. The workflow itself did not run yet.
 
+### M17: start from a launcher
+
+`telescreen` needs no argument, and the start window selects the computer (PEER-3, PEER-5, UI-8). The Linux archive has a launcher entry and a stripped binary (DIST-4). A local macOS build is not in `target/` (DIST-5). Tested on 2026-11-04 with the Mac and with KDE: the selection through the debug protocol on both, and a handoff from a portal on the external display to forwarding and a hand back. Not tested: a click in the KDE launcher.
+
 ### M12 steps
 
 Each step is one commit or more. Claude writes the tests first; Codex implements steps c to f.

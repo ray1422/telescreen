@@ -2,7 +2,9 @@
 
 use std::{num::NonZeroU32, sync::Arc};
 
-use telescreen_view::{ControlScreen, Intent, PortalScreen, PromptScreen};
+use telescreen_view::{
+    ControlScreen, Intent, PortalScreen, PromptScreen, SetupIntent, SetupScreen,
+};
 use winit::event::WindowEvent;
 use winit::window::Window;
 
@@ -130,6 +132,11 @@ impl WindowRenderer {
         self.draw(|ui| super::screens::control(ui, screen))
     }
 
+    /// Draws the start window and returns the intents of this frame.
+    pub fn draw_setup(&mut self, screen: &SetupScreen) -> Vec<SetupIntent> {
+        self.draw(|ui| super::screens::setup(ui, screen))
+    }
+
     /// Draws the portal window and returns the intents of this frame.
     pub fn draw_portal(&mut self, screen: &PortalScreen) -> Vec<Intent> {
         self.draw(|ui| super::screens::portal(ui, screen))
@@ -139,11 +146,11 @@ impl WindowRenderer {
     pub fn draw_prompt(&mut self, screen: &PromptScreen) {
         self.draw(|ui| {
             super::screens::prompt(ui, screen);
-            Vec::new()
+            Vec::<()>::new()
         });
     }
 
-    fn draw(&mut self, mut contents: impl FnMut(&mut egui::Ui) -> Vec<Intent>) -> Vec<Intent> {
+    fn draw<I>(&mut self, mut contents: impl FnMut(&mut egui::Ui) -> Vec<I>) -> Vec<I> {
         let input = self.state.take_egui_input(&self.window);
         let mut intents = Vec::new();
         let output = self.context.run_ui(input, |ui| {

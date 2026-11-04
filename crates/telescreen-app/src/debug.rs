@@ -36,6 +36,12 @@ pub enum Request {
     ReleaseKeyboard,
     /// `{"cmd":"quit"}`: the same as closing the control window.
     Quit,
+    /// `{"cmd":"choose_computer","computer":"<id>"}`: the same as the click in the
+    /// start window (UI-8).
+    ChooseComputer { computer: ComputerId },
+    /// `{"cmd":"move_control","x":<x>,"y":<y>}`: moves the control window, in
+    /// logical pixels. The portal opens on the display of this window.
+    MoveControl { x: f64, y: f64 },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -90,6 +96,13 @@ pub fn parse_request(line: &str) -> Result<Request, DebugError> {
         }),
         "release_keyboard" => Ok(Request::ReleaseKeyboard),
         "quit" => Ok(Request::Quit),
+        "choose_computer" => Ok(Request::ChooseComputer {
+            computer: ComputerId::from(string_field(&value, "computer")?),
+        }),
+        "move_control" => Ok(Request::MoveControl {
+            x: number_field(&value, "x")?,
+            y: number_field(&value, "y")?,
+        }),
         "intent" => {
             let intent = value
                 .get("intent")
@@ -105,6 +118,13 @@ fn string_field<'a>(value: &'a Value, field: &str) -> Result<&'a str, DebugError
         .get(field)
         .and_then(Value::as_str)
         .ok_or_else(|| DebugError::Request(format!("{field} must be a string")))
+}
+
+fn number_field(value: &Value, field: &str) -> Result<f64, DebugError> {
+    value
+        .get(field)
+        .and_then(Value::as_f64)
+        .ok_or_else(|| DebugError::Request(format!("{field} must be a number")))
 }
 
 fn parse_intent(value: &Value) -> Result<Intent, DebugError> {

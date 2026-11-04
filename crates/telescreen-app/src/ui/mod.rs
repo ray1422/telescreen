@@ -9,6 +9,7 @@ mod linux;
 mod mac;
 mod ports;
 mod prompt_queue;
+mod setup;
 
 #[cfg(target_os = "linux")]
 use linux as platform;
@@ -17,7 +18,7 @@ use mac as platform;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -30,18 +31,20 @@ use telescreen_core::wire::{EndReason, Message};
 use telescreen_render_egui::{SharedGpu, WindowRenderer};
 use telescreen_transport::network::{Timing, TrustSource};
 use telescreen_transport::{Identity, NetConfig, NetEvent, Network};
-use telescreen_view::{Intent, PromptId, PromptScreen};
+use telescreen_view::{ComputerChoice, Intent, PromptId, PromptScreen, SetupIntent, SetupScreen};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::monitor::MonitorHandle;
+use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
 use crate::controller::{Controller, JobId, JobOutput, Ports, VerifierId};
 use crate::paths;
 use crate::pointer_mailbox::{PointerMailbox, ReceivedPointer};
+use crate::startup::{self, Startup};
 use prompt_queue::PromptRequest;
 
 /// How often the main loop runs the timers, the heartbeat, and the display check.
@@ -63,25 +66,149 @@ pub enum UserEvent {
     Debug(crate::debug::Request, crossbeam_channel::Sender<String>),
 }
 
-/// Runs the app until the control window closes. `debug_socket` starts the debug
-/// protocol (feature `debug-protocol`, docs/debug-protocol.md).
-pub fn run(
-    config: Config,
-    local: ComputerId,
-    config_path: PathBuf,
-    debug_socket: Option<PathBuf>,
-) -> Result<(), String> {
-    let event_loop = EventLoop::<UserEvent>::with_user_event()
+/// The command-line options for starting Telescreen.
+#[derive(Debug)]
+pub struct Launch {
+    /// `--config`.
+    pub config: Option<PathBuf>,
+    /// `--computer`.
+    pub computer: Option<String>,
+    /// `--debug-socket`.
+    pub debug_socket: Option<PathBuf>,
+}
+
+/// Resolves the local computer, then runs until the control window closes.
+pub fn launch(launch: Launch) -> Result<(), String> {
+    let interactive = launch.config.is_none() && launch.computer.is_none();
+    let config_path = match launch.config {
+        Some(path) => path,
+        None => paths::default_config()?,
+    };
+    let computer_file = paths::computer_file()?;
+    let resolve = || {
+        startup::resolve(
+            &config_path,
+            launch.computer.as_deref(),
+            paths::saved_computer(&computer_file).as_deref(),
+        )
+    };
+    let mut startup = resolve();
+    if let Startup::Problem(text) = &startup {
+        if !interactive {
+            return Err(text.clone());
+        }
+        eprintln!("telescreen: {text}");
+    }
+    let mut event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
-        .map_err(|e| e.to_string())?;
-    let proxy = event_loop.create_proxy();
+        .map_err(|e| match &startup {
+            Startup::Problem(text) => text.clone(),
+            _ => e.to_string(),
+        })?;
+    // Before the start window: a test can select the computer (UI-8).
     #[cfg(feature = "debug-protocol")]
-    let _debug_server = match debug_socket {
-        Some(path) => Some(debug_server(&path, proxy.clone())?),
+    let debug_server = match &launch.debug_socket {
+        Some(path) => Some(debug_server(path, event_loop.create_proxy())?),
         None => None,
     };
     #[cfg(not(feature = "debug-protocol"))]
-    let _ = debug_socket;
+    let _ = launch.debug_socket;
+    let mut gpu = SharedGpu::default();
+    let (config, local) = match startup {
+        Startup::Run { config, computer } => (config, computer),
+        _ => {
+            let screen = setup_screen(&startup, &config_path);
+            let selected = setup::run_setup(
+                &mut event_loop,
+                &mut gpu,
+                |intent| {
+                    match intent {
+                        SetupIntent::CheckAgain => startup = resolve(),
+                        SetupIntent::Choose { computer } => {
+                            if let Startup::Choose { config, .. } = &startup
+                                && config.computer(&computer).is_some()
+                            {
+                                match paths::save_computer(&computer_file, &computer.0) {
+                                    Ok(()) => return Ok(Some((config.clone(), computer))),
+                                    Err(text) => startup = Startup::Problem(text),
+                                }
+                            } else {
+                                return Ok(None);
+                            }
+                        }
+                    }
+                    if let Startup::Run { config, computer } = &startup {
+                        return Ok(Some((config.clone(), computer.clone())));
+                    }
+                    if interactive && let Startup::Problem(text) = &startup {
+                        eprintln!("telescreen: {text}");
+                    }
+                    Err(setup_screen(&startup, &config_path))
+                },
+                screen,
+            )?;
+            let Some(selected) = selected else {
+                return Ok(());
+            };
+            selected
+        }
+    };
+    let mut app = match start_app(&event_loop, &mut gpu, config, local, config_path.clone()) {
+        Ok(app) => app,
+        Err(text) if interactive => {
+            eprintln!("telescreen: {text}");
+            setup::run_setup(
+                &mut event_loop,
+                &mut gpu,
+                |_| Ok(Some(())),
+                setup_screen(&Startup::Problem(text), &config_path),
+            )?;
+            return Ok(());
+        }
+        Err(text) => return Err(text),
+    };
+    #[cfg(feature = "debug-protocol")]
+    {
+        app._debug_server = debug_server;
+    }
+    // Not `run_app`: only this call clears the exit request of the start window.
+    event_loop
+        .run_app_on_demand(&mut app)
+        .map_err(|e| e.to_string())
+}
+
+fn setup_screen(startup: &Startup, config_path: &Path) -> SetupScreen {
+    let mut screen = SetupScreen {
+        config_path: config_path.display().to_string(),
+        ..Default::default()
+    };
+    match startup {
+        Startup::Problem(text) => screen.problem = Some(text.clone()),
+        Startup::Choose { config, notice } => {
+            screen.notice = notice.clone();
+            screen.computers = config
+                .computers
+                .iter()
+                .map(|(id, computer)| ComputerChoice {
+                    id: id.clone(),
+                    label: computer.label.clone(),
+                })
+                .collect();
+        }
+        Startup::Run { .. } => {}
+    }
+    screen
+}
+
+/// Prepares the app while leaving the event loop available if startup fails.
+fn start_app(
+    event_loop: &EventLoop<UserEvent>,
+    gpu: &mut SharedGpu,
+    config: Config,
+    local: ComputerId,
+    config_path: PathBuf,
+) -> Result<App, String> {
+    let proxy = event_loop.create_proxy();
 
     let identity = Identity::load_or_create(&paths::identity_dir()?).map_err(|e| e.to_string())?;
     let fingerprint = identity.fingerprint().to_string();
@@ -165,10 +292,12 @@ pub fn run(
     for notice in parts.notices {
         controller.add_notice(notice);
     }
-    let mut app = App {
+    Ok(App {
         controller,
         pointer_mailbox,
-        gpu: SharedGpu::default(),
+        gpu: std::mem::take(gpu),
+        #[cfg(feature = "debug-protocol")]
+        _debug_server: None,
         hooks: parts.hooks,
         control: None,
         portal: None,
@@ -177,8 +306,7 @@ pub fn run(
         swallow_release: false,
         drawn_control: None,
         drawn_portal: None,
-    };
-    event_loop.run_app(&mut app).map_err(|e| e.to_string())
+    })
 }
 
 fn start_network(
@@ -270,6 +398,8 @@ struct App {
     controller: Controller,
     pointer_mailbox: Arc<PointerMailbox>,
     gpu: SharedGpu,
+    #[cfg(feature = "debug-protocol")]
+    _debug_server: Option<crate::debug::Server>,
     hooks: platform::Hooks,
     control: Option<Surface>,
     portal: Option<PortalSurface>,
@@ -666,6 +796,16 @@ impl App {
                 self.controller.debug_release_keyboard();
                 debug::ok_response()
             }
+            Request::ChooseComputer { .. } => debug::error_response("no start window is open"),
+            Request::MoveControl { x, y } => match &self.control {
+                Some(control) => {
+                    control
+                        .window
+                        .set_outer_position(LogicalPosition::new(x, y));
+                    debug::ok_response()
+                }
+                None => debug::error_response("no control window"),
+            },
             Request::Quit => {
                 self.controller.shutdown();
                 self.close_portal_window();
@@ -871,7 +1011,7 @@ pub fn describe_displays() -> Result<String, String> {
     serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
 }
 
-/// The platform parts that `run` puts in the ports.
+/// The platform parts that `start_app` puts in the ports.
 pub(crate) struct Parts {
     pub displays: Box<dyn telescreen_core::platform::Displays>,
     pub capture: Box<dyn telescreen_core::platform::InputCapture>,

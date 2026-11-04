@@ -6,4 +6,5 @@ pub mod controller;
 pub mod debug;
 pub mod paths;
 pub mod pointer_mailbox;
+pub mod startup;
 pub mod ui;

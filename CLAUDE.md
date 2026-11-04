@@ -37,7 +37,7 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 cargo fmt --all
 cargo test -p telescreen-core --test session_source -- flow14   # one test file, filtered by name
-scripts/make-macos-app.sh                                        # ad-hoc signed Telescreen.app
+scripts/make-macos-app.sh                                        # signed Telescreen.app in ~/Library/Caches/telescreen-dev.noindex
 TELESCREEN_DEBUG=1 scripts/make-macos-app.sh                     # with the debug protocol (docs/debug-protocol.md)
 ```
 

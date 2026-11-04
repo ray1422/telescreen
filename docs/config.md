@@ -2,10 +2,14 @@
 
 This document and `schema/config.schema.json` together define the contract. The config `version` stays 1: the format changed for v0.3.0, but there was no release, so there is no migration (user, 2026-10-27). YAML is applicable to the nested computer → device → capability config. JSON Schema Draft 2020-12 validates the parsed data. The defaults in the schema are hints. The executor must still actually apply them.
 
+## Location
+
+The default file is `$XDG_CONFIG_HOME/telescreen/config.yaml`, else `~/.config/telescreen/config.yaml`, also on macOS (spec PEER-5). `--config` replaces it.
+
 ## Structure and Identity
 
 - `version: 1`: the config format version. Reject unknown versions at load time.
-- `computers`: the keys are stable computer IDs. Specify the local ID explicitly at startup. You must not guess it from the hostname.
+- `computers`: the keys are stable computer IDs. The user selects the local ID (spec PEER-3). You must not guess it from the hostname.
 - `hint`: optional plain text, 1 to 500 characters. The `prompt` verifier of this computer shows it after a handoff to this computer (spec VER-5). Example: the copy/paste shortcuts of this computer. It is not a template and not markup.
 - `clipboard`: optional. `clipboard.text` (boolean, default `true`) is the start value of the text clipboard switch of this computer (CLIP-1). The control window can change the switch while the app runs; the change is not saved. No other key is permitted in `clipboard`.
 - `scroll-speed`: optional number, larger than 0 and not larger than 10 (default `1`). This computer multiplies each scroll that it receives from a source by this number (spec IN-14). Example: `0.4` on the Linux computer makes the scroll from the Mac slower.

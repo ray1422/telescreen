@@ -3,8 +3,40 @@
 
 use telescreen_core::session::VideoInput;
 use telescreen_view::{
-    ControlScreen, Intent, Matching, PortalScreen, PromptScreen, SessionPhase, VideoInputText,
+    ControlScreen, Intent, Matching, PortalScreen, PromptScreen, SessionPhase, SetupIntent,
+    SetupScreen, VideoInputText,
 };
+
+pub(crate) fn setup(ui: &mut egui::Ui, screen: &SetupScreen) -> Vec<SetupIntent> {
+    let mut intents = Vec::new();
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        if let Some(problem) = &screen.problem {
+            ui.heading("Telescreen");
+            ui.add(egui::Label::new(problem).selectable(true));
+            if ui.button("Check again").clicked() {
+                intents.push(SetupIntent::CheckAgain);
+            }
+        } else {
+            ui.heading("Which computer is this?");
+            if let Some(notice) = &screen.notice {
+                ui.label(notice);
+            }
+            ui.add(egui::Label::new(format!("Config: {}", screen.config_path)).selectable(true));
+            for computer in &screen.computers {
+                let text = match &computer.label {
+                    Some(label) => format!("{label} ({})", computer.id),
+                    None => computer.id.to_string(),
+                };
+                if ui.button(text).clicked() {
+                    intents.push(SetupIntent::Choose {
+                        computer: computer.id.clone(),
+                    });
+                }
+            }
+        }
+    });
+    intents
+}
 
 pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> {
     let mut intents = Vec::new();
@@ -225,6 +257,38 @@ mod tests {
             });
         });
         output.drop_without_applying_deltas();
+    }
+
+    #[test]
+    fn setup_variants_have_no_intents_without_input() {
+        let context = egui::Context::default();
+        let screen = SetupScreen {
+            config_path: "/config.yaml".into(),
+            notice: Some("Select this computer again.".into()),
+            computers: vec![
+                telescreen_view::ComputerChoice {
+                    id: "mac".into(),
+                    label: Some("Laptop".into()),
+                },
+                telescreen_view::ComputerChoice {
+                    id: "linux".into(),
+                    label: None,
+                },
+            ],
+            ..Default::default()
+        };
+        for screen in [
+            screen,
+            SetupScreen {
+                problem: Some("There is no config at /config.yaml.".into()),
+                ..Default::default()
+            },
+        ] {
+            assert_idle_frame(&context, |ui| {
+                assert!(setup(ui, &screen).is_empty());
+                Vec::new()
+            });
+        }
     }
 
     #[test]

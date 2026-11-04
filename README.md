@@ -42,16 +42,15 @@ cargo build --release -p telescreen-app
 cargo test --workspace
 ```
 
-On Linux, the build needs the Wayland and xkbcommon development files. On macOS, `scripts/make-macos-app.sh` makes an ad-hoc signed `Telescreen.app`.
+On Linux, the build needs the Wayland and xkbcommon development files. On macOS, `scripts/make-macos-app.sh` makes a signed `Telescreen.app` in `~/Library/Caches/telescreen-dev.noindex`, so that the launcher does not show a second app.
 
 ## Use
 
-1. Write one config for all computers (`docs/config.md`, `contrib/example-lg.yaml`). Check it: `telescreen check-config config.yaml`.
+1. Write one config for all computers (`docs/config.md`, `contrib/example-lg.yaml`). Put it in `~/.config/telescreen/config.yaml` on each computer. Check it: `telescreen check-config`.
 2. On each computer, show its fingerprint: `telescreen fingerprint`.
 3. On each computer, trust each other computer: `telescreen trust <computer-id> <fingerprint>`.
-4. On each computer, run Telescreen with its own computer ID:
-   - Linux: `telescreen run --config config.yaml --computer linux`
-   - macOS: `open -a Telescreen.app --args run --config "$PWD/config.yaml" --computer mac`
+4. On each computer, start Telescreen from the launcher, or run `telescreen`. At the first start, select this computer in the window. To select again, run `telescreen forget-computer`. For a different file or computer for one run: `telescreen run --config <file> --computer <id>`.
+   On macOS, allow the Local Network request. If the peer stays "offline" with "no answer from", turn on Telescreen in System Settings, Privacy & Security, Local Network.
 5. On the source, open a portal on the shared display. Select the target. When the target shows the prompt, press Return in the portal (or click it).
 
 To go back to the source, use one of these:

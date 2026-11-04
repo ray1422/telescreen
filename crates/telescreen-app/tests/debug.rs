@@ -34,6 +34,29 @@ fn requests_without_arguments() {
 }
 
 #[test]
+fn ui8_choose_computer_names_a_computer() {
+    assert_eq!(
+        parse(r#"{"cmd":"choose_computer","computer":"mac"}"#),
+        Request::ChooseComputer {
+            computer: ComputerId::from("mac")
+        }
+    );
+    assert!(parse_request(r#"{"cmd":"choose_computer"}"#).is_err());
+}
+
+#[test]
+fn move_control_needs_two_numbers() {
+    assert_eq!(
+        parse(r#"{"cmd":"move_control","x":300,"y":-600.5}"#),
+        Request::MoveControl {
+            x: 300.0,
+            y: -600.5
+        }
+    );
+    assert!(parse_request(r#"{"cmd":"move_control","x":300}"#).is_err());
+}
+
+#[test]
 fn ui7_hold_keyboard_names_a_display() {
     assert_eq!(
         parse(r#"{"cmd":"hold_keyboard","display":"HDMI-A-2"}"#),

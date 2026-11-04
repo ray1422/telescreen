@@ -142,6 +142,33 @@ impl PromptScreen {
     }
 }
 
+/// The window at the start, before the local computer ID is known (UI-8).
+/// With a `problem`, the app cannot continue, and `computers` is empty.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SetupScreen {
+    pub config_path: String,
+    pub problem: Option<String>,
+    /// Why the user must select again (PEER-3).
+    pub notice: Option<String>,
+    pub computers: Vec<ComputerChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComputerChoice {
+    pub id: ComputerId,
+    /// The `label` of the computer in the config, if it has one.
+    pub label: Option<String>,
+}
+
+/// What the user did in the window at the start (UI-8).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetupIntent {
+    /// This computer is `computer`. Save the ID and start.
+    Choose { computer: ComputerId },
+    /// Read the config file again.
+    CheckAgain,
+}
+
 /// What the user did in a window.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Intent {
