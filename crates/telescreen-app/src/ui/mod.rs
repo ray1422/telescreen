@@ -41,6 +41,7 @@ use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
 use crate::controller::{Controller, JobId, JobOutput, Ports, VerifierId};
 use crate::paths;
+use crate::pointer_mailbox::{PointerMailbox, ReceivedPointer};
 use prompt_queue::PromptRequest;
 
 /// How often the main loop runs the timers, the heartbeat, and the display check.
@@ -51,6 +52,8 @@ const DISPLAY_CHECK: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub enum UserEvent {
     Net(NetEvent),
+    /// Pointer datagrams wait in the mailbox.
+    Pointers,
     Job(JobId, JobOutput),
     Verifier(VerifierId, VerifierEvent),
     /// The input capture has events in its queue.
@@ -86,7 +89,8 @@ pub fn run(
         .computer(&local)
         .map(|c| c.endpoint.port)
         .ok_or("no local computer")?;
-    let net = start_network(&proxy, &local, port, identity)?;
+    let pointer_mailbox = Arc::new(PointerMailbox::new());
+    let net = start_network(&proxy, &local, port, identity, pointer_mailbox.clone())?;
 
     let config_dir = config_path
         .canonicalize()
@@ -163,6 +167,7 @@ pub fn run(
     }
     let mut app = App {
         controller,
+        pointer_mailbox,
         gpu: SharedGpu::default(),
         hooks: parts.hooks,
         control: None,
@@ -181,6 +186,7 @@ fn start_network(
     local: &ComputerId,
     port: u16,
     identity: Identity,
+    pointer_mailbox: Arc<PointerMailbox>,
 ) -> Result<Box<dyn crate::controller::NetPort>, String> {
     let net_proxy = proxy.clone();
     let network = Network::start(
@@ -196,7 +202,17 @@ fn start_network(
             },
         },
         move |event| {
-            let _ = net_proxy.send_event(UserEvent::Net(event));
+            if let NetEvent::Pointer { peer, datagram } = event {
+                if pointer_mailbox.put(ReceivedPointer {
+                    peer,
+                    datagram,
+                    received: Instant::now(),
+                }) {
+                    let _ = net_proxy.send_event(UserEvent::Pointers);
+                }
+            } else {
+                let _ = net_proxy.send_event(UserEvent::Net(event));
+            }
         },
     )
     .map_err(|e| e.to_string())?;
@@ -252,6 +268,7 @@ struct PromptSurface {
 
 struct App {
     controller: Controller,
+    pointer_mailbox: Arc<PointerMailbox>,
     gpu: SharedGpu,
     hooks: platform::Hooks,
     control: Option<Surface>,
@@ -728,7 +745,12 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        let pointers = self.pointer_mailbox.take();
+        if !pointers.is_empty() {
+            self.controller.on_pointers(pointers, Instant::now());
+        }
         match event {
+            UserEvent::Pointers => {}
             UserEvent::Net(event) => {
                 log_net_event(&event);
                 self.controller.on_net(event, Instant::now());

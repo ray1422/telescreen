@@ -148,7 +148,7 @@ ADR 0009. The **destination** is the computer that a handoff switches the device
 ## 7. Network and security
 
 - **NET-1** The transport is an abstraction with a reliable ordered channel (control messages, key and button events) and an unreliable channel for the latest pointer position (ADR 0001). Key and button events must use the reliable channel.
-- **NET-2** v0.1.0 uses QUIC: reliable streams for the reliable channel, datagrams for the pointer. Each pointer datagram has a sequence number. The target drops a datagram that is older than the last one that it used. The source sends a pointer datagram only if the position is different from the last datagram. It always sends one when forwarding starts and when the pointer enters the portal. A key event thus does not move the target pointer (milestone M10).
+- **NET-2** v0.1.0 uses QUIC: reliable streams for the reliable channel, datagrams for the pointer. Each pointer datagram has a sequence number. The target drops a datagram that is older than the last one that it used. The source sends a pointer datagram only if the position is different from the last datagram. It always sends one when forwarding starts and when the pointer enters the portal. A key event thus does not move the target pointer (milestone M10). The target injects only the newest position: if more than one pointer datagram waits to be handled, the target handles all of them in sequence but injects only the newest position of each session. Before the target handles the next message of the reliable channel, it handles the waiting pointer datagrams. Thus a button goes to the newest position (user, 2026-10-28; M14: a slow main loop delayed the pointer by up to 0.9 s). The source keeps at most 256 bytes of unsent pointer datagrams (about 8). If the path stops, it drops the oldest ones. No queue of pointer positions can grow without limit.
 - **NET-3** Each peer has its own key pair. Both peers present a certificate, and each peer accepts the other only if its fingerprint is in the local trust list for that computer ID (ADR 0004). The user adds a fingerprint with `telescreen trust <computer-id> <fingerprint>`. No trust on first use.
 - **NET-4** A peer must not accept an injection request only because the sender is on the LAN. A trusted fingerprint identifies a peer; it does not authorize it. The target refuses a session request with `NoRoute` if its config has no handoff route from that source to the device (user, 2026-10-27).
 - **NET-5** The config does not hold keys, the trust list, or runtime state.
@@ -160,8 +160,12 @@ ADR 0009. The **destination** is the computer that a handoff switches the device
   - The send interval: the difference of the send times of two datagrams with consecutive sequence numbers.
   - The arrival interval: the time between the arrivals of two consecutive used datagrams.
   - A pause: an interval with a send-time difference of more than 100 ms (the pointer did not move). A pause is counted, and its interval is not in the interval statistics.
+  - The arrival time is the time when the network thread receives the datagram, not the time when the main loop handles it.
   - The delay variation: for each received datagram, its arrival time minus its send time, minus the smallest such value of the session. It is not the one-way latency, because the peers do not share a clock.
-  - Each interval and the delay variation give p50, p95, p99, and the maximum (nearest rank).
+  - The handling delay: for each received datagram, the time from its arrival to the time when the main loop handles it.
+  - Injected datagrams: the used datagrams that the target injected (NET-2: the others had a newer datagram in the same batch).
+  - Each interval, the delay variation, and the handling delay give p50, p95, p99, and the maximum (nearest rank).
+  - Each series keeps its newest 65536 samples. The counts are for the whole session. The memory of the statistics does not grow with the session time.
   - The target writes a summary to the log when the session ends. The debug protocol returns the summary of the current session, else of the last session.
 
 ## 8. Platforms

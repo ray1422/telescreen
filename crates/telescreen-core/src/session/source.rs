@@ -267,14 +267,10 @@ impl SourceSession {
         self.last_pointer = Some(position);
         self.seq = self.seq.checked_add(1)?;
         let first = *self.first_pointer_at.get_or_insert(now);
-        let sent_us = now
-            .saturating_duration_since(first)
-            .as_micros()
-            .min(u128::from(u64::MAX)) as u64;
         Some(PointerDatagram {
             session,
             seq: self.seq,
-            sent_us,
+            sent_us: crate::pointer_stats::micros_since(now, first),
             position,
         })
     }

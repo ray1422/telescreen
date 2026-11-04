@@ -5,12 +5,13 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 use telescreen_app::controller::{
     Controller, Job, JobId, JobOutput, JobPort, Labels, NetPort, Ports, VerifierId, VerifierPort,
 };
+use telescreen_app::pointer_mailbox::ReceivedPointer;
 use telescreen_core::clipboard::{ClipboardChange, ClipboardItem};
 use telescreen_core::config::{Config, Driver, Operation};
 use telescreen_core::driver::{OperationKind, Outcome, Request};
@@ -25,7 +26,7 @@ use telescreen_core::pointer::{Normalized, Point, Rect};
 use telescreen_core::session::VideoInput;
 use telescreen_core::session::source::HandoffResult;
 use telescreen_core::verifier::VerifierEvent;
-use telescreen_core::wire::{EndReason, HandBackOutcome, Message, RefuseReason};
+use telescreen_core::wire::{EndReason, HandBackOutcome, Message, PointerDatagram, RefuseReason};
 use telescreen_transport::{NetCommand, NetEvent};
 use telescreen_view::{Intent, Matching, PromptId, PromptPresenter, PromptScreen, SessionPhase};
 
@@ -778,6 +779,70 @@ fn net9_the_target_keeps_pointer_statistics_after_the_session() {
     let stats = w.pc1.controller.pointer_stats().unwrap();
     assert_eq!(stats.session, session, "the last session");
     assert_eq!(stats.received, sent);
+}
+
+#[test]
+fn net2_the_target_injects_only_the_newest_waiting_position() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let session = w.pc1.controller.control_screen().incoming[0].session;
+    let injected = w.pc1.log.borrow().pointer.len();
+    let before = w.pc1.controller.pointer_stats().unwrap();
+
+    let start = w.now;
+    let pointers = (0..3u64)
+        .map(|i| ReceivedPointer {
+            peer: ComputerId::from("mac"),
+            datagram: PointerDatagram {
+                session,
+                seq: 1000 + i,
+                sent_us: 1_000_000 + i * 8000,
+                position: Normalized {
+                    x: 0.1 * (i + 1) as f32,
+                    y: 0.5,
+                },
+            },
+            received: start + Duration::from_millis(8 * i),
+        })
+        .collect();
+    w.pc1
+        .controller
+        .on_pointers(pointers, start + Duration::from_millis(30));
+
+    let log = w.pc1.log.borrow();
+    assert_eq!(
+        log.pointer.len(),
+        injected + 1,
+        "one injection for the batch"
+    );
+    let last = *log.pointer.last().unwrap();
+    assert!((last.x - 0.3).abs() < 1e-4, "the newest position: {last:?}");
+    let stats = w.pc1.controller.pointer_stats().unwrap();
+    assert_eq!(stats.received, before.received + 3);
+    assert_eq!(stats.used, before.used + 3);
+    assert_eq!(stats.injected, before.injected + 1);
+}
+
+#[test]
+fn net2_a_batch_from_another_peer_is_ignored() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let session = w.pc1.controller.control_screen().incoming[0].session;
+    let injected = w.pc1.log.borrow().pointer.len();
+    let before = w.pc1.controller.pointer_stats().unwrap();
+    let pointer = ReceivedPointer {
+        peer: ComputerId::from("pc4"),
+        datagram: PointerDatagram {
+            session,
+            seq: 2000,
+            sent_us: 0,
+            position: Normalized { x: 0.9, y: 0.9 },
+        },
+        received: w.now,
+    };
+    w.pc1.controller.on_pointers(vec![pointer], w.now);
+    assert_eq!(w.pc1.log.borrow().pointer.len(), injected);
+    assert_eq!(w.pc1.controller.pointer_stats().unwrap(), before);
 }
 
 #[test]

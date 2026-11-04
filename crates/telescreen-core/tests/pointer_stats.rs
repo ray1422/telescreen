@@ -24,7 +24,8 @@ fn record(samples: &[(u64, u64, u64)]) -> PointerStats {
     let start = Instant::now();
     let mut stats = PointerStats::new(S);
     for &(seq, sent, arrived) in samples {
-        stats.record(&datagram(seq, sent), start + Duration::from_millis(arrived));
+        let arrived = start + Duration::from_millis(arrived);
+        stats.record(&datagram(seq, sent), arrived, arrived);
     }
     stats
 }
@@ -128,7 +129,7 @@ fn net9_a_datagram_of_another_session_is_ignored() {
     let mut stats = PointerStats::new(S);
     let mut other = datagram(1, 0);
     other.session = SessionId(8);
-    stats.record(&other, start);
+    stats.record(&other, start, start);
     assert_eq!(stats.summary().received, 0);
 }
 
@@ -138,4 +139,35 @@ fn net9_the_log_line_names_the_session_and_the_loss() {
     assert!(line.contains("session 7"), "{line}");
     assert!(line.contains("lost 1"), "{line}");
     assert!(line.contains("p95"), "{line}");
+}
+
+#[test]
+fn net9_handling_delay_and_injected_datagrams() {
+    // The network thread receives three datagrams each 8 ms. The main loop
+    // handles them together 30 ms after the first one, and injects only the
+    // newest (NET-2).
+    let start = Instant::now();
+    let handled = start + Duration::from_millis(30);
+    let mut stats = PointerStats::new(S);
+    for (seq, at) in [(1u64, 0u64), (2, 8), (3, 16)] {
+        stats.record(
+            &datagram(seq, at),
+            start + Duration::from_millis(at),
+            handled,
+        );
+    }
+    stats.injected();
+    let summary = stats.summary();
+    assert_eq!(summary.used, 3);
+    assert_eq!(summary.injected, 1);
+    assert_eq!(summary.handling_delay.count, 3);
+    assert_eq!(summary.handling_delay.p50_us, 22_000);
+    assert_eq!(summary.handling_delay.max_us, 30_000);
+    // The arrival is the time of the network thread, so the main loop does
+    // not change the arrival interval or the delay variation.
+    assert_eq!(summary.arrival_interval.max_us, 8000);
+    assert_eq!(summary.delay_variation.max_us, 0);
+    let line = summary.to_string();
+    assert!(line.contains("injected 1"), "{line}");
+    assert!(line.contains("handling delay"), "{line}");
 }

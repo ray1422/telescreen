@@ -467,9 +467,15 @@ async fn write_loop(
     }
 }
 
+/// About 8 pointer datagrams (64 ms at 125 datagrams each second) wait to be sent.
+const POINTER_SEND_BUFFER: usize = 256;
+
 fn transport_config(timing: Timing) -> Arc<quinn::TransportConfig> {
     let mut config = quinn::TransportConfig::default();
     config.keep_alive_interval(Some(timing.heartbeat));
+    // NET-2: only the newest pointer positions wait to be sent. If the path
+    // stops, quinn drops the oldest unsent datagram, not the newest.
+    config.datagram_send_buffer_size(POINTER_SEND_BUFFER);
     if let Ok(idle) = quinn::IdleTimeout::try_from(timing.timeout) {
         config.max_idle_timeout(Some(idle));
     }

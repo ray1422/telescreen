@@ -32,6 +32,8 @@ use telescreen_view::{
     Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase, SessionRow,
 };
 
+use crate::pointer_mailbox::ReceivedPointer;
+
 /// Sends commands to the transport.
 pub trait NetPort {
     fn send(&mut self, command: NetCommand);
@@ -1135,6 +1137,38 @@ impl Controller {
         }
     }
 
+    /// Handles waiting datagrams in order, injecting only the newest accepted
+    /// position of each incoming session (NET-2).
+    pub fn on_pointers(&mut self, pointers: Vec<ReceivedPointer>, now: Instant) {
+        let mut newest_actions = BTreeMap::new();
+        for ReceivedPointer {
+            peer,
+            datagram,
+            received,
+        } in pointers
+        {
+            let session = datagram.session;
+            let Some(target) = self.incoming.get_mut(&session) else {
+                continue;
+            };
+            if target.source() != &peer {
+                continue;
+            }
+            if let Some(stats) = self.incoming_pointer_stats.get_mut(&session) {
+                stats.record(&datagram, received, now);
+            }
+            if let Some(action) = target.on_pointer(&datagram) {
+                newest_actions.insert(session, action);
+            }
+        }
+        for (session, action) in newest_actions {
+            if let Some(stats) = self.incoming_pointer_stats.get_mut(&session) {
+                stats.injected();
+            }
+            self.run_target_actions(session, vec![action]);
+        }
+    }
+
     pub fn on_net(&mut self, event: NetEvent, now: Instant) {
         match event {
             NetEvent::Connected { peer } => {
@@ -1156,19 +1190,14 @@ impl Controller {
             }
             NetEvent::Message { peer, message } => self.on_message(peer, message, now),
             NetEvent::Pointer { peer, datagram } => {
-                let Some(target) = self.incoming.get_mut(&datagram.session) else {
-                    return;
-                };
-                if target.source() != &peer {
-                    return;
-                }
-                if let Some(stats) = self.incoming_pointer_stats.get_mut(&datagram.session) {
-                    stats.record(&datagram, now);
-                }
-                if let Some(action) = target.on_pointer(&datagram) {
-                    let session = datagram.session;
-                    self.run_target_actions(session, vec![action]);
-                }
+                self.on_pointers(
+                    vec![ReceivedPointer {
+                        peer,
+                        datagram,
+                        received: now,
+                    }],
+                    now,
+                );
             }
         }
     }
