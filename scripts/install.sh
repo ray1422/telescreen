@@ -66,12 +66,18 @@ else
   cp "$work/telescreen/telescreen" "$bin/.telescreen.new"
   chmod 755 "$bin/.telescreen.new"
   mv "$bin/.telescreen.new" "$bin/telescreen"
-  echo "Installed $bin/telescreen."
+  # The session of a launcher can have no ~/.local/bin in its PATH (DIST-4).
+  apps=$prefix/.local/share/applications
+  mkdir -p "$apps"
+  sed "s|^Exec=.*|Exec=\"$bin/telescreen\"|" "$work/telescreen/dev.telescreen.Telescreen.desktop" \
+    >"$apps/dev.telescreen.Telescreen.desktop"
+  echo "Installed $bin/telescreen and $apps/dev.telescreen.Telescreen.desktop."
   if [ ! -w /dev/uinput ]; then
     echo "You cannot write to /dev/uinput. Add your user to its group, then log in again."
   fi
 fi
-echo "The example config is in $share/examples/config.yaml."
+echo "The example config is in $share/examples/config.yaml. Write your config to"
+echo "${XDG_CONFIG_HOME:-$HOME/.config}/telescreen/config.yaml."
 if pgrep -x telescreen >/dev/null 2>&1; then
   echo "Telescreen runs now. Start it again to use the new version."
 fi

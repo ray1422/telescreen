@@ -1,12 +1,15 @@
 #!/bin/sh
 # Build a signed Telescreen.app (docs/spec.md DIST-1).
 #
-#   scripts/make-macos-app.sh [output-dir]      default: target/release
+#   scripts/make-macos-app.sh [output-dir]      default: ~/Library/Caches/telescreen-dev.noindex
+#
+# The default is not in target/ and has the .noindex suffix: Spotlight does not
+# index it, so the launcher does not show a second Telescreen (DIST-5).
 #
 # Start it with `open`, so that macOS gives the permissions to the app itself
 # (not to the terminal):
 #
-#   open -a target/release/Telescreen.app --args run --config "$PWD/config.yaml" --computer mac
+#   open -a ~/Library/Caches/telescreen-dev.noindex/Telescreen.app
 #
 # macOS keys Accessibility and Input Monitoring to the code signature. An ad-hoc
 # signature changes at each build, so macOS can ask for the permissions again.
@@ -17,7 +20,7 @@
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-out=${1:-"$root/target/release"}
+out=${1:-"$HOME/Library/Caches/telescreen-dev.noindex"}
 app="$out/Telescreen.app"
 
 cd "$root"

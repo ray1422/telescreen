@@ -18,6 +18,7 @@ sha256sums=('@SHA256@')
 package() {
   cd telescreen
   install -Dm755 telescreen "$pkgdir/usr/bin/telescreen"
+  install -Dm644 dev.telescreen.Telescreen.desktop "$pkgdir/usr/share/applications/dev.telescreen.Telescreen.desktop"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 README.md "$pkgdir/usr/share/doc/telescreen/README.md"
   install -Dm644 examples/config.yaml "$pkgdir/usr/share/doc/telescreen/examples/config.yaml"

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Telescreen
+Comment=Control computers that share a display with one keyboard and mouse
+Exec=telescreen
+Terminal=false
+Categories=Utility;
+StartupWMClass=dev.telescreen.Telescreen

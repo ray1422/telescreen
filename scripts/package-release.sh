@@ -24,6 +24,9 @@ case "$(uname -s)-$(uname -m)" in
     name=telescreen-linux-x86_64
     env -u CARGO_TARGET_DIR cargo build --release -p telescreen-app
     cp target/release/telescreen "$work/telescreen/telescreen"
+    # The release profile keeps debug info for local builds. The archive does not need it.
+    strip "$work/telescreen/telescreen"
+    cp packaging/linux/dev.telescreen.Telescreen.desktop "$work/telescreen/"
     ;;
   *)
     echo "no release for $(uname -s) $(uname -m)" >&2
