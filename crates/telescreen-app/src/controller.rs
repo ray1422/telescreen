@@ -235,8 +235,6 @@ pub struct Controller {
     dialing: BTreeSet<ComputerId>,
     /// The newest search result of each peer (NET-16).
     found: HashMap<ComputerId, Vec<DialTarget>>,
-    /// The peers with a result that arrived during a dial (NET-16).
-    dial_after_failure: BTreeSet<ComputerId>,
     /// The end of the running search (NET-15).
     search_deadline: Option<Instant>,
     /// The end of "Allow discovery" (NET-14).
@@ -328,7 +326,6 @@ impl Controller {
             connected: BTreeSet::new(),
             dialing: BTreeSet::new(),
             found: HashMap::new(),
-            dial_after_failure: BTreeSet::new(),
             search_deadline: None,
             discovery_deadline: None,
             now: Instant::now(),
@@ -653,12 +650,16 @@ impl Controller {
             .map(|r| r.target.clone())
             .collect();
         for peer in peers {
-            self.dial_peer(peer);
+            if !self.dialing.contains(&peer) {
+                self.dial_peer(peer);
+            }
         }
+        self.start_search();
     }
 
+    /// Dials the peer, or adds its targets to the race of a running dial (NET-11).
     fn dial_peer(&mut self, peer: ComputerId) {
-        if self.connected.contains(&peer) || self.dialing.contains(&peer) {
+        if self.connected.contains(&peer) {
             return;
         }
         let Some(computer) = self.config.computer(&peer) else {
@@ -691,6 +692,26 @@ impl Controller {
         self.search_deadline.is_some() && self.discovery_enabled(peer)
     }
 
+    /// True if a candidate of the portal has no connection and can be found.
+    fn candidate_to_search(&self) -> bool {
+        self.portal_device().is_some_and(|device| {
+            routes::candidates(&self.config, &device)
+                .iter()
+                .any(|route| {
+                    !self.connected.contains(route.target) && self.discovery_enabled(route.target)
+                })
+        })
+    }
+
+    fn start_search(&mut self) {
+        if self.search_deadline.is_none() && self.candidate_to_search() {
+            match self.ports.discovery.search() {
+                Ok(()) => self.search_deadline = Some(self.now + SEARCH_TIME),
+                Err(error) => self.notice(format!("Cannot search: {error}")),
+            }
+        }
+    }
+
     fn stop_search(&mut self) {
         if self.search_deadline.take().is_some() {
             self.ports.discovery.stop_search();
@@ -710,7 +731,6 @@ impl Controller {
 
     pub fn close_portal(&mut self, reason: EndReason) {
         self.stop_search();
-        self.dial_after_failure.clear();
         self.portal_window_request = None;
         self.end_portal_session(reason);
         if self.portal.take().is_some() {
@@ -1274,11 +1294,7 @@ impl Controller {
     pub fn on_discovered(&mut self, peer: ComputerId, targets: Vec<DialTarget>) {
         self.found.insert(peer.clone(), targets);
         if self.is_offline_candidate(&peer) {
-            if self.dialing.contains(&peer) {
-                self.dial_after_failure.insert(peer);
-            } else {
-                self.dial_peer(peer);
-            }
+            self.dial_peer(peer);
         }
     }
 
@@ -1303,8 +1319,10 @@ impl Controller {
         match event {
             NetEvent::Connected { peer } => {
                 self.dialing.remove(&peer);
-                self.dial_after_failure.remove(&peer);
                 self.connected.insert(peer);
+                if !self.candidate_to_search() {
+                    self.stop_search();
+                }
             }
             NetEvent::Disconnected { peer, reason } => {
                 self.connected.remove(&peer);
@@ -1317,9 +1335,6 @@ impl Controller {
                     "Cannot connect to {}: {reason}",
                     self.label_of(&peer)
                 ));
-                if self.dial_after_failure.remove(&peer) && self.is_offline_candidate(&peer) {
-                    self.dial_peer(peer);
-                }
             }
             NetEvent::Refused { remote, reason } => {
                 self.notice(format!("Refused a connection from {remote}: {reason}"));
@@ -2370,23 +2385,7 @@ impl Controller {
                 // The window layer opens and closes the portal window, then calls
                 // `open_portal` or `close_portal`.
             }
-            Intent::Refresh => {
-                self.dial_candidates();
-                let needs_search = self.portal_device().is_some_and(|device| {
-                    routes::candidates(&self.config, &device)
-                        .iter()
-                        .any(|route| {
-                            !self.connected.contains(route.target)
-                                && self.discovery_enabled(route.target)
-                        })
-                });
-                if needs_search && self.search_deadline.is_none() {
-                    match self.ports.discovery.search() {
-                        Ok(()) => self.search_deadline = Some(self.now + SEARCH_TIME),
-                        Err(error) => self.notice(format!("Cannot search: {error}")),
-                    }
-                }
-            }
+            Intent::Refresh => self.dial_candidates(),
             Intent::AllowDiscovery => {
                 if self.discovery_enabled(&self.local) {
                     if self.discovery_deadline.is_some() {
@@ -2561,10 +2560,11 @@ impl Controller {
             .as_ref()
             .map(|device| routes::candidates(&self.config, device))
             .unwrap_or_default();
+        let show_refresh = routes.iter().any(|r| !self.connected.contains(r.target));
         let can_refresh = routes.iter().any(|r| {
             !self.connected.contains(r.target)
-                && !self.dialing.contains(r.target)
-                && !self.searching(r.target)
+                && (!self.dialing.contains(r.target) && !self.searching(r.target)
+                    || self.discovery_enabled(r.target) && self.search_deadline.is_none())
         });
         let candidates = routes
             .into_iter()
@@ -2583,6 +2583,7 @@ impl Controller {
             display: display_name(&portal.display),
             matching: portal.matching.clone(),
             candidates,
+            show_refresh,
             can_refresh,
             session,
             notice: portal.notice.clone(),

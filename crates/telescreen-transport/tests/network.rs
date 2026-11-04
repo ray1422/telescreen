@@ -478,3 +478,52 @@ fn net11_a_dial_with_no_address_fails() {
     });
     assert!(matches!(next(&mac), NetEvent::DialFailed { .. }));
 }
+
+#[test]
+fn net11_a_new_target_joins_the_running_dial() {
+    let (mac, pc1) = trusted_pair();
+    let port = pc1.network.local_addr().port();
+    let start = Instant::now();
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("192.0.2.1", port)],
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("192.0.2.1", port), target("127.0.0.1", port)],
+    });
+    assert_eq!(
+        drain(&mac),
+        [NetEvent::Connected {
+            peer: pc1.id.clone()
+        }]
+    );
+    assert!(start.elapsed() < timing().timeout + Duration::from_millis(600));
+    assert_eq!(
+        drain(&pc1),
+        [NetEvent::Connected {
+            peer: mac.id.clone()
+        }]
+    );
+}
+
+#[test]
+fn net11_a_joined_target_is_in_the_one_failure() {
+    let (mac, pc1) = trusted_pair();
+    let port = pc1.network.local_addr().port();
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("192.0.2.1", port)],
+    });
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: vec![target("second.invalid", port)],
+    });
+    let NetEvent::DialFailed { reason, .. } = next(&mac) else {
+        panic!("a dial failure");
+    };
+    assert!(reason.contains("192.0.2.1"), "{reason}");
+    assert!(reason.contains("second.invalid"), "{reason}");
+    assert_eq!(drain(&mac), [], "one failure");
+}

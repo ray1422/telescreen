@@ -588,6 +588,15 @@ impl World {
         Some(self.mac.controller.portal_screen()?.session?.phase)
     }
 
+    /// Completes the portal match and delivers no network command.
+    fn pump_until_dial(&mut self) {
+        let job = self.mac.log.borrow_mut().jobs.pop_front();
+        let (id, _) = job.unwrap();
+        self.mac
+            .controller
+            .on_job_done(id, JobOutput::Operation(Ok(Outcome::Matched(true))));
+    }
+
     fn open_portal(&mut self) {
         self.mac.controller.open_portal(display("lg", 0.0, 3400.0));
         self.pump();
@@ -2404,6 +2413,10 @@ fn offline_portal(w: &mut World) {
         w.now,
     );
     w.mac.log.borrow_mut().net.clear();
+    // Let the search of the portal end.
+    w.now += Duration::from_secs(31);
+    w.mac.controller.tick(w.now);
+    w.mac.log.borrow_mut().discovery.clear();
 }
 
 fn dials(w: &World) -> Vec<Vec<DialTarget>> {
@@ -2470,10 +2483,57 @@ fn net15_refresh_with_no_discovery_key_does_not_search() {
 }
 
 #[test]
-fn net15_opening_a_portal_does_not_search() {
+fn net15_opening_a_portal_dials_and_searches_at_the_same_time() {
+    let mut w = mdns_world(&["pc1.test"]);
+    w.mac.controller.open_portal(display("lg", 0.0, 3400.0));
+    w.pump_until_dial();
+    assert_eq!(dials(&w).len(), 1);
+    assert_eq!(discovery_calls(&w), ["search"]);
+    assert_eq!(status(&w), Some("connecting".into()));
+    let screen = w.mac.controller.portal_screen().unwrap();
+    assert!(screen.show_refresh);
+    assert!(!screen.can_refresh, "the dial and the search run");
+}
+
+#[test]
+fn net15_a_connection_ends_the_search() {
+    let mut w = mdns_world(&["pc1.test"]);
+    w.open_portal();
+    assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
+    assert_eq!(status(&w), None);
+    assert!(!w.mac.controller.portal_screen().unwrap().show_refresh);
+}
+
+#[test]
+fn net15_a_portal_with_no_discovery_candidate_does_not_search() {
+    let mut w = World::new();
+    w.open_portal();
+    assert!(discovery_calls(&w).is_empty());
+}
+
+#[test]
+fn net15_refresh_during_a_dial_starts_a_search() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
-    assert!(discovery_calls(&w).is_empty());
+    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac.log.borrow_mut().net.clear();
+    w.mac.controller.tick(w.now + Duration::from_secs(31));
+    assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
+    assert_eq!(status(&w), Some("connecting".into()));
+    assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert!(dials(&w).is_empty(), "one dial at a time");
+    assert_eq!(discovery_calls(&w), ["search", "stop_search", "search"]);
+}
+
+#[test]
+fn net10_refresh_is_shown_but_not_available_during_a_dial_with_no_discovery() {
+    let mut w = World::new();
+    offline_portal(&mut w);
+    w.mac.controller.on_intent(Intent::Refresh);
+    let screen = w.mac.controller.portal_screen().unwrap();
+    assert!(screen.show_refresh);
+    assert!(!screen.can_refresh);
 }
 
 #[test]
@@ -2516,24 +2576,23 @@ fn net16_a_result_dials_the_found_address_first() {
 }
 
 #[test]
-fn net16_a_result_during_a_dial_waits_for_its_failure() {
+fn net16_a_result_during_a_dial_joins_its_race() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
     w.mac.controller.on_intent(Intent::Refresh);
-    assert_eq!(dials(&w).len(), 1);
+    w.mac.log.borrow_mut().net.clear();
     w.mac
         .controller
         .on_discovered(ComputerId::from(PC1), vec![dial_target("192.168.0.9")]);
-    assert_eq!(dials(&w).len(), 1, "one dial at a time");
-    fail_dial(&mut w);
     assert_eq!(
         dials(&w),
         [vec![dial_target("192.168.0.9"), dial_target("pc1.test")]]
     );
+    assert_eq!(status(&w), Some("connecting".into()));
 }
 
 #[test]
-fn net16_a_connection_cancels_the_waiting_dial() {
+fn net16_a_lost_connection_does_not_dial_again() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
     w.mac.controller.on_intent(Intent::Refresh);

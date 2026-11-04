@@ -12,7 +12,7 @@ A question in mDNS is visible to all computers on the network. Any computer can 
 
 - Discovery gives an address. Only mutual TLS (NET-3) gives an identity.
 - Telescreen uses the responder of the system: Bonjour on macOS, Avahi through D-Bus on Linux. It has no responder of its own and no fallback.
-- A computer is discoverable only for 10 minutes after the user selects "Allow discovery". The user searches with "Refresh". Telescreen does not search or announce without these buttons.
+- A computer is discoverable only for 10 minutes after the user selects "Allow discovery". A search starts when a portal dials its candidates, and with "Refresh" (user, 2026-11-05). Telescreen does not announce without the button, and it does not search with no portal.
 - The record has a random instance name and the fingerprint in clear text as the TXT key `fp`.
 
 ## Consequences

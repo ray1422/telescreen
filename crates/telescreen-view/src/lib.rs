@@ -69,7 +69,9 @@ pub struct PortalScreen {
     pub display: String,
     pub matching: Matching,
     pub candidates: Vec<CandidateRow>,
-    /// True if a candidate is offline and no dial to it runs (NET-10).
+    /// True if a candidate has no connection (NET-10).
+    pub show_refresh: bool,
+    /// True if "Refresh" can start a dial or a search (NET-10, NET-15).
     pub can_refresh: bool,
     pub session: Option<SessionRow>,
     pub notice: Option<String>,

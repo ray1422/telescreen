@@ -182,7 +182,11 @@ pub(crate) fn portal(ui: &mut egui::Ui, screen: &PortalScreen) -> Vec<Intent> {
                     }
                 });
             }
-            if screen.can_refresh && ui.button("Refresh").clicked() {
+            if screen.show_refresh
+                && ui
+                    .add_enabled(screen.can_refresh, egui::Button::new("Refresh"))
+                    .clicked()
+            {
                 intents.push(Intent::Refresh);
             }
             if let Some(session) = &screen.session {
@@ -414,6 +418,7 @@ mod tests {
                         unavailable: Some("This peer is offline.".into()),
                     },
                 ],
+                show_refresh: true,
                 can_refresh: true,
                 notice: Some("A display changed.".into()),
                 ..Default::default()

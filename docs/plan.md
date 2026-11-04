@@ -65,7 +65,7 @@ Tested locally: the archive and `install.sh` on both computers (also a wrong che
 
 ### M18: more than one address and discovery
 
-A computer can have a list of hosts, and a dial races them (NET-11). Discovery uses the system mDNS responder: "Allow discovery" for 10 minutes, and "Refresh" searches (NET-12 to NET-16, ADR 0011). Tested on 2026-11-05 between the Mac and Linux (KDE Plasma Wayland, Avahi), with the debug protocol and no clicks, also with a Mac app that `open` started: "Allow discovery" and "Refresh" connect in both directions, with an absent or a wrong host, and "Stop" removes the record. The 10-minute end and a Linux computer with no Avahi have only automated tests.
+A computer can have a list of hosts, and a dial races them (NET-11). Discovery uses the system mDNS responder: "Allow discovery" for 10 minutes, and a search with each dial of the portal (NET-12 to NET-16, ADR 0011). Tested on 2026-11-05 between the Mac and Linux (KDE Plasma Wayland, Avahi), with the debug protocol and no clicks, also with a Mac app that `open` started: "Allow discovery" and "Refresh" connect in both directions, with an absent or a wrong host, and "Stop" removes the record. The 10-minute end and a Linux computer with no Avahi have only automated tests.
 
 ### M12 steps
 

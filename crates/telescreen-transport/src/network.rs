@@ -171,6 +171,8 @@ struct Shared {
     trust: TrustSource,
     timing: Timing,
     links: Arc<Mutex<HashMap<ComputerId, Link>>>,
+    /// The running dials. A new target for such a peer joins its race (NET-11).
+    dials: Arc<Mutex<HashMap<ComputerId, mpsc::UnboundedSender<Vec<DialTarget>>>>>,
     next_id: Arc<Mutex<u64>>,
     events: Events,
 }
@@ -203,6 +205,7 @@ impl Shared {
             trust: config.trust,
             timing: config.timing,
             links: Arc::default(),
+            dials: Arc::default(),
             next_id: Arc::default(),
             events,
         })
@@ -247,9 +250,24 @@ impl Shared {
                     self.emit(NetEvent::Connected { peer });
                     return;
                 }
+                let mut dials = self.dials.lock().unwrap_or_else(PoisonError::into_inner);
+                if dials
+                    .get(&peer)
+                    .is_some_and(|added| added.send(targets.clone()).is_ok())
+                {
+                    return;
+                }
+                let (added, added_rx) = mpsc::unbounded_channel();
+                dials.insert(peer.clone(), added);
+                drop(dials);
                 let shared = self.clone();
                 tokio::spawn(async move {
-                    let result = shared.dial(&peer, targets).await;
+                    let result = shared.dial(&peer, targets, added_rx).await;
+                    shared
+                        .dials
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .remove(&peer);
                     if let Err(reason) = result {
                         shared.emit(NetEvent::DialFailed { peer, reason });
                     }
@@ -275,8 +293,13 @@ impl Shared {
         }
     }
 
-    async fn dial(&self, peer: &ComputerId, targets: Vec<DialTarget>) -> Result<(), String> {
-        let connection = self.dial_targets(peer, &targets).await?;
+    async fn dial(
+        &self,
+        peer: &ComputerId,
+        targets: Vec<DialTarget>,
+        added: mpsc::UnboundedReceiver<Vec<DialTarget>>,
+    ) -> Result<(), String> {
+        let connection = self.dial_targets(peer, targets, added).await?;
         let (mut send, mut recv) = connection.open_bi().await.map_err(|e| e.to_string())?;
         self.send_hello(&mut send).await?;
         let hello = self.read_hello(&mut recv).await?;
@@ -294,17 +317,28 @@ impl Shared {
     async fn dial_targets(
         &self,
         peer: &ComputerId,
-        targets: &[DialTarget],
+        mut targets: Vec<DialTarget>,
+        mut added: mpsc::UnboundedReceiver<Vec<DialTarget>>,
     ) -> Result<Connection, String> {
-        if targets.is_empty() {
-            return Err("no address".into());
-        }
+        let add = |targets: &mut Vec<DialTarget>, more: Vec<DialTarget>| {
+            for target in more {
+                if !targets.contains(&target) {
+                    targets.push(target);
+                }
+            }
+        };
         let mut attempts: JoinSet<Result<Connection, String>> = JoinSet::new();
         let mut indices: HashMap<tokio::task::Id, usize> = HashMap::new();
-        let mut failures = vec![String::new(); targets.len()];
+        let mut failures: HashMap<usize, String> = HashMap::new();
         let mut next = 0;
         let mut start = tokio::time::Instant::now();
-        while next < targets.len() || !attempts.is_empty() {
+        loop {
+            while let Ok(more) = added.try_recv() {
+                add(&mut targets, more);
+            }
+            if next >= targets.len() && attempts.is_empty() {
+                break;
+            }
             tokio::select! {
                 biased;
                 result = attempts.join_next_with_id(), if !attempts.is_empty() => {
@@ -314,21 +348,23 @@ impl Shared {
                                 match result {
                                     Ok(connection) => {
                                         attempts.shutdown().await;
-                                        drop(attempts);
                                         return Ok(connection);
                                     }
-                                    Err(reason) => failures[index] = format!("{}: {reason}", targets[index].host),
+                                    Err(reason) => {
+                                        failures.insert(index, format!("{}: {reason}", targets[index].host));
+                                    }
                                 }
                             }
                         }
                         Some(Err(error)) => {
                             if let Some(index) = indices.remove(&error.id()) {
-                                failures[index] = format!("{}: {error}", targets[index].host);
+                                failures.insert(index, format!("{}: {error}", targets[index].host));
                             }
                         }
                         None => {}
                     }
                 }
+                Some(more) = added.recv() => add(&mut targets, more),
                 _ = tokio::time::sleep_until(start), if next < targets.len() => {
                     let (shared, peer, target) = (self.clone(), peer.clone(), targets[next].clone());
                     let task = attempts.spawn(async move {
@@ -340,7 +376,16 @@ impl Shared {
                 }
             }
         }
-        Err(failures.join("; "))
+        if targets.is_empty() {
+            return Err("no address".into());
+        }
+        let mut failures: Vec<_> = failures.into_iter().collect();
+        failures.sort_by_key(|(index, _)| *index);
+        Err(failures
+            .into_iter()
+            .map(|(_, failure)| failure)
+            .collect::<Vec<_>>()
+            .join("; "))
     }
 
     async fn dial_attempt(
