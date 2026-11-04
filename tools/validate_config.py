@@ -6,6 +6,7 @@ import math
 import ntpath
 import posixpath
 import re
+import shlex
 from pathlib import Path
 
 import jsonschema
@@ -88,13 +89,25 @@ def load_config(path):
 
 
 def operations(device):
-    for key in ('portal-match', 'input-target'):
+    for key in ('portal-match', 'input-target', 'verify'):
         if key in device:
             yield device[key]
     for handoff in device.get('handoff', {}).values():
         yield from handoff['steps']
-        if 'verify' in handoff:
-            yield handoff['verify']
+
+
+def is_absolute(path):
+    return posixpath.isabs(path) or ntpath.isabs(path)
+
+
+def argv(command):
+    """A string splits by POSIX shell rules, with no shell (docs/config.md)."""
+    if isinstance(command, list):
+        return command
+    try:
+        return shlex.split(command)
+    except ValueError as error:
+        raise ValueError(f'cannot split the command: {error}') from None
 
 
 def validate(config, schema):
@@ -120,15 +133,24 @@ def validate(config, schema):
                 elif not any(d['id'] == device_id for d in computers[target]['devices'].values()):
                     errors.append(f'{where}: {target} has no device {device_id}')
             for operation in operations(device):
-                if operation['driver'] != 'command':
+                if operation['driver'] not in ('exec', 'command'):
                     continue
-                options = operation['options']
-                paths = [options['argv'][0]]
-                if 'cwd' in options:
-                    paths.append(options['cwd'])
-                for path in paths:
-                    if not (posixpath.isabs(path) or ntpath.isabs(path)):
-                        errors.append(f'{where}: command path must be absolute: {path}')
+                try:
+                    words = argv(operation['command'])
+                except ValueError as error:
+                    errors.append(f'{where}: {error}')
+                    continue
+                if not words:
+                    errors.append(f'{where}: the command is empty')
+                    continue
+                program = words[0]
+                if ('/' in program or '\\' in program) and not is_absolute(program):
+                    errors.append(f'{where}: a program with a path must be absolute: {program}')
+                if 'cwd' in operation and not is_absolute(operation['cwd']):
+                    errors.append(f'{where}: cwd must be absolute: {operation["cwd"]}')
+        for directory in computer.get('path', []):
+            if not is_absolute(directory):
+                errors.append(f'{computer_id}.path: the directory must be absolute: {directory}')
     return errors
 
 

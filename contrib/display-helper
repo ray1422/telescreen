@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""A driver helper for Telescreen (docs/config.md, "Driver I/O Contract (protocol 1)").
+"""A driver helper for Telescreen (docs/config.md, "The `command` Driver (protocol 2)").
 
 Standard library only. It reads the request JSON on stdin and writes one result.
 
-  display-helper match KEY=VALUE...      portal-match and verify: true if the portal
+  display-helper match KEY=VALUE...      portal-match: true if the portal
                                          display has all these metadata values
   display-helper target KEY=VALUE...     input-target: the token of the one display
                                          that has all these metadata values
   display-helper run -- PROGRAM ARG...   handoff: run the program (no shell);
-                                         exit status 0 is {"ok": true}
+                                         exit status 0 is {"ok": true}. The exec
+                                         driver does the same with no helper.
 
 Metadata keys: macOS has vendor, model, serial, builtin, name. Linux (Wayland)
 has name (the output name, for example HDMI-A-2), description, make, model.

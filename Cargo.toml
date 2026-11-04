@@ -10,6 +10,7 @@ license = "BSD-3-Clause"
 publish = false
 
 [workspace.dependencies]
+shlex = "1"
 telescreen-core = { path = "crates/telescreen-core" }
 telescreen-transport = { path = "crates/telescreen-transport" }
 telescreen-view = { path = "crates/telescreen-view" }

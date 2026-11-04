@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::ids::{ComputerId, DeviceId};
@@ -27,6 +27,9 @@ pub const CONFIG_VERSION: u64 = 1;
 
 /// The default operation timeout (`docs/config.md`).
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(5000);
+
+/// The default timeout of `verify`: a verifier can wait for the user (`docs/config.md`).
+pub const VERIFY_TIMEOUT: Duration = Duration::from_millis(60_000);
 
 /// A config error. Each variant is one validation layer.
 #[derive(Debug, thiserror::Error)]
@@ -59,8 +62,11 @@ pub struct Config {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Computer {
     pub label: Option<String>,
-    /// Plain text for the confirmation prompt of this computer (FLOW-7).
+    /// Plain text for the `prompt` verifier of this computer (VER-5).
     pub hint: Option<String>,
+    /// The directories to find a program name with no `/`. `None` means the
+    /// `PATH` of the login shell (`docs/config.md`, "Programs and the search path").
+    pub path: Option<Vec<PathBuf>>,
     /// Clipboard sync of this computer (CLIP-1).
     #[serde(default)]
     pub clipboard: ClipboardConfig,
@@ -92,15 +98,19 @@ pub struct Device {
     pub label: Option<String>,
     pub portal_match: Option<Operation>,
     pub input_target: Option<Operation>,
+    /// This computer runs it when the device switches to this computer (VER-1).
+    #[serde(default, deserialize_with = "verify_operation")]
+    pub verify: Option<Operation>,
     #[serde(default)]
     pub handoff: BTreeMap<ComputerId, Handoff>,
 }
 
+/// The route of this computer to switch a device to a different computer. It has
+/// no `verify`: the destination verifies (ADR 0009).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Handoff {
     pub steps: Vec<Operation>,
-    pub verify: Option<Operation>,
 }
 
 /// An abstract operation that a driver implements.
@@ -111,22 +121,35 @@ pub struct Operation {
     pub timeout: Duration,
 }
 
+/// A driver defines how Telescreen reads the result of a program (`docs/config.md`).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Driver {
-    /// The baseline `command` driver.
-    Command(CommandOptions),
+    /// Only the exit code: 0 is success or true.
+    Exec(Program),
+    /// Protocol 2: JSON on stdin and stdout.
+    Command(Program),
+    /// The built-in verifier (VER-5). Only in `verify`.
+    Prompt,
     /// A namespaced extension driver, for example `lab.http`. This build has no
     /// extension drivers; the capability check reports them as unsupported.
     Extension { name: String, options: Value },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CommandOptions {
+/// The program of an `exec` or `command` operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Program {
+    /// The program and its arguments. A `command` string is already split.
     pub argv: Vec<String>,
     pub cwd: Option<PathBuf>,
-    #[serde(default)]
     pub env: BTreeMap<String, String>,
+}
+
+/// `command` is a string or a list, as in Docker Compose.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CommandLine {
+    Text(String),
+    List(Vec<String>),
 }
 
 #[derive(Deserialize)]
@@ -134,26 +157,61 @@ pub struct CommandOptions {
 struct RawOperation {
     driver: String,
     timeout_ms: Option<u64>,
-    options: Value,
+    command: Option<CommandLine>,
+    cwd: Option<PathBuf>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    options: Option<Value>,
+}
+
+impl RawOperation {
+    fn into_operation(self, default_timeout: Duration) -> Result<Operation, String> {
+        let program = |command: Option<CommandLine>| -> Result<Program, String> {
+            let argv = match command.ok_or("the driver needs `command`")? {
+                // POSIX shell rules, but no shell runs it.
+                CommandLine::Text(text) => {
+                    shlex::split(&text).ok_or("cannot split the command string")?
+                }
+                CommandLine::List(list) => list,
+            };
+            if argv.is_empty() {
+                return Err("the command is empty".into());
+            }
+            Ok(Program {
+                argv,
+                cwd: self.cwd.clone(),
+                env: self.env.clone(),
+            })
+        };
+        let driver = match self.driver.as_str() {
+            "exec" => Driver::Exec(program(self.command)?),
+            "command" => Driver::Command(program(self.command)?),
+            "prompt" => Driver::Prompt,
+            _ => Driver::Extension {
+                options: self.options.unwrap_or(Value::Null),
+                name: self.driver,
+            },
+        };
+        let timeout = self
+            .timeout_ms
+            .map_or(default_timeout, Duration::from_millis);
+        Ok(Operation { driver, timeout })
+    }
 }
 
 impl TryFrom<RawOperation> for Operation {
     type Error = String;
 
     fn try_from(raw: RawOperation) -> Result<Self, Self::Error> {
-        let driver = if raw.driver == "command" {
-            Driver::Command(serde_json::from_value(raw.options).map_err(|e| e.to_string())?)
-        } else {
-            Driver::Extension {
-                name: raw.driver,
-                options: raw.options,
-            }
-        };
-        let timeout = raw
-            .timeout_ms
-            .map_or(DEFAULT_TIMEOUT, Duration::from_millis);
-        Ok(Self { driver, timeout })
+        raw.into_operation(DEFAULT_TIMEOUT)
     }
+}
+
+fn verify_operation<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Operation>, D::Error> {
+    Option::<RawOperation>::deserialize(d)?
+        .map(|raw| raw.into_operation(VERIFY_TIMEOUT))
+        .transpose()
+        .map_err(serde::de::Error::custom)
 }
 
 impl Config {

@@ -244,14 +244,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Which special shortcuts to support beyond IN-5, and the per-platform list of shortcuts that cannot be captured.
 - The effect of Wi-Fi delay spikes (spike 4: p99 about 85 ms) on the pointer in real use. Measure it in the product.
 - Minimum OS versions for each package. macOS: 27.0 for v0.1.0, the only tested version (user, 2026-10-27). Linux: open.
-- Operation drivers (user, 2026-10-27; to apply to `docs/config.md`, the schema, the validator, and the contract tests):
-  - A driver defines how Telescreen reads the result of a program. It does not define which program runs. The user writes the whole command, also the program.
-  - `command` is a string or a list, as in Docker Compose. A string is split by shell rules, but no shell runs it. A list is used as it is. For a pipe or other shell features, write the shell explicitly, for example `[/bin/sh, -c, "a | b"]`.
-  - Steps run in order and stop at the first error (as now).
-  - Drivers: `exec` (exit code 0 is success or true), `command` (protocol 1, JSON), and drivers for the output format of one tool, for example `betterDisplay` (JSON on stdout) and `ddcutil` (text). A tool driver can compare a value with `expect`.
-  - `open` on macOS starts an app through Launch Services and returns at once. The output of the app does not come back. Use the executable in the app bundle, or `open --stdout`.
-  - A program name with no path is found in the search path (user, 2026-10-27). If the computer section of the config has `path` (a list of directories), use it. Else read `PATH` from the login shell of the user one time at the start. An app that macOS starts from Finder or `open` has only the system directories in its own `PATH`.
-  - No `verify` means no check (user, 2026-10-27). Then forwarding starts when the steps succeed, and the video input shows "unverified". The example configs must add an explicit prompt to keep the current behavior.
+- Drivers for the output format of one tool (for example `betterDisplay` or `ddcutil`, with `expect`): a later version, after their output is measured on the hardware (user, 2026-10-27). The other driver decisions are in `docs/config.md`.
 - A window that does not depend on the portal (a hub) is a different topic.
 
 Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:

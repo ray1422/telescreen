@@ -1,4 +1,4 @@
-//! `command` driver: docs/config.md "Driver I/O Contract (protocol 1)". Unix only.
+//! `command` driver: docs/config.md "The `command` Driver (protocol 2)". Unix only.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests may panic on a failed setup.
 #![cfg(unix)]
 
@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use telescreen_core::config::{CommandOptions, Driver, Operation};
+use telescreen_core::config::{Driver, Operation, Program};
 use telescreen_core::driver::{DeviceRef, DriverError, OperationKind, Outcome, Request, run};
 use telescreen_core::ids::{ComputerId, DisplayToken};
 use telescreen_core::platform::DisplayInfo;
@@ -33,7 +33,7 @@ fn helper(name: &str, body: &str) -> PathBuf {
 
 fn op(program: &Path, timeout_ms: u64) -> Operation {
     Operation {
-        driver: Driver::Command(CommandOptions {
+        driver: Driver::Command(Program {
             argv: vec![program.to_string_lossy().into_owned(), "arg one".into()],
             cwd: None,
             env: BTreeMap::from([("TELESCREEN_TEST".into(), "x".into())]),
@@ -134,7 +134,7 @@ fn request_on_stdin_argv_env_and_cwd() {
     );
     assert_eq!(exec(&body, OperationKind::Handoff).unwrap(), Outcome::Done);
     let request: Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
-    assert_eq!(request["protocol"], 1);
+    assert_eq!(request["protocol"], 2);
     assert_eq!(request["operation"], "handoff");
     assert_eq!(request["computer_id"], "mac");
     assert_eq!(request["device"]["alias"], "Desktop");

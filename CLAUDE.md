@@ -24,7 +24,7 @@ v0.1.0 and v0.2.0 are in development: the code of both is complete, the Cargo wo
 
 1. `docs/spec.md`: the normative product spec with requirement IDs (scope, versions, user flow, input, UI, network, platforms, acceptance criteria, open questions). Refer to its IDs in tests and Codex prompts.
 2. `docs/plan.md`: the work plan to v0.2.0 (crates, the view boundary, who does what, milestones and their status). Keep its status column current.
-3. `docs/config.md`: the normative config and driver I/O contract (protocol 1). This file and `schema/config.schema.json` are the source of truth.
+3. `docs/config.md`: the normative config and driver contract (`exec`, `command` protocol 2, `prompt`). This file and `schema/config.schema.json` are the source of truth.
 4. `docs/architecture.md`: the recommended stack and the input/window limits of each platform, with sources.
 5. `examples/config.yaml`: the reference config. The helper paths are placeholders. `lab.http` is not an implemented driver. `contrib/` has a working helper and a config for one LG display.
 
@@ -49,7 +49,7 @@ uv run --with pyyaml --with jsonschema python tools/validate_config.py examples/
 uv run --with pyyaml --with jsonschema python tools/test_config.py
 ```
 
-To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonschema python -m unittest test_config -k <name>`. JSON Schema checks only the structure. `validate_config.py` does the semantic checks: duplicate ids, dangling handoff targets, self-handoff, a target that does not connect to the same device id, absolute argv paths. If you change the config contract, change `docs/config.md`, the schema, the validator, and the contract tests together.
+To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonschema python -m unittest test_config -k <name>`. JSON Schema checks only the structure. `validate_config.py` does the semantic checks: duplicate ids, dangling handoff targets, self-handoff, a target that does not connect to the same device id, absolute paths for a program with a `/`, `cwd`, and `path`. If you change the config contract, change `docs/config.md`, the schema, the validator, and the contract tests together.
 
 ## Design records
 
@@ -71,7 +71,7 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 
 - The config is YAML, nested computer → devices. A device map key is a local alias. It has no OS meaning. The shared `id` links the same physical device across computers. Only the listed connections exist. Handoff has a direction.
 - The config has no portals. The app makes portal windows at runtime. Runtime state (owner, focus, target, pairing keys) is never in the config.
-- `portal-match`, `input-target`, `handoff.<target>.steps`, and `verify` are abstract operations. Drivers implement them. The core does not hard-code display identification (name/EDID/serial). `command` is the only baseline driver: argv only, no shell, JSON on stdin/stdout. Each non-zero exit is an error. JSON gives the value false.
+- `portal-match`, `input-target`, `handoff.<target>.steps`, and the device `verify` are abstract operations. Drivers implement them. The core does not hard-code display identification (name/EDID/serial). A driver defines only how to read the result; the user writes the whole `command` (a string split by shell rules with no shell, or a list). `exec`: the exit code. `command`: JSON on stdin/stdout (protocol 2; each non-zero exit is an error). `prompt`: the built-in verifier. `verify` is in the device section of the destination (ADR 0009).
 - The physical display owner and the input focus are two different states. The source stays the capture computer, also while the display shows the target. The input focus follows the portal region. Leaving the portal pauses forwarding; it does not end the session.
 - Input has four different capabilities: capture, suppress, forward, inject. A hook callback only captures, decides, and pushes to a bounded queue. It does not call helpers, does not use the network, and does not block. Key/button down and up events must stay in pairs. On disconnect, lease expiry, display removal, or queue overflow, both ends must release all held keys and buttons. Always keep a local release shortcut. Never forward it.
 - Do not claim support for a platform that you did not test (X11 is not all of Linux; Wayland depends on the compositor and portal). Do not invent benchmark numbers.

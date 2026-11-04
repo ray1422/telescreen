@@ -1,6 +1,5 @@
 //! Layer 3 of `docs/config.md`: semantic checks. Parity with `tools/validate_config.py`.
 
-use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use super::{Config, Device, Driver, Operation};
@@ -8,9 +7,9 @@ use super::{Config, Device, Driver, Operation};
 /// Returns one message for each semantic error. An empty list means valid.
 ///
 /// Checks: a device `id` is unique in one computer; a handoff target exists, is
-/// not the computer itself, and has a device with the same `id`; the executable
-/// (`argv[0]`) and `cwd` of each `command` operation are absolute paths in POSIX
-/// or Windows form.
+/// not the computer itself, and has a device with the same `id`; a program with a
+/// path, each `cwd`, and each `path` entry are absolute paths in POSIX or Windows
+/// form. The typed model already split the `command` strings.
 pub fn errors(config: &Config) -> Vec<String> {
     let mut errors = Vec::new();
     for (computer_id, computer) in &config.computers {
@@ -32,7 +31,15 @@ pub fn errors(config: &Config) -> Vec<String> {
                 }
             }
             for operation in operations(device) {
-                command_errors(operation, &where_, &mut errors);
+                program_errors(operation, &where_, &mut errors);
+            }
+        }
+        for directory in computer.path.iter().flatten() {
+            let directory = directory.to_string_lossy();
+            if !absolute_path(&directory) {
+                errors.push(format!(
+                    "{computer_id}.path: the directory must be absolute: {directory}"
+                ));
             }
         }
     }
@@ -44,27 +51,32 @@ fn operations(device: &Device) -> impl Iterator<Item = &Operation> {
         .portal_match
         .iter()
         .chain(device.input_target.iter())
+        .chain(device.verify.iter())
         .chain(
             device
                 .handoff
                 .values()
-                .flat_map(|handoff| handoff.steps.iter().chain(handoff.verify.iter())),
+                .flat_map(|handoff| handoff.steps.iter()),
         )
 }
 
-fn command_errors(operation: &Operation, where_: &str, errors: &mut Vec<String>) {
-    let Driver::Command(options) = &operation.driver else {
+fn program_errors(operation: &Operation, where_: &str, errors: &mut Vec<String>) {
+    let (Driver::Exec(program) | Driver::Command(program)) = &operation.driver else {
         return;
     };
-    let paths = options
-        .argv
-        .first()
-        .map(|path| Cow::Borrowed(path.as_str()))
-        .into_iter()
-        .chain(options.cwd.as_ref().map(|path| path.to_string_lossy()));
-    for path in paths {
-        if !absolute_path(&path) {
-            errors.push(format!("{where_}: command path must be absolute: {path}"));
+    // A program name with no path is found in the search path.
+    if let Some(name) = program.argv.first()
+        && name.contains(['/', '\\'])
+        && !absolute_path(name)
+    {
+        errors.push(format!(
+            "{where_}: a program with a path must be absolute: {name}"
+        ));
+    }
+    if let Some(cwd) = &program.cwd {
+        let cwd = cwd.to_string_lossy();
+        if !absolute_path(&cwd) {
+            errors.push(format!("{where_}: cwd must be absolute: {cwd}"));
         }
     }
 }

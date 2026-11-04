@@ -794,7 +794,8 @@ impl Controller {
             },
             Job::Handoff {
                 steps: handoff.steps,
-                verify: handoff.verify,
+                // The destination verifies from M12 step d (ADR 0009).
+                verify: None,
                 request,
             },
         );

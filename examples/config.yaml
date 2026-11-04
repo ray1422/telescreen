@@ -1,46 +1,43 @@
 # yaml-language-server: $schema=../schema/config.schema.json
-# Design example. You cannot run it directly. You must supply the helper paths and drivers.
-# The computer that a command belongs to runs that command. The JSON context comes through stdin.
+# Design example. You cannot run it directly. You must supply the helpers and drivers.
+# The computer that a command belongs to runs that command. No shell runs a command.
 version: 1
 computers:
   mac:
     label: MacBook
+    path: [/opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin]   # finds lg-helper
     endpoint: {host: mac.local, port: 24800}
     devices:
       Desktop:                         # Only a local alias. It is not for matching OS names.
         id: shared-lg                  # The shared ID of the same physical device
         portal-match:
-          driver: command
-          options:
-            argv: [/Users/me/bin/lg-helper, portal-match]
+          driver: exec                 # exit 0: the portal is on this display
+          command: lg-helper is-portal-display
         input-target:
-          driver: command
-          options:
-            argv: [/Users/me/bin/lg-helper, input-target]
+          driver: command              # protocol 2: returns a display token as JSON
+          command: [lg-helper, input-target]
+        verify:
+          driver: prompt               # after a handoff to the Mac: the prompt on this display
         handoff:
           pc1:
             steps:
-              - driver: command
+              - driver: exec
                 timeout-ms: 3000
-                options:
-                  argv: [/Users/me/bin/lg-helper, select, dp]
-            verify:
-              driver: command
-              options:
-                argv: [/Users/me/bin/lg-helper, is-input, dp]
+                command: lg-helper select dp
           pc2:
             steps:
-              - driver: command
-                options:
-                  argv: [/Users/me/bin/lg-helper, select, hdmi]
+              - driver: exec
+                command: [lg-helper, select, hdmi]
       BuiltIn:
         id: mac-internal               # Connects only to the Mac. It has no switchable targets.
         portal-match:
           driver: command
-          options:
-            argv: [/Users/me/bin/internal-helper, portal-match]
+          command: [/Users/me/bin/internal-helper, portal-match]
       USB:
         id: shared-usb                 # Generic device. It needs no display-identification fields.
+        verify:
+          driver: exec                 # a check with no user: exit 0 when the hub selects the Mac
+          command: [/bin/sh, -c, "system_profiler SPUSBDataType | grep -q 'USB Hub'"]
         handoff:
           pc1:
             steps:
@@ -58,40 +55,35 @@ computers:
       Monitor1:
         id: shared-lg
         portal-match:
-          driver: command
-          options:
-            argv: [/home/me/bin/lg-helper, portal-match]
+          driver: exec
+          command: [/home/me/bin/lg-helper, is-portal-display]
         input-target:
           driver: command
-          options:
-            argv: [/home/me/bin/lg-helper, input-target]
+          command: [/home/me/bin/lg-helper, input-target]
+        verify:
+          driver: prompt
         handoff:
           mac:
             steps:
-              - driver: command
-                options:
-                  argv: [/home/me/bin/lg-helper, select, usb-c]
+              - driver: exec
+                command: ddcutil --mfg GSM setvcp xF4 x0091 --i2c-source-addr=x50 --noverify
           pc2:
             steps:
-              - driver: command
-                options:
-                  argv: [/home/me/bin/lg-helper, select, hdmi]
+              - driver: exec
+                command: [/home/me/bin/lg-helper, select, hdmi]
       SideScreen:
         id: side-screen                # Connects only to PC1 and PC2
         portal-match:
-          driver: command
-          options:
-            argv: [/home/me/bin/side-helper, portal-match]
+          driver: exec
+          command: [/home/me/bin/side-helper, is-portal-display]
         input-target:
           driver: command
-          options:
-            argv: [/home/me/bin/side-helper, input-target]
+          command: [/home/me/bin/side-helper, input-target]
         handoff:
           pc2:
             steps:
-              - driver: command
-                options:
-                  argv: [/home/me/bin/side-helper, select, pc2]
+              - driver: exec
+                command: [/home/me/bin/side-helper, select, pc2]
       Hub:
         id: shared-usb
         handoff:
@@ -109,23 +101,23 @@ computers:
         id: shared-lg
         input-target:
           driver: command
-          options:
-            argv: [/opt/bin/lg-helper, input-target]
+          command: [/opt/bin/lg-helper, input-target]
+        verify:
+          driver: command              # a custom verifier in JSON lines (docs/config.md)
+          timeout-ms: 90000
+          command: [/opt/bin/lg-helper, verify]
         handoff:
           mac:
             steps:
-              - driver: command
-                options:
-                  argv: [/opt/bin/lg-helper, select, usb-c]
+              - driver: exec
+                command: [/opt/bin/lg-helper, select, usb-c]
       OtherScreen:
         id: side-screen
         input-target:
           driver: command
-          options:
-            argv: [/opt/bin/side-helper, input-target]
+          command: [/opt/bin/side-helper, input-target]
         handoff:
           pc1:
             steps:
-              - driver: command
-                options:
-                  argv: [/opt/bin/side-helper, select, pc1]
+              - driver: exec
+                command: [/opt/bin/side-helper, select, pc1]

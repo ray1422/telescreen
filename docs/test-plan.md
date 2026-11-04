@@ -74,7 +74,7 @@ Negative test (AC-21): before the trust step, start both apps (step 2). Each con
 
 ## 4. Linux to Mac (M7, AC-22)
 
-Before this part: the Linux handoff command (`ddcutil` with `--i2c-source-addr=x50`) is not tested. Test it alone first, with the user watching the display: run the `sh -c` command of the config by hand on Linux. It must switch the LG to the Mac and exit with 0.
+Before this part: the Linux handoff command (`ddcutil` with `--i2c-source-addr=x50`) is not tested. Test it alone first, with the user watching the display: run the `ddcutil` command of the config by hand on Linux. It must switch the LG to the Mac and exit with 0.
 
 Repeat the table of part 3 with the roles reversed: the portal on Linux (a fullscreen window on HDMI-A-2), the prompt on the Mac (an overlay window). Differences:
 

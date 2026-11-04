@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use telescreen_core::config::{Config, ConfigError, Driver, yaml};
+use telescreen_core::config::{Config, ConfigError, Driver, Program, yaml};
 use telescreen_core::ids::{ComputerId, DeviceId};
 
 fn example_text() -> String {
@@ -31,23 +31,48 @@ fn example_typed_model() {
     assert_eq!(mac.endpoint.port, 24800);
     let desktop = &mac.devices["Desktop"];
     assert_eq!(desktop.id, DeviceId::from("shared-lg"));
+    assert_eq!(
+        mac.path.as_deref().unwrap()[0],
+        Path::new("/opt/homebrew/bin")
+    );
     let pc1 = &desktop.handoff[&ComputerId::from("pc1")];
     assert_eq!(pc1.steps.len(), 1);
     assert_eq!(pc1.steps[0].timeout, Duration::from_millis(3000));
-    assert!(pc1.verify.is_some());
-    // The default timeout applies when `timeout-ms` is absent.
+    // A `command` string is split by shell rules (docs/config.md).
     assert_eq!(
-        desktop.portal_match.as_ref().unwrap().timeout,
-        Duration::from_millis(5000)
+        pc1.steps[0].driver,
+        Driver::Exec(Program {
+            argv: vec!["lg-helper".into(), "select".into(), "dp".into()],
+            cwd: None,
+            env: Default::default(),
+        })
     );
-    match &desktop.portal_match.as_ref().unwrap().driver {
-        Driver::Command(options) => {
-            assert_eq!(options.argv, ["/Users/me/bin/lg-helper", "portal-match"]);
-            assert!(options.cwd.is_none());
-            assert!(options.env.is_empty());
-        }
+    // The default timeout applies when `timeout-ms` is absent.
+    let portal_match = desktop.portal_match.as_ref().unwrap();
+    assert_eq!(portal_match.timeout, Duration::from_millis(5000));
+    assert!(
+        matches!(&portal_match.driver, Driver::Exec(p) if p.argv == ["lg-helper", "is-portal-display"])
+    );
+    match &desktop.input_target.as_ref().unwrap().driver {
+        Driver::Command(program) => assert_eq!(program.argv, ["lg-helper", "input-target"]),
         other => panic!("expected command, got {other:?}"),
     }
+    // `verify` is on the device of the destination (ADR 0009); its default
+    // timeout is longer, because a verifier can wait for the user.
+    let verify = desktop.verify.as_ref().unwrap();
+    assert_eq!(verify.driver, Driver::Prompt);
+    assert_eq!(verify.timeout, Duration::from_millis(60_000));
+    let pc2 = config.computer(&ComputerId::from("pc2")).unwrap();
+    assert_eq!(
+        pc2.devices["MyScreen"].verify.as_ref().unwrap().timeout,
+        Duration::from_millis(90_000)
+    );
+    // Quotes keep one argument.
+    let pc1_computer = config.computer(&ComputerId::from("pc1")).unwrap();
+    let to_mac = &pc1_computer.devices["Monitor1"].handoff[&ComputerId::from("mac")];
+    assert!(
+        matches!(&to_mac.steps[0].driver, Driver::Exec(p) if p.argv[0] == "ddcutil" && p.argv.len() == 8)
+    );
     match &mac.devices["USB"].handoff[&ComputerId::from("pc1")].steps[0].driver {
         Driver::Extension { name, options } => {
             assert_eq!(name, "lab.http");
@@ -65,10 +90,13 @@ fn device(config: &mut Value) -> &mut Value {
 
 enum Layer {
     Schema,
+    /// The typed model splits a `command` string.
+    Model,
     Semantic,
 }
 
 type Mutation = (&'static str, Layer, fn(&mut Value));
+type Case = (&'static str, fn(&mut Value));
 
 /// The same mutations as `tools/test_config.py`, with the layer that must reject each.
 #[test]
@@ -107,17 +135,56 @@ fn invalid_configurations() {
         ("bad timeout", Layer::Schema, |c| {
             device(c)["portal-match"]["timeout-ms"] = json!(0)
         }),
-        ("empty argv", Layer::Schema, |c| {
-            device(c)["portal-match"]["options"]["argv"] = json!([])
+        ("empty command list", Layer::Schema, |c| {
+            device(c)["portal-match"]["command"] = json!([])
         }),
-        ("relative executable", Layer::Semantic, |c| {
-            device(c)["portal-match"]["options"]["argv"] = json!(["helper"])
+        ("empty command string", Layer::Schema, |c| {
+            device(c)["portal-match"]["command"] = json!("")
+        }),
+        ("blank command string", Layer::Model, |c| {
+            device(c)["portal-match"]["command"] = json!("   ")
+        }),
+        ("unbalanced quote", Layer::Model, |c| {
+            device(c)["portal-match"]["command"] = json!("a 'b")
+        }),
+        ("relative program with a path", Layer::Semantic, |c| {
+            device(c)["portal-match"]["command"] = json!(["bin/helper"])
         }),
         ("relative cwd", Layer::Semantic, |c| {
-            device(c)["portal-match"]["options"]["cwd"] = json!("work")
+            device(c)["portal-match"]["cwd"] = json!("work")
         }),
-        ("unknown command option", Layer::Schema, |c| {
-            device(c)["portal-match"]["options"]["shell"] = json!(true)
+        ("relative search path", Layer::Semantic, |c| {
+            c["computers"]["mac"]["path"] = json!(["bin"])
+        }),
+        ("empty search path", Layer::Schema, |c| {
+            c["computers"]["mac"]["path"] = json!([])
+        }),
+        ("unknown command field", Layer::Schema, |c| {
+            device(c)["portal-match"]["shell"] = json!(true)
+        }),
+        ("options on a built-in driver", Layer::Schema, |c| {
+            device(c)["portal-match"]["options"] = json!({})
+        }),
+        ("command missing", Layer::Schema, |c| {
+            device(c)["portal-match"]
+                .as_object_mut()
+                .unwrap()
+                .remove("command");
+        }),
+        ("prompt out of verify", Layer::Schema, |c| {
+            device(c)["portal-match"] = json!({"driver": "prompt"})
+        }),
+        ("exec for input-target", Layer::Schema, |c| {
+            device(c)["input-target"]["driver"] = json!("exec")
+        }),
+        ("prompt with a field", Layer::Schema, |c| {
+            device(c)["verify"] = json!({"driver": "prompt", "timeout-ms": 1000})
+        }),
+        ("verify on a route", Layer::Schema, |c| {
+            device(c)["handoff"]["pc1"]["verify"] = json!({"driver": "prompt"})
+        }),
+        ("unknown built-in driver", Layer::Schema, |c| {
+            device(c)["portal-match"]["driver"] = json!("shell")
         }),
     ];
     for (name, layer, mutate) in mutations {
@@ -129,6 +196,7 @@ fn invalid_configurations() {
             | (Layer::Semantic, Err(ConfigError::Semantic(errors))) => {
                 assert!(!errors.is_empty(), "{name}: empty error list");
             }
+            (Layer::Model, Err(ConfigError::Model(_))) => {}
             _ => panic!("{name}: wrong result {result:?}"),
         }
     }
@@ -150,6 +218,39 @@ fn semantic_errors_name_the_place() {
 }
 
 #[test]
+fn the_lg_example_is_valid() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../contrib/example-lg.yaml");
+    let text = std::fs::read_to_string(path).unwrap();
+    Config::parse(&text).expect("contrib/example-lg.yaml is valid");
+}
+
+#[test]
+fn valid_commands() {
+    let cases: Vec<Case> = vec![
+        ("program name with no path", |c| {
+            device(c)["portal-match"]["command"] = json!("helper")
+        }),
+        ("command verifier", |c| {
+            device(c)["verify"] = json!({"driver": "command", "command": ["v"]})
+        }),
+        ("exec verifier", |c| {
+            device(c)["verify"] = json!({"driver": "exec", "command": "v"})
+        }),
+        ("extension verifier", |c| {
+            device(c)["verify"] = json!({"driver": "lab.http", "options": {}})
+        }),
+        ("no verify", |c| {
+            device(c).as_object_mut().unwrap().remove("verify");
+        }),
+    ];
+    for (name, mutate) in cases {
+        let mut value = example_value();
+        mutate(&mut value);
+        assert!(Config::from_value(value).is_ok(), "{name}");
+    }
+}
+
+#[test]
 fn windows_absolute_paths_are_accepted_offline() {
     for path in [
         "C:\\helpers\\lg.exe",
@@ -157,7 +258,7 @@ fn windows_absolute_paths_are_accepted_offline() {
         "\\\\server\\share\\lg.exe",
     ] {
         let mut value = example_value();
-        device(&mut value)["portal-match"]["options"]["argv"] = json!([path]);
+        device(&mut value)["portal-match"]["command"] = json!([path]);
         assert!(Config::from_value(value).is_ok(), "{path}");
     }
 }

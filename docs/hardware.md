@@ -51,7 +51,7 @@ Measured on 2026-10-27:
 - A successful `get` writes the value and exits with 0.
 - A failed `get` (unknown display, or a DDC read that fails) writes `Failed.` and exits with 1.
 
-BetterDisplay output is not the JSON of driver protocol 1. A `command` driver needs a helper that runs BetterDisplay and writes the protocol 1 result.
+BetterDisplay output is not the JSON of the `command` driver. Use the `exec` driver for a BetterDisplay `set` (exit code only).
 
 ## Open questions
 

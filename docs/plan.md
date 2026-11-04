@@ -60,7 +60,7 @@ Each step is one commit or more. Claude writes the tests first; Codex implements
 | Step | Content | Status |
 | --- | --- | --- |
 | a | Spec sections 4.5 and 4.6, ADR 0009, ADR 0010, the glossary | done |
-| b | The config contract: `docs/config.md`, the schema, the validator, the contract tests, the Rust config parser, and the example configs, in one change | open points to ask the user |
+| b | The config contract: `docs/config.md`, the schema, the validator, the contract tests, the Rust config parser, and the example configs, in one change | done; `exec` and `prompt` return "not supported" until steps c and d |
 | c | The driver runtime: `exec`, `command`, the search path | not started |
 | d | The verifier runtime (JSON lines, `prompt`) and the device state on the destination | not started |
 | e | Hand back on the wire and in the flows (HB-1 to HB-5, FLOW-17, FLOW-24) | not started |

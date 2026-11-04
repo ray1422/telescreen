@@ -1,4 +1,4 @@
-//! The `command` driver (`docs/config.md`, "Driver I/O Contract (protocol 1)").
+//! The `command` driver (`docs/config.md`, "The `command` Driver (protocol 2)").
 //!
 //! Run operations only on a worker thread: never from an input callback or for a
 //! pointer motion (IN-2).
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::config::{CommandOptions, Driver, Operation};
+use crate::config::{Driver, Operation, Program};
 use crate::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use crate::platform::DisplayInfo;
 use crate::pointer::Rect;
@@ -104,11 +104,14 @@ pub fn run(
     default_cwd: &Path,
 ) -> Result<Outcome, DriverError> {
     let options = match &operation.driver {
-        Driver::Command(options) => options,
+        Driver::Command(program) => program,
+        // M12 step c adds `exec`, and step d adds the verifiers.
+        Driver::Exec(_) => return Err(DriverError::Unsupported("exec".into())),
+        Driver::Prompt => return Err(DriverError::Unsupported("prompt".into())),
         Driver::Extension { name, .. } => return Err(DriverError::Unsupported(name.clone())),
     };
     let input = serde_json::to_vec(&Envelope {
-        protocol: 1,
+        protocol: 2,
         operation: kind,
         request,
     })
@@ -156,7 +159,7 @@ fn parse_result(
 }
 
 fn run_command(
-    options: &CommandOptions,
+    options: &Program,
     input: &[u8],
     timeout: Duration,
     default_cwd: &Path,

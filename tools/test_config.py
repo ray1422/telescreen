@@ -20,6 +20,31 @@ class ConfigContract(unittest.TestCase):
     def test_example(self):
         self.assertEqual(validate(self.example, self.schema), [])
 
+    def test_lg_example(self):
+        self.assertEqual(validate(load_config(ROOT / 'contrib/example-lg.yaml'), self.schema), [])
+
+    def test_valid_commands(self):
+        def device(config):
+            return config['computers']['mac']['devices']['Desktop']
+
+        for name, mutation in {
+            'program name with no path': lambda c: device(c)['portal-match'].update(
+                command='helper'),
+            'quoted argument': lambda c: device(c)['portal-match'].update(
+                command="helper --model 'LG ULTRAWIDE'"),
+            'windows program': lambda c: device(c)['portal-match'].update(
+                command=['C:\\bin\\helper.exe']),
+            'command verifier': lambda c: device(c).update(
+                verify={'driver': 'command', 'command': ['v'], 'timeout-ms': 90000}),
+            'exec verifier': lambda c: device(c).update(verify={'driver': 'exec', 'command': 'v'}),
+            'extension verifier': lambda c: device(c).update(
+                verify={'driver': 'lab.http', 'options': {}}),
+        }.items():
+            with self.subTest(name=name):
+                config = copy.deepcopy(self.example)
+                mutation(config)
+                self.assertEqual(validate(config, self.schema), [])
+
     def test_invalid_configurations(self):
         def device(config):
             return config['computers']['mac']['devices']['Desktop']
@@ -42,11 +67,27 @@ class ConfigContract(unittest.TestCase):
                 id='different'),
             'empty steps': lambda c: device(c)['handoff']['pc1'].update(steps=[]),
             'bad timeout': lambda c: device(c)['portal-match'].update({'timeout-ms': 0}),
-            'empty argv': lambda c: device(c)['portal-match']['options'].update(argv=[]),
-            'relative executable': lambda c: device(c)['portal-match']['options'].update(
-                argv=['helper']),
-            'unknown command option': lambda c: device(c)['portal-match']['options'].update(
-                shell=True),
+            'empty command list': lambda c: device(c)['portal-match'].update(command=[]),
+            'empty command string': lambda c: device(c)['portal-match'].update(command=''),
+            'blank command string': lambda c: device(c)['portal-match'].update(command='   '),
+            'unbalanced quote': lambda c: device(c)['portal-match'].update(command="a 'b"),
+            'relative program with a path': lambda c: device(c)['portal-match'].update(
+                command=['bin/helper']),
+            'relative cwd': lambda c: device(c)['portal-match'].update(cwd='work'),
+            'relative search path': lambda c: c['computers']['mac'].update(path=['bin']),
+            'empty search path': lambda c: c['computers']['mac'].update(path=[]),
+            'unknown command field': lambda c: device(c)['portal-match'].update(shell=True),
+            'options on a built-in driver': lambda c: device(c)['portal-match'].update(
+                options={}),
+            'command missing': lambda c: device(c)['portal-match'].pop('command'),
+            'prompt out of verify': lambda c: device(c).update(
+                {'portal-match': {'driver': 'prompt'}}),
+            'exec for input-target': lambda c: device(c)['input-target'].update(driver='exec'),
+            'prompt with a field': lambda c: device(c).update(
+                verify={'driver': 'prompt', 'timeout-ms': 1000}),
+            'verify on a route': lambda c: device(c)['handoff']['pc1'].update(
+                verify={'driver': 'prompt'}),
+            'unknown built-in driver': lambda c: device(c)['portal-match'].update(driver='shell'),
         }
         for name, mutation in mutations.items():
             with self.subTest(name=name):

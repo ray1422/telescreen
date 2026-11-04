@@ -1,14 +1,14 @@
 # Contributed helpers
 
-Telescreen does not identify displays or switch video inputs itself. Drivers do it (`docs/config.md`). These files help you write a config for the `command` driver.
+Telescreen does not identify displays or switch video inputs itself. Drivers do it (`docs/config.md`). These files help you write a config for the `command` driver (protocol 2).
 
 ## display-helper
 
-A protocol 1 helper in Python 3 (standard library only). Copy it to a fixed location, for example `/usr/local/bin/telescreen-display-helper`, and make it executable. The config must give its absolute path.
+A protocol 2 helper in Python 3 (standard library only). Copy it to a directory in the search path (`docs/config.md`), for example `/usr/local/bin/telescreen-display-helper`, and make it executable.
 
-- `display-helper match KEY=VALUE...`: for `portal-match` and `verify`. The result is true if the portal display has all the metadata values.
+- `display-helper match KEY=VALUE...`: for `portal-match`. The result is true if the portal display has all the metadata values.
 - `display-helper target KEY=VALUE...`: for `input-target`. It selects the one display that has all the metadata values. No match or more than one match is an error.
-- `display-helper run -- PROGRAM ARG...`: for a `handoff` step. It runs the program with no shell. Exit status 0 gives `{"ok": true}`; each other status is an error. A shorter form with an explicit shell also works: `[/bin/sh, -c, "<command> >&2 && echo '{\"ok\":true}'"]` (`example-lg.yaml` uses it). Send the output of the command to stderr: stdout must be only the result.
+- `display-helper run -- PROGRAM ARG...`: for a `handoff` step with the `command` driver. It runs the program with no shell. Exit status 0 gives `{"ok": true}`; each other status is an error. The `exec` driver does the same with no helper (`example-lg.yaml` uses it).
 - `display-helper show`: writes the `displays` of a request to stderr, to find the metadata values. Telescreen logs stderr of a failed helper.
 
 Metadata (see `crates/telescreen-platform-*/src/displays.rs`):

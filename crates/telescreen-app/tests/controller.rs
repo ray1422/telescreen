@@ -29,8 +29,7 @@ use telescreen_transport::{NetCommand, NetEvent};
 use telescreen_view::{Intent, Matching, PromptPresenter, PromptScreen, SessionPhase};
 
 fn config() -> Config {
-    let op =
-        |name: &str| json!({"driver": "command", "options": {"argv": [format!("/bin/{name}")]}});
+    let op = |name: &str| json!({"driver": "command", "command": [format!("/bin/{name}")]});
     serde_json::from_value(json!({
         "version": 1,
         "computers": {
