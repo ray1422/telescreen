@@ -79,6 +79,18 @@ endpoint: {host: [192.0.2.10, my-computer.example], port: 24800, discovery: mdns
 - While a computer is discoverable, computers on the same network can read its fingerprint and host name. A false record cannot connect: mutual TLS identifies each peer (`docs/adr/0011-discovery-with-the-system-responder.md`).
 - A version before 0.4.0 does not accept a config with `discovery` or a list of hosts. Update all computers.
 
+### Scroll on KDE Plasma
+
+Applications animate a scroll from a wheel. On KWin, Telescreen thus injects a scroll as a button scroll. It uses the extra device "Telescreen scroll", and it holds the middle button of this device. No application sees this button. KWin stores the scroll settings of this device in `kcminputrc`.
+
+This is a workaround. To turn it off, add this line to the section of the KDE computer, and start the app again. A scroll is then a wheel scroll:
+
+```yaml
+disabled-quirks: [kwin-button-scroll]
+```
+
+A version before 0.5.0 does not accept a config with `disabled-quirks`.
+
 ## Troubleshooting
 
 ### The pointer on the target stops and then jumps

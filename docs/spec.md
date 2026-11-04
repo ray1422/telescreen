@@ -206,7 +206,7 @@ Record each environment that passed the acceptance criteria. At this time only s
 | Environment | Status |
 | --- | --- |
 | macOS 27.0.1, Apple silicon | Spikes 1, 2, 4 passed. Product not tested. |
-| Linux, KDE Plasma with KWin 6.7.4 (Wayland), x86_64 | Mac to Linux: handoff, pointer, buttons, keys, scroll, and clipboard passed a manual test (user, 2026-11-04). One known problem: the top-left hot corner (issue 1). |
+| Linux, KDE Plasma with KWin 6.7.4 (Wayland), x86_64 | Mac to Linux: handoff, pointer, buttons, keys, scroll, and clipboard passed a manual test (user, 2026-11-04). One known problem: the top-left hot corner (issue 1). KWin 6.8.2: the button scroll of IN-15 passed a manual test with a trackpad (user, 2026-11-05). |
 | Linux, niri 26.04 (Wayland), x86_64 | Mac to Linux and Linux to Mac: the clipboard hardware test passed with the build of IN-15, except session S3 (the Mac portal did not get focus in the test). The user did a short manual check of the other input (2026-11-04). |
 | Linux X11, KDE, GNOME, sway, Hyprland, Windows | Not tested. Do not claim support. |
 
