@@ -1,0 +1,103 @@
+# Make a GitHub release when a commit arrives on the release branch (DIST-3).
+#
+# Optional secrets: MACOS_SIGN_P12 (base64 of a .p12 file) and MACOS_SIGN_PASSWORD.
+# They contain the "Telescreen Dev" code signing identity, so that macOS keeps the
+# permissions across updates. Without them, the macOS build has an ad-hoc signature.
+name: release
+
+on:
+  push:
+    branches: [release]
+
+permissions:
+  contents: read
+
+concurrency: release
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "release v$version exists: change the version in Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --workspace
+      - run: scripts/package-release.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/
+          if-no-files-found: error
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo test --workspace
+      - name: Import the signing identity
+        env:
+          P12: ${{ secrets.MACOS_SIGN_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+        run: |
+          if [ -z "$P12" ]; then
+            echo "::warning::no signing identity: the macOS build has an ad-hoc signature"
+            exit 0
+          fi
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          printf '%s' "$P12" | base64 --decode >"$RUNNER_TEMP/signing.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/signing.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain
+          rm "$RUNNER_TEMP/signing.p12"
+      - run: scripts/package-release.sh dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [version, linux, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cp scripts/install.sh artifacts/install.sh
+          sha=$(sha256sum artifacts/telescreen-linux-x86_64.tar.gz | cut -d' ' -f1)
+          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$sha/" packaging/aur/PKGBUILD.in >artifacts/PKGBUILD
+          (cd artifacts && sha256sum telescreen-*.tar.gz >sha256sums.txt)
+          gh release create "v$VERSION" artifacts/* --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes

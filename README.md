@@ -2,7 +2,21 @@
 
 Telescreen coordinates device switching and keyboard/mouse forwarding through a portal window. It is for environments that have more than one computer and physical connections.
 
-Status: in development. There is no release yet. The first release is v0.3.0 (`docs/spec.md` section 2.1).
+Status: in development. The first release is v0.3.0 (`docs/spec.md` section 2.1).
+
+## Install
+
+macOS on Apple silicon, or Linux on x86_64. The script needs no sudo:
+
+```sh
+curl -fsSL https://github.com/ray1422/telescreen/releases/latest/download/install.sh | sh
+```
+
+Each release also has a `PKGBUILD` for Arch Linux. Run `makepkg -si` in the directory of that file.
+
+The macOS app is not notarized. Use the script: a download with a browser is blocked by Gatekeeper.
+
+## Current state
 
 - The code of the internal milestones v0.1.0 (handoff and keyboard and mouse forwarding, macOS and Linux in both directions) and v0.2.0 (text clipboard) is complete. The automated tests pass on macOS and on Linux (niri).
 - Hardware tests on one Mac and one Linux computer with niri: a session reaches forwarding in both directions, and the text clipboard tests pass. The acceptance tests of `docs/spec.md` section 9 did not all run, and one bug is open (`docs/test-plan.md` section 6). Thus no platform is supported yet (section 8.2).

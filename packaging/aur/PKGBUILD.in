@@ -1,0 +1,25 @@
+# The release workflow replaces the @...@ values (docs/spec.md DIST-3).
+pkgname=telescreen-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Device switching and keyboard and mouse forwarding through a portal window'
+arch=('x86_64')
+url='https://github.com/ray1422/telescreen'
+license=('BSD-3-Clause')
+depends=('gcc-libs' 'glibc' 'libxkbcommon' 'wayland')
+optdepends=('ddcutil: switch the input of a display with the contrib helper'
+            'python: run the contrib helper')
+provides=('telescreen')
+conflicts=('telescreen')
+options=('!strip' '!debug')
+source=("telescreen-$pkgver-linux-x86_64.tar.gz::$url/releases/download/v$pkgver/telescreen-linux-x86_64.tar.gz")
+sha256sums=('@SHA256@')
+
+package() {
+  cd telescreen
+  install -Dm755 telescreen "$pkgdir/usr/bin/telescreen"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/telescreen/README.md"
+  install -Dm644 examples/config.yaml "$pkgdir/usr/share/doc/telescreen/examples/config.yaml"
+  cp -R contrib "$pkgdir/usr/share/doc/telescreen/contrib"
+}

@@ -192,13 +192,14 @@ Record each environment that passed the acceptance criteria. At this time only s
 | Environment | Status |
 | --- | --- |
 | macOS 27.0.1, Apple silicon | Spikes 1, 2, 4 passed. Product not tested. |
-| Linux, KDE Plasma with KWin 6.7.4 (Wayland), x86_64 | Mac to Linux: handoff, pointer, buttons, keys, scroll, and clipboard passed a manual test (user, 2026-11-04). One known problem: the top-left hot corner (`docs/plan.md`, backlog). |
-| Linux, niri 26.04 (Wayland), x86_64 | Spike 3 (pointer) passed. Product not tested. Keyboard injection, layer-shell prompt, and capture not tested. |
+| Linux, KDE Plasma with KWin 6.7.4 (Wayland), x86_64 | Mac to Linux: handoff, pointer, buttons, keys, scroll, and clipboard passed a manual test (user, 2026-11-04). One known problem: the top-left hot corner (issue 1). |
+| Linux, niri 26.04 (Wayland), x86_64 | Mac to Linux and Linux to Mac: the clipboard hardware test passed with the build of IN-15, except session S3 (the Mac portal did not get focus in the test). The user did a short manual check of the other input (2026-11-04). |
 | Linux X11, KDE, GNOME, sway, Hyprland, Windows | Not tested. Do not claim support. |
 
 ### 8.3 Distribution
 
 - **DIST-1** v0.1.0 is built from source: a script makes an ad-hoc signed `Telescreen.app` on macOS, and `cargo install` on Linux.
+- **DIST-3** v0.3.0 is the first binary release (user, 2026-11-04). A push to the `release` branch runs `.github/workflows/release.yml`. It makes a GitHub release with `v<version>` from `Cargo.toml`: an archive for macOS arm64, an archive for Linux x86_64, `sha256sums.txt`, `install.sh`, and a `PKGBUILD`. The user installs with `install.sh`, with no sudo. The `PKGBUILD` is not published to the AUR. The macOS app has the self-signed "Telescreen Dev" signature if the secrets exist, else an ad-hoc signature. It is not notarized, so a download with a browser is blocked by Gatekeeper.
 - **DIST-2** Before a binary release: test the real download path (dmg with quarantine, Gatekeeper, App Translocation) and each signing type that you ship (`docs/spikes.md`, spike 4).
 
 ## 9. Acceptance criteria
