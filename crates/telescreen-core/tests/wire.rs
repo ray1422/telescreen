@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests may panic on a failed setup.
 
 use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
-use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::keys::Key;
 use telescreen_core::pointer::Normalized;
 use telescreen_core::wire::*;
@@ -63,7 +63,11 @@ fn messages_round_trip() {
         },
         Message::Input {
             session: s,
-            event: InputEvent::Scroll { dx: -1.5, dy: 12.0 },
+            event: InputEvent::Scroll {
+                dx: -1.5,
+                dy: 12.0,
+                phase: ScrollPhase::None,
+            },
         },
         Message::ReleaseAll { session: s },
         Message::KeyboardAway { session: s },

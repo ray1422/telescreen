@@ -129,13 +129,15 @@ impl Default for KeyRoutes {
     }
 }
 
-/// The route and keyboard focus change for one event (FLOW-22, FLOW-23).
+/// The route of one event, and whether the portal must ask for the native
+/// keyboard focus (FLOW-22).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decision {
     pub route: Route,
-    /// The new keyboard focus if it changed.
-    /// The capture reports this change before the event (FLOW-23).
-    pub keyboard: Option<bool>,
+    /// A button went down in the portal while the portal has no keyboard focus.
+    /// The window layer asks the OS for the native focus. The keyboard focus
+    /// changes only when the OS reports it ([`InputRouter::set_window_focus`]).
+    pub focus_wanted: bool,
 }
 
 /// Routes pointer input by the cursor and keys by keyboard focus (FLOW-13).
@@ -155,24 +157,23 @@ impl InputRouter {
     }
 
     /// Routes one event and records its down route (IN-3).
-    /// A button down inside the portal takes keyboard focus first (FLOW-22).
+    /// A button down inside the portal asks for the keyboard focus (FLOW-22).
     pub fn route(&mut self, event: &InputEvent, cursor_inside: bool) -> Decision {
-        let keyboard = if cursor_inside && matches!(event, InputEvent::Button { down: true, .. }) {
-            self.set_window_focus(true)
-        } else {
-            None
-        };
+        let focus_wanted = cursor_inside
+            && !self.keyboard_in_portal
+            && matches!(event, InputEvent::Button { down: true, .. });
         let forward_now = match event {
             InputEvent::Key { .. } => self.keyboard_in_portal,
             InputEvent::Button { .. } | InputEvent::Scroll { .. } => cursor_inside,
         };
         Decision {
             route: self.routes.route(event, forward_now),
-            keyboard,
+            focus_wanted,
         }
     }
 
-    /// Records native window focus and returns its new value if changed (FLOW-22).
+    /// Records the native window focus and returns its new value if changed.
+    /// This is the only change of the keyboard focus (FLOW-22).
     pub fn set_window_focus(&mut self, focused: bool) -> Option<bool> {
         if self.keyboard_in_portal == focused {
             return None;

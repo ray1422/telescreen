@@ -122,6 +122,11 @@ impl PromptPresenter for LayerPrompt {
     fn hide(&mut self, prompt: PromptId) {
         let _ = self.commands.send(Command::Hide { prompt });
     }
+
+    /// A blank layer surface is transparent and takes no input.
+    fn keeps_blank(&self) -> bool {
+        true
+    }
 }
 
 struct Surface {
@@ -129,6 +134,9 @@ struct Surface {
     layer: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     buffer: Option<wl_buffer::WlBuffer>,
     screen: PromptScreen,
+    output: String,
+    /// The size of the last configure.
+    size: Option<(u32, u32)>,
 }
 
 struct Overlay {
@@ -187,7 +195,21 @@ impl Overlay {
     }
 
     fn show(&mut self, id: u64, output: &str, screen: PromptScreen) -> Result<(), String> {
+        // FLOW-26: a new surface has an open animation on KWin, so change the
+        // content of a shown surface in place.
+        if let Some(surface) = self.surfaces.get_mut(&id)
+            && surface.output == output
+            && let Some((width, height)) = surface.size
+        {
+            surface.screen = screen;
+            return self.draw(Configure {
+                surface: id,
+                width,
+                height,
+            });
+        }
         self.hide(id);
+        let output_name = output.to_owned();
         let output = self.globals.output(output)?;
         let qh = self.globals.handle();
         let surface = self.compositor.create_surface(&qh, ());
@@ -215,6 +237,8 @@ impl Overlay {
                 layer,
                 buffer: None,
                 screen,
+                output: output_name,
+                size: None,
             },
         );
         self.globals.roundtrip()?;
@@ -253,12 +277,22 @@ impl Overlay {
             return Ok(());
         };
         let (width, height) = (configure.width.max(1), configure.height.max(1));
-        let pixels = crate::text::prompt(
-            width,
-            height,
-            &surface.screen.title().unwrap_or_default(),
-            surface.screen.text.as_deref(),
-        );
+        surface.size = Some((width, height));
+        let pixels = if surface.screen.blank {
+            vec![0; (width * height) as usize]
+        } else {
+            crate::text::draw(
+                width,
+                height,
+                &surface.screen.title().unwrap_or_default(),
+                surface.screen.text.as_deref(),
+                if surface.screen.portal_hidden {
+                    crate::text::WARNING_BACKGROUND
+                } else {
+                    crate::text::BACKGROUND
+                },
+            )
+        };
         let bytes: Vec<u8> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
         let file = shared_memory(bytes.len())?;
         file.write_all_at(&bytes, 0).map_err(|e| e.to_string())?;

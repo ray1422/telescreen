@@ -57,6 +57,8 @@ pub const FIELD_BUTTON_NUMBER: u32 = 3;
 pub const FIELD_KEYCODE: u32 = 9;
 pub const FIELD_SCROLL_POINT_DELTA_1: u32 = 96;
 pub const FIELD_SCROLL_POINT_DELTA_2: u32 = 97;
+pub const FIELD_SCROLL_PHASE: u32 = 99;
+pub const FIELD_MOMENTUM_PHASE: u32 = 123;
 
 // Event flags (CGEventFlags) and the device-dependent bits of IOLLEvent.h.
 pub const FLAG_ALPHA_SHIFT: u64 = 0x0001_0000;
@@ -144,6 +146,12 @@ unsafe extern "C" {
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     pub fn AXIsProcessTrusted() -> bool;
+    pub fn AXUIElementCreateApplication(pid: i32) -> *mut c_void;
+    pub fn AXUIElementSetAttributeValue(
+        element: *mut c_void,
+        attribute: *const c_void,
+        value: *const c_void,
+    ) -> i32;
 }
 
 #[link(name = "Carbon", kind = "framework")]

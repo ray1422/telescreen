@@ -591,6 +591,10 @@ impl App {
         {
             self.hooks.focus_portal(&portal.surface.window);
         }
+        if let Some(portal) = &self.portal {
+            let hidden = self.controller.portal_hidden();
+            self.hooks.portal_hidden(&portal.surface.window, hidden);
+        }
         for request in self.hooks.take_prompt_requests() {
             self.prompt_request(event_loop, request);
         }
@@ -694,7 +698,12 @@ impl App {
                 display,
                 screen,
             } => {
+                let local_ack = screen.source.is_none() && screen.ack_wanted;
                 if let Some(surface) = self.prompts.get_mut(&prompt) {
+                    if local_ack && !(surface.screen.source.is_none() && surface.screen.ack_wanted)
+                    {
+                        platform::prompt_input(&surface.surface.window, true);
+                    }
                     surface.screen = screen;
                     surface.surface.window.request_redraw();
                     return;
@@ -713,6 +722,7 @@ impl App {
                 match event_loop.create_window(attributes) {
                     Ok(window) => {
                         platform::prompt_created(&window);
+                        platform::prompt_input(&window, local_ack);
                         let (surface, error) = Surface::new(window, &mut self.gpu);
                         if let Some(error) = error {
                             self.controller.add_notice(error);
@@ -818,9 +828,14 @@ impl App {
                 }
                 false
             }
-            WindowEvent::Occluded(true) if self.controller.guarded() => {
-                // FLOW-21: keep the portal in place during verification.
-                self.hooks.portal_focus(&window, false, true);
+            WindowEvent::Occluded(occluded) => {
+                if self.hooks.reports_portal_visibility() {
+                    self.controller.set_portal_visible(!occluded);
+                }
+                if *occluded && self.controller.guarded() {
+                    // FLOW-21: keep the portal in place during verification.
+                    self.hooks.portal_focus(&window, false, true);
+                }
                 false
             }
             WindowEvent::Resized(_) | WindowEvent::Moved(_) => {

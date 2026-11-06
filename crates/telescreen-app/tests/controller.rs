@@ -16,7 +16,7 @@ use telescreen_core::clipboard::{ClipboardChange, ClipboardItem};
 use telescreen_core::config::{Config, Driver, Operation};
 use telescreen_core::driver::{OperationKind, Outcome, Request};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken};
-use telescreen_core::input::InputEvent;
+use telescreen_core::input::{InputEvent, ScrollPhase};
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{
     Capability, CapturedEvent, Clipboard, Discovery, DisplayInfo, Displays, FocusHolder, Injector,
@@ -182,6 +182,13 @@ impl InputCapture for Capture {
         let text = if on { "guard on" } else { "guard off" };
         self.0.borrow_mut().capture.push(text.into());
         Ok(())
+    }
+    fn set_portal_visible(&mut self, visible: bool) {
+        let text = if visible { "visible" } else { "hidden" };
+        self.0.borrow_mut().capture.push(text.into());
+    }
+    fn set_portal_focus(&mut self, focused: bool) {
+        self.0.borrow_mut().capture.push(format!("focus {focused}"));
     }
 }
 
@@ -645,6 +652,7 @@ fn in14_the_target_multiplies_a_scroll_by_its_speed() {
         .on_captured(CapturedEvent::Input(InputEvent::Scroll {
             dx: -2.0,
             dy: 8.0,
+            phase: ScrollPhase::None,
         }));
     w.mac
         .controller
@@ -652,7 +660,14 @@ fn in14_the_target_multiplies_a_scroll_by_its_speed() {
     w.pump();
     assert_eq!(
         w.pc1.log.borrow().injected,
-        [InputEvent::Scroll { dx: -1.0, dy: 4.0 }, key(30, true)]
+        [
+            InputEvent::Scroll {
+                dx: -1.0,
+                dy: 4.0,
+                phase: ScrollPhase::None
+            },
+            key(30, true)
+        ]
     );
 }
 
@@ -740,7 +755,7 @@ fn flow7_ac3_prompt_with_hint_on_target() {
     assert_eq!(video, VideoInput::Unverified);
     assert_eq!(
         w.mac.log.borrow().capture,
-        ["arm 3400", "guard on"],
+        ["arm 3400", "focus true", "guard on"],
         "no forwarding before the confirmation; only the guard (FLOW-21)"
     );
 }
@@ -765,7 +780,16 @@ fn flow10_ac5_forwarding_after_confirmation() {
     assert!(!w.pc1.log.borrow().prompt_visible, "the prompt goes away");
     assert_eq!(
         w.mac.log.borrow().capture,
-        ["arm 3400", "guard on", "guard off", "forward"]
+        // FLOW-22, FLOW-26: forwarding starts from the native portal state.
+        [
+            "arm 3400",
+            "focus true",
+            "guard on",
+            "guard off",
+            "forward",
+            "focus true",
+            "visible"
+        ]
     );
     let video = w
         .mac
@@ -926,7 +950,7 @@ fn flow14_ac11_leaving_the_portal_keeps_forwarding() {
     w.mac.controller.on_captured(CapturedEvent::PointerLeft);
     w.pump();
     assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
-    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "forward");
+    assert!(!w.mac.log.borrow().capture.contains(&"disarm".to_string()));
     // The keyboard is still in the portal, so the capture forwards the up (IN-3).
     w.mac
         .controller
@@ -981,22 +1005,122 @@ fn flow23_ac27_one_visible_keyboard_focus() {
 }
 
 #[test]
-fn flow22_input_to_the_portal_gives_it_the_native_focus() {
+fn flow22_a_click_in_the_portal_asks_for_the_native_focus() {
     let mut w = World::new();
     w.advance_to_forwarding();
     w.mac.controller.set_portal_focus(false);
     assert!(!w.mac.controller.take_portal_focus_request());
 
-    // A middle click in the portal: macOS does not focus the window for it.
-    w.mac.controller.on_captured(CapturedEvent::KeyboardEntered);
+    // IN-17: macOS suppresses the click, so the window layer asks for the focus.
+    w.mac.controller.on_captured(CapturedEvent::FocusWanted);
     assert!(w.mac.controller.take_portal_focus_request());
     assert!(!w.mac.controller.take_portal_focus_request(), "once");
 
-    // The native focus comes first: no request.
-    w.mac.controller.on_captured(CapturedEvent::KeyboardLeft);
-    w.mac.controller.on_captured(CapturedEvent::KeyboardEntered);
+    // The native focus comes before the window layer asks: no request.
+    w.mac.controller.on_captured(CapturedEvent::FocusWanted);
     w.mac.controller.set_portal_focus(true);
     assert!(!w.mac.controller.take_portal_focus_request());
+}
+
+#[test]
+fn flow22_a_portal_that_keeps_the_focus_forwards_keys_in_the_next_session() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    // The portal keeps the native focus after the session ends, so the window
+    // layer reports no new focus event.
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
+    w.pump();
+    w.mac.log.borrow_mut().capture.clear();
+    w.mac.controller.start_handoff(ComputerId::from("pc1"));
+    w.pump();
+    w.advance_to_forwarding_from_confirmation();
+    let capture = w.mac.log.borrow().capture.clone();
+    assert!(capture.contains(&"focus true".to_string()), "{capture:?}");
+
+    // A click asks for the focus. The OS has it, so the capture gets it again.
+    w.mac.log.borrow_mut().capture.clear();
+    w.mac.controller.on_captured(CapturedEvent::FocusWanted);
+    assert!(!w.mac.controller.take_portal_focus_request());
+    assert_eq!(w.mac.log.borrow().capture, ["focus true"]);
+}
+
+#[test]
+fn flow26_ac51_the_target_warns_while_the_portal_is_hidden() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let shown = w.pc1.log.borrow().prompts.len();
+
+    // Mission Control opens on the Mac.
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    // The portal keeps the native focus, but the keys stay on the Mac.
+    assert!(
+        w.mac
+            .log
+            .borrow()
+            .capture
+            .ends_with(&["hidden".into(), "focus false".into()])
+    );
+    w.mac.controller.set_portal_focus(true);
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "focus false");
+    assert!(w.mac.controller.portal_hidden());
+    {
+        let log = w.pc1.log.borrow();
+        assert_eq!(
+            log.prompts[shown..],
+            ["MacBook does not show its portal | Input is paused"]
+        );
+        assert!(log.prompt_visible);
+    }
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().prompts.len(), shown + 1, "no change");
+
+    w.mac.controller.set_portal_visible(true);
+    w.pump();
+    assert!(
+        w.mac
+            .log
+            .borrow()
+            .capture
+            .ends_with(&["visible".into(), "focus true".into()])
+    );
+    assert!(!w.mac.controller.portal_hidden());
+    assert!(!w.pc1.log.borrow().prompt_visible);
+}
+
+#[test]
+fn flow26_the_warning_goes_away_with_the_session() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    assert!(w.pc1.log.borrow().prompt_visible);
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
+    w.pump();
+    assert!(!w.pc1.log.borrow().prompt_visible);
+}
+
+#[test]
+fn flow26_a_portal_hidden_before_forwarding_warns_at_the_start() {
+    let mut w = World::new();
+    w.advance_to_confirmation();
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    assert!(!w.mac.controller.portal_hidden(), "not forwarding yet");
+    w.mac.controller.set_portal_visible(true);
+    w.pump();
+    w.mac.controller.set_portal_visible(false);
+    w.advance_to_forwarding_from_confirmation();
+    assert!(w.mac.controller.portal_hidden());
+    assert!(
+        w.pc1
+            .log
+            .borrow()
+            .prompts
+            .iter()
+            .any(|p| p.starts_with("MacBook does not show its portal"))
+    );
 }
 
 #[test]
@@ -1108,7 +1232,10 @@ fn flow11_ac7_timeout_removes_prompt() {
 fn flow21_ac26_guard_from_handoff_to_confirmation() {
     let mut w = World::new();
     w.advance_to_confirmation();
-    assert_eq!(w.mac.log.borrow().capture, ["arm 3400", "guard on"]);
+    assert_eq!(
+        w.mac.log.borrow().capture,
+        ["arm 3400", "focus true", "guard on"]
+    );
     assert!(w.mac.controller.guarded());
 }
 

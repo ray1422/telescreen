@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
-use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::keys::Key;
 use telescreen_core::pointer::Normalized;
 use telescreen_core::session::VideoInput;
@@ -243,7 +243,11 @@ fn flow13_forwards_input_only_while_forwarding() {
         s.on_input(event),
         vec![Send(Message::Input { session: S, event })]
     );
-    let scroll = InputEvent::Scroll { dx: 0.0, dy: 3.0 };
+    let scroll = InputEvent::Scroll {
+        dx: 0.0,
+        dy: 3.0,
+        phase: ScrollPhase::None,
+    };
     assert_eq!(
         s.on_input(scroll),
         vec![Send(Message::Input {

@@ -57,6 +57,8 @@ pub struct SourceSession {
     video: VideoInput,
     ack_wanted: bool,
     keyboard_in_portal: bool,
+    /// The target knows that the portal is on screen (FLOW-26).
+    portal_shown: bool,
     /// An attach runs no handoff steps (ACT-3).
     attach: bool,
     held: HeldInputs,
@@ -82,6 +84,7 @@ impl SourceSession {
             video: VideoInput::Unchanged,
             ack_wanted: false,
             keyboard_in_portal: true,
+            portal_shown: true,
             attach: false,
             held: HeldInputs::default(),
             seq: 0,
@@ -188,6 +191,7 @@ impl SourceSession {
                 }
                 self.last_pointer = None;
                 self.keyboard_in_portal = true;
+                self.portal_shown = true;
                 return vec![SourceAction::StartForwarding];
             }
             Message::End { session, reason } if self.session == Some(session) => {
@@ -250,6 +254,24 @@ impl SourceSession {
             Message::KeyboardBack { session }
         } else {
             Message::KeyboardAway { session }
+        };
+        vec![SourceAction::Send(message)]
+    }
+
+    /// The portal went off or on the screen (FLOW-26). The target shows a warning
+    /// while it is off. The portal starts on screen when forwarding starts.
+    pub fn on_portal_visible(&mut self, visible: bool) -> Vec<SourceAction> {
+        if self.phase != SourcePhase::Forwarding || self.portal_shown == visible {
+            return Vec::new();
+        }
+        let Some(session) = self.session else {
+            return Vec::new();
+        };
+        self.portal_shown = visible;
+        let message = if visible {
+            Message::PortalShown { session }
+        } else {
+            Message::PortalHidden { session }
         };
         vec![SourceAction::Send(message)]
     }

@@ -2,6 +2,8 @@
 //! use only these types. Prompt and window presentation are not here: they belong
 //! to the view layer (`telescreen-view`).
 
+use std::time::Instant;
+
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -72,6 +74,13 @@ pub trait Injector {
     /// Moves the pointer to a position on the input-target display.
     fn pointer(&mut self, at: Normalized) -> Result<(), PlatformError>;
     fn input(&mut self, event: &InputEvent) -> Result<(), PlatformError>;
+    /// Runs the timers of the injector, for example the end of a scroll (IN-18).
+    /// The main loop calls this often.
+    fn tick(&mut self, _now: Instant) -> Result<(), PlatformError> {
+        Ok(())
+    }
+    /// The session of the injector ended or was lost (IN-18).
+    fn end_session(&mut self) {}
 }
 
 /// Holds the keyboard focus away from target applications (UI-7, FLOW-23).
@@ -101,6 +110,9 @@ pub enum CapturedEvent {
     /// The cursor left the portal (FLOW-14).
     /// The session stays in forwarding.
     PointerLeft,
+    /// A button went to the target while the portal has no keyboard focus. The
+    /// window layer asks the OS for the native focus (FLOW-22).
+    FocusWanted,
     /// The portal got the keyboard focus (FLOW-22).
     KeyboardEntered,
     /// The portal lost the keyboard focus (FLOW-22).
@@ -152,6 +164,9 @@ pub trait InputCapture {
     /// The app calls this when the portal's native keyboard focus changes (FLOW-22).
     /// The capture reports `KeyboardEntered` or `KeyboardLeft` if it changed.
     fn set_portal_focus(&mut self, _focused: bool) {}
+    /// The window layer reports whether the portal is on screen (FLOW-26). While
+    /// it is not, the portal area does not count as the portal.
+    fn set_portal_visible(&mut self, _visible: bool) {}
     /// FLOW-21: while the source waits for the confirmation, keeps the portal fixed
     /// and focused. With `on`, the capture suppresses the gestures and shortcuts that
     /// switch Spaces or applications, and the clicks out of the portal. It lets the

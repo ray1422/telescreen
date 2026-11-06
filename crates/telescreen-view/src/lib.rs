@@ -140,10 +140,43 @@ pub struct PromptScreen {
     /// Verifier text; for the built-in prompt, the `hint` of this computer.
     pub text: Option<String>,
     pub ack_wanted: bool,
+    /// The warning of FLOW-26: the source does not show its portal.
+    pub portal_hidden: bool,
+    /// The prompt shows nothing. A presenter that keeps blank prompts
+    /// ([`PromptPresenter::keeps_blank`]) keeps the window, so that the next
+    /// content shows at once, with no open animation (FLOW-26).
+    pub blank: bool,
 }
 
 impl PromptScreen {
+    /// The warning of FLOW-26 on the target, for a session from `source`.
+    pub fn portal_hidden(source: String) -> Self {
+        Self {
+            source: Some(source),
+            confirm_key: String::new(),
+            text: Some("Input is paused".into()),
+            ack_wanted: false,
+            portal_hidden: true,
+            blank: false,
+        }
+    }
+
+    /// The warning of FLOW-26 while the portal is on screen: nothing shows.
+    pub fn portal_shown(source: String) -> Self {
+        Self {
+            blank: true,
+            ..Self::portal_hidden(source)
+        }
+    }
+
     pub fn title(&self) -> Option<String> {
+        if self.blank {
+            return None;
+        }
+        if self.portal_hidden {
+            let source = self.source.as_deref().unwrap_or("The source");
+            return Some(format!("{source} does not show its portal"));
+        }
         self.ack_wanted.then(|| match &self.source {
             Some(source) => format!(
                 "Press {} on {} to control this computer",
@@ -281,6 +314,11 @@ pub trait PromptPresenter {
         screen: &PromptScreen,
     ) -> Result<(), String>;
     fn hide(&mut self, prompt: PromptId);
+    /// True if the presenter can show a blank prompt with no cost to the user:
+    /// nothing shows, and no input goes to it (FLOW-26).
+    fn keeps_blank(&self) -> bool {
+        false
+    }
 }
 
 // ----- The menu and the main window (UI-9, UI-13, UI-18) -----

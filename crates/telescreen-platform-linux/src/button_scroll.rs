@@ -119,8 +119,32 @@ impl Button {
                 self.hold = Hold::Armed;
                 Some(Step::Arm)
             }
+            // The session ended before the arm: the button goes up after it.
+            Hold::Armed if !self.wanted => {
+                self.hold = Hold::Up;
+                Some(Step::ButtonUp)
+            }
             Hold::Up | Hold::Waiting(_) | Hold::Armed => None,
         }
+    }
+
+    /// The scroll ends (IN-18). Only a button up ends a button scroll. Then
+    /// [`Button::poll`] presses the button again.
+    fn end_scroll(&mut self) -> Vec<Step> {
+        match self.hold {
+            Hold::Armed => {
+                self.hold = Hold::Up;
+                vec![Step::ButtonUp]
+            }
+            Hold::Up | Hold::Waiting(_) => Vec::new(),
+        }
+    }
+
+    /// The session ends or is lost (IN-18). The button goes up now if it is
+    /// armed, else after the arm.
+    fn end_session(&mut self) -> Vec<Step> {
+        self.wanted = false;
+        self.end_scroll()
     }
 
     fn armed(&self) -> bool {
@@ -196,6 +220,20 @@ impl ButtonScroll {
         let steps = self.button.start_session(Instant::now());
         self.run(&steps)?;
         self.poll()
+    }
+
+    /// Ends the scroll (IN-18). The counts that wait are lost: they are less than
+    /// one count, or the button is not armed and no scroll started.
+    pub(crate) fn end_scroll(&mut self) -> io::Result<()> {
+        let steps = self.button.end_scroll();
+        self.rest = (0.0, 0.0);
+        self.run(&steps)
+    }
+
+    pub(crate) fn end_session(&mut self) -> io::Result<()> {
+        let steps = self.button.end_session();
+        self.rest = (0.0, 0.0);
+        self.run(&steps)
     }
 
     /// Does the step that is due. The injector calls this for each pointer motion
@@ -434,6 +472,44 @@ mod tests {
             button.finish(after(start, 300)),
             (Duration::ZERO, vec![Step::ButtonUp])
         );
+    }
+
+    #[test]
+    fn in18_an_end_lets_the_button_go_up_and_presses_it_again() {
+        let start = Instant::now();
+        let mut button = Button::new();
+        button.start_session(start);
+        button.poll(true, start);
+        assert_eq!(button.end_scroll(), [], "no scroll before the arm");
+        button.poll(true, after(start, 250));
+
+        assert_eq!(button.end_scroll(), [Step::ButtonUp]);
+        assert_eq!(button.end_scroll(), [], "the button is up");
+        let next = after(start, 400);
+        assert_eq!(button.poll(true, next), Some(Step::ButtonDown));
+        assert_eq!(button.poll(true, after(next, 250)), Some(Step::Arm));
+    }
+
+    #[test]
+    fn in18_the_session_end_lets_the_button_go_up_after_a_motion() {
+        let start = Instant::now();
+        let mut button = Button::new();
+        button.start_session(start);
+        button.poll(true, start);
+        assert_eq!(button.end_session(), [], "not armed yet");
+        assert_eq!(button.poll(true, after(start, 250)), Some(Step::Arm));
+        assert_eq!(button.poll(true, after(start, 260)), Some(Step::ButtonUp));
+        assert_eq!(button.poll(true, after(start, 900)), None, "no session");
+
+        let mut button = Button::new();
+        button.start_session(start);
+        button.poll(true, start);
+        button.poll(true, after(start, 250));
+        assert_eq!(button.end_session(), [Step::ButtonUp]);
+        assert_eq!(button.poll(true, after(start, 900)), None, "no session");
+        let next = after(start, 1000);
+        assert_eq!(button.start_session(next), []);
+        assert_eq!(button.poll(true, next), Some(Step::ButtonDown));
     }
 
     #[test]

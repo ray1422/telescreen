@@ -479,6 +479,8 @@ mod tests {
                         confirm_key: "Return".into(),
                         text: text.clone(),
                         ack_wanted,
+                        portal_hidden: false,
+                        blank: false,
                     };
                     assert_idle_frame(&context, |ui| {
                         prompt(ui, &screen);

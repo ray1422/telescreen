@@ -51,6 +51,9 @@ pub enum TargetAction {
     HoldKeyboard,
     /// Removes the focus holder (FLOW-23, UI-7).
     ReleaseKeyboard,
+    /// Shows or removes the warning that the source does not show its portal
+    /// (FLOW-26). It takes no input.
+    PortalWarning(bool),
     /// Release the device lease of this session.
     ReleaseLease,
     /// Run this computer's route back to the source for the device (HB-1).
@@ -68,6 +71,8 @@ pub struct TargetSession {
     held: HeldInputs,
     pointer_order: PointerOrder,
     keyboard_held: bool,
+    /// The warning of FLOW-26 is shown.
+    portal_warning: bool,
     verification: Option<Verification>,
     verified: bool,
 }
@@ -94,6 +99,7 @@ impl TargetSession {
             held: HeldInputs::default(),
             pointer_order: PointerOrder::default(),
             keyboard_held: false,
+            portal_warning: false,
             verification: None,
             verified: false,
         };
@@ -136,6 +142,8 @@ impl TargetSession {
             | Message::ReleaseAll { session }
             | Message::KeyboardAway { session }
             | Message::KeyboardBack { session }
+            | Message::PortalHidden { session }
+            | Message::PortalShown { session }
             | Message::End { session, .. } => session,
             _ => return Vec::new(),
         };
@@ -182,6 +190,16 @@ impl TargetSession {
             {
                 self.keyboard_held = false;
                 vec![TargetAction::ReleaseKeyboard]
+            }
+            Message::PortalHidden { .. }
+                if self.phase == TargetPhase::Forwarding && !self.portal_warning =>
+            {
+                self.portal_warning = true;
+                vec![TargetAction::PortalWarning(true)]
+            }
+            Message::PortalShown { .. } if self.portal_warning => {
+                self.portal_warning = false;
+                vec![TargetAction::PortalWarning(false)]
             }
             Message::End { reason, .. } => self.finish(*reason, false),
             _ => Vec::new(),
@@ -350,6 +368,10 @@ impl TargetSession {
             self.keyboard_held = false;
             actions.push(TargetAction::ReleaseKeyboard);
         }
+        if self.portal_warning {
+            self.portal_warning = false;
+            actions.push(TargetAction::PortalWarning(false));
+        }
         let verification_actions = self
             .verification
             .as_mut()
@@ -494,7 +516,11 @@ mod tests {
             button: Button::Left,
             down: false,
         };
-        let scroll = InputEvent::Scroll { dx: 1.0, dy: -2.0 };
+        let scroll = InputEvent::Scroll {
+            dx: 1.0,
+            dy: -2.0,
+            phase: crate::input::ScrollPhase::None,
+        };
         let input = |event| Message::Input {
             session: SESSION,
             event,

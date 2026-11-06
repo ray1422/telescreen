@@ -1,7 +1,7 @@
 //! FLOW-13, FLOW-22: pointer input follows the cursor, keys follow the keyboard
-//! focus, and a click in the portal gives the portal the keyboard focus.
+//! focus, and a click in the portal asks for the native keyboard focus.
 
-use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::key_route::{Decision, InputRouter, Route};
 use telescreen_core::keys::Key;
 
@@ -25,14 +25,14 @@ fn left(down: bool) -> InputEvent {
 fn forward() -> Decision {
     Decision {
         route: Route::Forward,
-        keyboard: None,
+        focus_wanted: false,
     }
 }
 
 fn local() -> Decision {
     Decision {
         route: Route::Local,
-        keyboard: None,
+        focus_wanted: false,
     }
 }
 
@@ -61,37 +61,55 @@ fn flow13_pointer_input_follows_the_cursor() {
     r.set_window_focus(true);
     assert_eq!(r.route(&left(true), OUTSIDE), local());
     assert_eq!(r.route(&left(false), OUTSIDE), local());
-    let scroll = InputEvent::Scroll { dx: 0.0, dy: 2.0 };
+    let scroll = InputEvent::Scroll {
+        dx: 0.0,
+        dy: 2.0,
+        phase: ScrollPhase::None,
+    };
     assert_eq!(r.route(&scroll, INSIDE), forward());
     assert_eq!(r.route(&scroll, OUTSIDE), local());
 }
 
 #[test]
-fn flow22_flow23_click_in_the_portal_takes_the_keyboard_first() {
+fn flow22_click_in_the_portal_asks_for_the_native_focus() {
     let mut r = InputRouter::new();
-    // The change comes with the click, so the app can send KeyboardBack before it.
     assert_eq!(
         r.route(&left(true), INSIDE),
         Decision {
             route: Route::Forward,
-            keyboard: Some(true),
+            focus_wanted: true,
         }
     );
-    assert!(r.keyboard_in_portal());
-    // The native focus event comes later and changes nothing.
-    assert_eq!(r.set_window_focus(true), None);
+    // v0.5.0 set the focus here. Then a click that the OS did not follow with
+    // the focus sent all keys to the target until the session ended.
+    assert!(
+        !r.keyboard_in_portal(),
+        "only the OS changes the keyboard focus"
+    );
+    assert_eq!(r.route(&key(30, true), OUTSIDE), local());
+    assert_eq!(r.route(&key(30, false), OUTSIDE), local());
     assert_eq!(r.route(&left(false), INSIDE), forward());
+
+    assert_eq!(r.set_window_focus(true), Some(true));
     assert_eq!(r.route(&key(30, true), OUTSIDE), forward());
+    // With the focus, a click asks for nothing.
+    assert_eq!(r.route(&left(true), INSIDE), forward());
 }
 
 #[test]
-fn flow22_only_a_down_takes_the_keyboard() {
+fn flow22_only_a_down_asks_for_the_keyboard() {
     let mut r = InputRouter::new();
     assert_eq!(r.route(&left(false), INSIDE), local(), "no recorded down");
-    assert!(!r.keyboard_in_portal());
-    let scroll = InputEvent::Scroll { dx: 0.0, dy: 2.0 };
-    r.route(&scroll, INSIDE);
-    assert!(!r.keyboard_in_portal(), "scroll does not take the keyboard");
+    let scroll = InputEvent::Scroll {
+        dx: 0.0,
+        dy: 2.0,
+        phase: ScrollPhase::None,
+    };
+    assert_eq!(
+        r.route(&scroll, INSIDE),
+        forward(),
+        "scroll asks for nothing"
+    );
 }
 
 #[test]

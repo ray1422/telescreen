@@ -1,6 +1,7 @@
 //! Input events that go from the source to the target, and the held-input tracker (IN-3, IN-4).
 
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,21 @@ pub enum Button {
     Back,
     Forward,
 }
+
+/// The phase of a scroll (IN-18). A wheel scroll has no phase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScrollPhase {
+    #[default]
+    None,
+    Begin,
+    Update,
+    /// The scroll is complete, after the momentum if one follows.
+    End,
+}
+
+/// The target ends a scroll this time after the last scroll event that is not
+/// an end (IN-18).
+pub const SCROLL_IDLE_END: Duration = Duration::from_millis(300);
 
 /// An input event on the reliable channel (NET-1). Pointer positions use the
 /// pointer datagram instead (`wire::PointerDatagram`).
@@ -33,6 +49,7 @@ pub enum InputEvent {
     Scroll {
         dx: f32,
         dy: f32,
+        phase: ScrollPhase,
     },
 }
 

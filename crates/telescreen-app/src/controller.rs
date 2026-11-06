@@ -225,9 +225,11 @@ struct Portal {
     display: DisplayInfo,
     bounds: Rect,
     focused: bool,
-    /// The capture gave the keyboard to the portal, but the window does not have
-    /// the native focus yet (FLOW-22).
+    /// A click in the portal asks for the native focus, and the window layer has
+    /// not asked the OS yet (FLOW-22).
     focus_wanted: bool,
+    /// The portal is on screen (FLOW-26).
+    visible: bool,
     guarded: bool,
     matching: Matching,
     match_pending: usize,
@@ -283,6 +285,8 @@ pub struct Controller {
     verifiers: BTreeMap<SessionId, Verifier>,
     next_verifier: u64,
     prompts: BTreeMap<SessionId, PromptId>,
+    /// The warning of FLOW-26 for each incoming session.
+    portal_warnings: BTreeMap<SessionId, PromptId>,
     next_prompt: u64,
     pending_hand_backs: BTreeSet<(ComputerId, DeviceId)>,
     hand_back_verifications: BTreeMap<DeviceId, HandBackVerification>,
@@ -381,6 +385,7 @@ impl Controller {
             verifiers: BTreeMap::new(),
             next_verifier: 1,
             prompts: BTreeMap::new(),
+            portal_warnings: BTreeMap::new(),
             next_prompt: 1,
             pending_hand_backs: BTreeSet::new(),
             hand_back_verifications: BTreeMap::new(),
@@ -472,9 +477,10 @@ impl Controller {
     fn scaled(&self, event: InputEvent) -> InputEvent {
         let speed = self.config.computers[&self.local].scroll_speed;
         match event {
-            InputEvent::Scroll { dx, dy } => InputEvent::Scroll {
+            InputEvent::Scroll { dx, dy, phase } => InputEvent::Scroll {
                 dx: dx * speed,
                 dy: dy * speed,
+                phase,
             },
             other => other,
         }
@@ -537,6 +543,7 @@ impl Controller {
             bounds,
             focused: true,
             focus_wanted: false,
+            visible: true,
             guarded: false,
             matching: Matching::Evaluating,
             match_pending: 0,
@@ -804,8 +811,83 @@ impl Controller {
         if let Some(portal) = self.portal.as_mut() {
             portal.focused = focused;
             portal.focus_wanted &= !focused;
-            self.ports.capture.set_portal_focus(focused);
+            // FLOW-26: a hidden portal can keep the native focus, for example
+            // while Mission Control is open. Then the keys stay on the source.
+            self.ports
+                .capture
+                .set_portal_focus(focused && portal.visible);
         }
+    }
+
+    /// Shows the warning of FLOW-26 for an incoming session, or a blank one.
+    fn show_portal_warning(&mut self, session: SessionId, source: &ComputerId, hidden: bool) {
+        let prompt = match self.portal_warnings.get(&session) {
+            Some(prompt) => *prompt,
+            None => {
+                let prompt = self.allocate_prompt();
+                self.portal_warnings.insert(session, prompt);
+                prompt
+            }
+        };
+        let label = self.label_of(source);
+        let screen = if hidden {
+            PromptScreen::portal_hidden(label)
+        } else {
+            PromptScreen::portal_shown(label)
+        };
+        let shown = match self.find_display(session) {
+            Some(display) => self.ports.prompt.show(prompt, &display, &screen),
+            None => Err("the input-target display is gone".into()),
+        };
+        if let Err(e) = shown {
+            self.notice(format!("Cannot show the portal warning: {e}"));
+        }
+    }
+
+    /// At the start of forwarding, gives the capture and the session the native
+    /// state of the portal. The window layer reports only changes, so the portal
+    /// can keep the focus, or stay off screen, from an earlier session (FLOW-22,
+    /// FLOW-26).
+    fn sync_portal_state(&mut self) {
+        let Some(portal) = self.portal.as_mut() else {
+            return;
+        };
+        let (focused, visible) = (portal.focused && portal.visible, portal.visible);
+        self.ports.capture.set_portal_focus(focused);
+        self.ports.capture.set_portal_visible(visible);
+        let actions = portal
+            .session
+            .as_mut()
+            .map(|session| {
+                let mut actions = session.on_keyboard(focused);
+                actions.extend(session.on_portal_visible(visible));
+                actions
+            })
+            .unwrap_or_default();
+        self.run_source_actions(actions);
+    }
+
+    /// The window layer reports whether the portal is on screen (FLOW-26). While
+    /// it is not, the capture forwards no pointer input, and the target shows a
+    /// warning.
+    pub fn set_portal_visible(&mut self, visible: bool) {
+        let Some(portal) = self.portal.as_mut() else {
+            return;
+        };
+        if portal.visible == visible {
+            return;
+        }
+        portal.visible = visible;
+        self.ports.capture.set_portal_visible(visible);
+        self.ports
+            .capture
+            .set_portal_focus(portal.focused && visible);
+        let actions = portal
+            .session
+            .as_mut()
+            .map(|session| session.on_portal_visible(visible))
+            .unwrap_or_default();
+        self.run_source_actions(actions);
     }
 
     /// The acknowledgement key or a click in the portal (FLOW-8). Returns true
@@ -954,7 +1036,10 @@ impl Controller {
                 SourceAction::StartForwarding => {
                     self.set_guard(false);
                     match self.ports.capture.forward() {
-                        Ok(()) => self.send_pointer(),
+                        Ok(()) => {
+                            self.send_pointer();
+                            self.sync_portal_state();
+                        }
                         Err(e) => {
                             self.notice(format!("Input capture failed: {e}"));
                             let actions = self.end_actions(EndReason::PermissionLost);
@@ -1093,11 +1178,18 @@ impl Controller {
                 return;
             }
             CapturedEvent::PointerLeft => return,
-            CapturedEvent::KeyboardEntered => {
-                // FLOW-22: input that goes to the portal gives the portal the focus.
-                portal.focus_wanted = !portal.focused;
-                session.on_keyboard(true)
+            CapturedEvent::FocusWanted => {
+                if portal.focused {
+                    // The OS reported the focus, but the capture lost it, for
+                    // example at a disarm (FLOW-22).
+                    self.ports.capture.set_portal_focus(portal.visible);
+                } else {
+                    // FLOW-22: the window layer asks the OS for the native focus.
+                    portal.focus_wanted = true;
+                }
+                return;
             }
+            CapturedEvent::KeyboardEntered => session.on_keyboard(true),
             CapturedEvent::KeyboardLeft => session.on_keyboard(false),
             CapturedEvent::InputLost => session.on_input_lost(),
             CapturedEvent::HandBackShortcut => session.request_hand_back(),
@@ -1114,6 +1206,12 @@ impl Controller {
     /// stops its heartbeat and the other peer ends the sessions (ADR 0007, AC-18).
     pub fn tick(&mut self, now: Instant) {
         self.now = now;
+        if let Some(injector) = self.ports.injector.as_mut()
+            && let Err(e) = injector.tick(now)
+        {
+            // Not a notice: the next tick can fail again.
+            eprintln!("telescreen: injection timer: {e}");
+        }
         if self.search_deadline.is_some_and(|deadline| now >= deadline) {
             self.stop_search();
         }
@@ -1482,6 +1580,8 @@ impl Controller {
             | Message::ReleaseAll { session }
             | Message::KeyboardAway { session }
             | Message::KeyboardBack { session }
+            | Message::PortalHidden { session }
+            | Message::PortalShown { session }
             | Message::End { session, .. } => {
                 let session = *session;
                 let Some(target) = self.incoming.get_mut(&session) else {
@@ -1827,6 +1927,8 @@ impl Controller {
                         confirm_key: self.labels.confirm_key.clone(),
                         text,
                         ack_wanted,
+                        portal_hidden: false,
+                        blank: false,
                     };
                     let prompt = match self.prompts.get(&session) {
                         Some(prompt) => *prompt,
@@ -1875,6 +1977,16 @@ impl Controller {
                         queue.extend(more.unwrap_or_default().into_iter().map(TargetWork::Action));
                     }
                 }
+                TargetAction::PortalWarning(true) => {
+                    self.show_portal_warning(session, &source, true)
+                }
+                TargetAction::PortalWarning(false) => {
+                    if self.ports.prompt.keeps_blank() {
+                        self.show_portal_warning(session, &source, false);
+                    } else if let Some(prompt) = self.portal_warnings.remove(&session) {
+                        self.ports.prompt.hide(prompt);
+                    }
+                }
                 TargetAction::ReleaseKeyboard => {
                     if let Some(holder) = self.ports.focus_holder.as_mut() {
                         holder.release();
@@ -1894,6 +2006,10 @@ impl Controller {
                     };
                     if valid {
                         self.injector_session = Some(session);
+                        // FLOW-26: a blank warning now shows at once later.
+                        if self.ports.prompt.keeps_blank() {
+                            self.show_portal_warning(session, &source, false);
+                        }
                     }
                     let more = self
                         .target_mut(session)
@@ -1926,8 +2042,14 @@ impl Controller {
                     self.leases.release(session);
                     self.remove_incoming(session);
                     self.prompts.remove(&session);
+                    if let Some(prompt) = self.portal_warnings.remove(&session) {
+                        self.ports.prompt.hide(prompt);
+                    }
                     if self.injector_session == Some(session) {
                         self.injector_session = None;
+                        if let Some(injector) = self.ports.injector.as_mut() {
+                            injector.end_session();
+                        }
                     }
                 }
                 TargetAction::RunHandBack => self.run_hand_back(source.clone(), device_id.clone()),
@@ -2256,6 +2378,8 @@ impl Controller {
                         confirm_key: self.labels.confirm_key.clone(),
                         text,
                         ack_wanted,
+                        portal_hidden: false,
+                        blank: false,
                     };
                     let shown = match display {
                         Some(display) => self.ports.prompt.show(prompt, &display, &screen),
@@ -2687,6 +2811,11 @@ impl Controller {
     /// True while input is forwarded (FLOW-13).
     pub fn forwarding(&self) -> bool {
         self.portal_phase() == Some(SourcePhase::Forwarding)
+    }
+
+    /// True while forwarding and the portal is not on screen (FLOW-26).
+    pub fn portal_hidden(&self) -> bool {
+        self.forwarding() && self.portal.as_ref().is_some_and(|portal| !portal.visible)
     }
 
     /// True while the portal keeps focus during handoff and verification (FLOW-21).

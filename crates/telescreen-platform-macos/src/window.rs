@@ -2,14 +2,20 @@
 //! functions change only what winit does not offer (spike 1, ADR 0003, UI-1, UI-2).
 //! Call them on the main thread.
 
-use objc2::MainThreadMarker;
+use std::cell::OnceCell;
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+
 use objc2::rc::Retained;
+use objc2::runtime::NSObject;
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAllRomanInputSourcesLocaleIdentifier, NSApplication, NSScreen, NSView, NSWindow,
-    NSWindowCollectionBehavior,
+    NSAllRomanInputSourcesLocaleIdentifier, NSScreen, NSView, NSWindow, NSWindowCollectionBehavior,
+    NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
 };
-use objc2_foundation::{NSArray, NSNumber, NSString};
+use objc2_foundation::{NSArray, NSNotification, NSNumber, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+use crate::ffi;
 
 /// UI-1: above the menu bar (`NSMainMenuWindowLevel` is 24). Spike 1 measured 26.
 const PORTAL_LEVEL: isize = 26;
@@ -65,12 +71,106 @@ pub fn make_overlay(window: &impl HasWindowHandle) {
     window.setIgnoresMouseEvents(true);
 }
 
-/// ADR 0003: while forwarding, make Telescreen the active app again after a Space
-/// change that the event tap could not stop.
-pub fn activate_app() {
-    if let Some(mtm) = MainThreadMarker::new() {
-        #[allow(deprecated)] // `activate` needs macOS 14; this works on all versions.
-        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+/// VER-4: the prompt of a hand back takes the acknowledgement on this computer,
+/// so it takes mouse events and the keyboard focus. The portal of the session
+/// can be closed at this time (ACT-5), so no other window takes them.
+pub fn set_prompt_input(window: &impl HasWindowHandle, on: bool) {
+    if let Some(window) = ns_window(window) {
+        window.setIgnoresMouseEvents(!on);
+    }
+}
+
+/// A Space changed since the last [`take_space_change`] (FLOW-26).
+static SPACE_CHANGED: AtomicBool = AtomicBool::new(false);
+
+define_class!(
+    // SAFETY: a main-thread object with no ivars.
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "TelescreenSpaceObserver"]
+    struct SpaceObserver;
+
+    impl SpaceObserver {
+        // SAFETY: a notification method with one notification argument.
+        #[unsafe(method(activeSpaceDidChange:))]
+        fn active_space_did_change(&self, _notification: &NSNotification) {
+            SPACE_CHANGED.store(true, SeqCst);
+        }
+    }
+);
+
+thread_local! {
+    static SPACE_OBSERVER: OnceCell<Retained<SpaceObserver>> = const { OnceCell::new() };
+}
+
+/// FLOW-26: records each change of the active Space, from now on. Opening
+/// Mission Control is not a Space change.
+pub fn watch_space_changes() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    SPACE_OBSERVER.with(|cell| {
+        cell.get_or_init(|| {
+            // SAFETY: `init` of NSObject.
+            let observer: Retained<SpaceObserver> =
+                unsafe { msg_send![SpaceObserver::alloc(mtm), init] };
+            let center = NSWorkspace::sharedWorkspace().notificationCenter();
+            // SAFETY: the selector has the signature of a notification method,
+            // and the thread-local cell keeps the observer alive.
+            unsafe {
+                center.addObserver_selector_name_object(
+                    &observer,
+                    sel!(activeSpaceDidChange:),
+                    Some(NSWorkspaceActiveSpaceDidChangeNotification),
+                    None,
+                );
+            }
+            observer
+        });
+    });
+}
+
+/// True once after each change of the active Space.
+pub fn take_space_change() -> bool {
+    SPACE_CHANGED.swap(false, SeqCst)
+}
+
+/// FLOW-22: makes Telescreen the frontmost app through Accessibility. macOS can
+/// refuse `activate` for an app in the background. Not tested on hardware: if
+/// macOS can refuse this request too. The app answers the request on its main
+/// thread, so this call runs on a different thread, and it does not wait.
+pub fn make_frontmost() {
+    let spawned = std::thread::Builder::new()
+        .name("frontmost".into())
+        .spawn(|| {
+            // SAFETY: the attribute and the element are released below. The
+            // value is a constant CoreFoundation object.
+            let error = unsafe {
+                let attribute = core_foundation_sys::string::CFStringCreateWithCString(
+                    std::ptr::null(),
+                    c"AXFrontmost".as_ptr(),
+                    core_foundation_sys::string::kCFStringEncodingUTF8,
+                );
+                let app = ffi::AXUIElementCreateApplication(std::process::id() as i32);
+                let error = if app.is_null() || attribute.is_null() {
+                    -1
+                } else {
+                    ffi::AXUIElementSetAttributeValue(
+                        app,
+                        attribute.cast(),
+                        core_foundation_sys::number::kCFBooleanTrue.cast(),
+                    )
+                };
+                ffi::release(app);
+                ffi::release(attribute as *mut _);
+                error
+            };
+            if error != 0 {
+                eprintln!("telescreen: Accessibility: frontmost failed ({error})");
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("telescreen: frontmost: {e}");
     }
 }
 

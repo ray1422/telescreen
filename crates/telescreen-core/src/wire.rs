@@ -22,6 +22,8 @@
 //! Input / ReleaseAll / datagrams ▶         inject
 //! KeyboardAway{session} ────────▶          hold keyboard focus (FLOW-23)
 //! KeyboardBack{session} ────────▶          release keyboard focus holder
+//! PortalHidden{session} ────────▶          show the portal warning (FLOW-26)
+//! PortalShown{session} ─────────▶          hide the portal warning
 //! ClipboardText{session, text} ◀▶          sync text while forwarding (CLIP-2)
 //! ClipboardClear{session}     ◀▶          the sent concealed text went away (CLIP-7)
 //! End{session, reason}  ◀──────▶  End{session, reason}
@@ -89,6 +91,14 @@ pub enum Message {
     },
     /// The portal got the keyboard focus (FLOW-23).
     KeyboardBack {
+        session: SessionId,
+    },
+    /// The portal is not on the screen of the source (FLOW-26).
+    PortalHidden {
+        session: SessionId,
+    },
+    /// The portal is on the screen of the source again (FLOW-26).
+    PortalShown {
         session: SessionId,
     },
     /// Plain text in both directions while forwarding (CLIP-2). `concealed` is the

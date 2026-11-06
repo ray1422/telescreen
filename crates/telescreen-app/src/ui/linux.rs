@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use telescreen_core::config::{Computer, Quirk};
 use telescreen_core::ids::DisplayToken;
-use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::key_route::{InputRouter, Route};
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
@@ -25,7 +25,7 @@ use telescreen_platform_linux::focus::LinuxFocusHolder;
 use telescreen_platform_linux::inhibit::ShortcutInhibitor;
 use telescreen_platform_linux::inject::LinuxInjector;
 use telescreen_platform_linux::prompt::LayerPrompt;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 use winit::monitor::MonitorHandle;
@@ -120,10 +120,9 @@ impl CaptureState {
         if self.mode != Mode::Forwarding {
             return false;
         }
+        // The compositor focuses the portal for the click, and `portal_focus`
+        // reports it (FLOW-22). Thus `focus_wanted` needs nothing here.
         let decision = self.router.route(&input, self.inside);
-        if let Some(focused) = decision.keyboard {
-            self.keyboard_changed(focused);
-        }
         if decision.route == Route::Forward {
             self.events.push(CapturedEvent::Input(input));
             true
@@ -333,6 +332,10 @@ pub(crate) fn window_attributes(attributes: WindowAttributes) -> WindowAttribute
 
 pub(crate) fn prompt_created(_: &Window) {}
 
+/// VER-4: on Linux the layer-shell prompt takes no input. The user acknowledges
+/// in a different window of Telescreen.
+pub(crate) fn prompt_input(_: &Window, _: bool) {}
+
 fn button(button: MouseButton) -> Option<Button> {
     Some(match button {
         MouseButton::Left => Button::Left,
@@ -380,6 +383,14 @@ impl Hooks {
     /// FLOW-22: the compositor gives the portal the focus for the click itself. A
     /// Wayland client cannot take the focus (FLOW-21).
     pub(crate) fn focus_portal(&mut self, _: &Window) {}
+
+    /// FLOW-26: not specified on Linux. A Wayland client cannot reliably find out
+    /// whether its window is shown.
+    pub(crate) fn reports_portal_visibility(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn portal_hidden(&mut self, _: &Window, _: bool) {}
 
     pub(crate) fn portal_focus(&mut self, _: &Window, focused: bool, _: bool) {
         self.capture.0.borrow_mut().portal_focus(focused);
@@ -457,13 +468,22 @@ impl Hooks {
                 }),
                 None => s.forward_now(),
             },
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, phase, .. } => {
                 // winit: positive is up or left. The wire is the opposite.
-                let (dx, dy) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (-x * LINE, -y * LINE),
-                    MouseScrollDelta::PixelDelta(p) => (-p.x as f32, -p.y as f32),
+                let (dx, dy, phase) = match delta {
+                    MouseScrollDelta::LineDelta(x, y) => (-x * LINE, -y * LINE, ScrollPhase::None),
+                    MouseScrollDelta::PixelDelta(p) => (
+                        -p.x as f32,
+                        -p.y as f32,
+                        // IN-18: Wayland ends a finger scroll with `axis_stop`.
+                        match phase {
+                            TouchPhase::Started => ScrollPhase::Begin,
+                            TouchPhase::Moved => ScrollPhase::Update,
+                            TouchPhase::Ended | TouchPhase::Cancelled => ScrollPhase::End,
+                        },
+                    ),
                 };
-                s.route(InputEvent::Scroll { dx, dy })
+                s.route(InputEvent::Scroll { dx, dy, phase })
             }
             _ => false,
         }
