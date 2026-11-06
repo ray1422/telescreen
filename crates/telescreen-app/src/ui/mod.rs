@@ -66,6 +66,9 @@ pub enum UserEvent {
     /// A request of the debug protocol and the channel for its response line.
     #[cfg(feature = "debug-protocol")]
     Debug(crate::debug::Request, crossbeam_channel::Sender<String>),
+    /// An event of the native UI (ADR 0012).
+    #[cfg(target_os = "macos")]
+    Ui(telescreen_ui_macos::UiEvent),
 }
 
 /// The command-line options for starting Telescreen.
@@ -310,6 +313,12 @@ fn start_app(
         swallow_release: false,
         drawn_control: None,
         drawn_portal: None,
+        #[cfg(target_os = "macos")]
+        native: None,
+        #[cfg(target_os = "macos")]
+        menu: telescreen_view::Publisher::new(),
+        #[cfg(target_os = "macos")]
+        proxy: event_loop.create_proxy(),
     })
 }
 
@@ -413,6 +422,14 @@ struct App {
     swallow_release: bool,
     drawn_control: Option<telescreen_view::ControlScreen>,
     drawn_portal: Option<telescreen_view::PortalScreen>,
+    /// The native menu (ADR 0012, UI-9). The egui control window stays until
+    /// the main window replaces it.
+    #[cfg(target_os = "macos")]
+    native: Option<telescreen_ui_macos::MacUi>,
+    #[cfg(target_os = "macos")]
+    menu: telescreen_view::Publisher<telescreen_view::MenuScreen>,
+    #[cfg(target_os = "macos")]
+    proxy: EventLoopProxy<UserEvent>,
 }
 
 impl App {
@@ -583,6 +600,54 @@ impl App {
             && self.drawn_portal != self.controller.portal_screen()
         {
             portal.surface.window.request_redraw();
+        }
+        // UI-18: push the menu only when it changed.
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native
+            && let Some(menu) = self.menu.update(self.controller.menu_screen())
+        {
+            native.push_menu(menu);
+        }
+    }
+
+    /// The native UI and the first `portal-match` of each display (UI-18).
+    fn start_native_ui(&mut self) {
+        #[cfg(target_os = "macos")]
+        if self.native.is_none() {
+            let proxy = self.proxy.clone();
+            match telescreen_ui_macos::MacUi::new(move |event| {
+                let _ = proxy.send_event(UserEvent::Ui(event));
+            }) {
+                Ok(native) => self.native = Some(native),
+                Err(error) => eprintln!("telescreen: no native menu: {error}"),
+            }
+        }
+        let trusted = paths::trust_file().and_then(|path| {
+            telescreen_transport::TrustStore::load(&path).map_err(|e| e.to_string())
+        });
+        match trusted {
+            Ok(store) => self
+                .controller
+                .set_trusted(store.peers().map(|(id, _)| id.clone()).collect()),
+            Err(error) => eprintln!("telescreen: cannot load the trust list: {error}"),
+        }
+        self.controller.evaluate_displays();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn ui_event(&mut self, event_loop: &ActiveEventLoop, event: telescreen_ui_macos::UiEvent) {
+        use telescreen_ui_macos::UiEvent;
+        match event {
+            UiEvent::Intent(intent) => self.handle_intents(event_loop, vec![intent]),
+            UiEvent::Quit => {
+                // UI-15: the same as a quit of the app.
+                self.controller.shutdown();
+                self.close_portal_window();
+                event_loop.exit();
+            }
+            UiEvent::OpenSettings => {
+                eprintln!("telescreen: the settings window is not implemented yet");
+            }
         }
     }
 
@@ -813,6 +878,25 @@ impl App {
                 event_loop.exit();
                 debug::ok_response()
             }
+            Request::Menu { show } => {
+                #[cfg(target_os = "macos")]
+                if let Some(native) = &self.native {
+                    match show {
+                        Some(true) => native.show_menu(),
+                        Some(false) => native.hide_menu(),
+                        None => {}
+                    }
+                    return serde_json::json!({
+                        "ok": true,
+                        "visible": native.menu_visible(),
+                        "frame": native.menu_frame(),
+                        "menu": self.controller.menu_screen(),
+                    })
+                    .to_string();
+                }
+                let _ = show;
+                serde_json::json!({"ok": true, "menu": self.controller.menu_screen()}).to_string()
+            }
         }
     }
 }
@@ -867,6 +951,7 @@ impl ApplicationHandler<UserEvent> for App {
         if self.control.is_some() {
             return;
         }
+        self.start_native_ui();
         let attributes = platform::window_attributes(Window::default_attributes())
             .with_title("Telescreen")
             .with_inner_size(LogicalSize::new(560.0, 520.0));
@@ -930,6 +1015,8 @@ impl ApplicationHandler<UserEvent> for App {
                 let response = self.debug_request(event_loop, request);
                 let _ = reply.send(response);
             }
+            #[cfg(target_os = "macos")]
+            UserEvent::Ui(event) => self.ui_event(event_loop, event),
         }
         self.sync(event_loop);
     }

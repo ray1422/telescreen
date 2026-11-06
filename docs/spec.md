@@ -164,7 +164,7 @@ Menu and entry points:
   - Each row has a stable id: a display has its token, a candidate has its computer id, a session has `Portal` or the session id of an incoming session, and a control request row has the computer id and the device id.
   - Each local display shows its own `portal-match` result. Telescreen evaluates `portal-match` for each display at the start, when the displays change, and with "Refresh". This evaluation dials the candidates of each matching device, as a portal does (NET-10).
   - Each candidate shows each action of ACT-1 with its reason when it is not available. "Switch display only" needs only the route. "Switch & control" and "Control only" need the conditions of FLOW-3.
-  - "Let <peer> control this display" shows for each local device and each peer whose config has `handoff.<this computer>` for that device. While the request waits, the row shows "Waiting for <peer>".
+  - "Let <peer> control this display" shows for each local device and each peer whose config has `handoff.<this computer>` for that device. If the peer is a candidate of that device on a display, the action is in the card of the peer, as in the mockup (user, 2026-11-07). Else it has its own row with the device name. While the request waits, it shows "Waiting for <peer>".
   - The status glyph state (UI-17) is part of the view model: idle, controlling, or controlled. "Menu open" is a state of the UI only.
   - The core gives a new view model when a value changes. A UI draws the newest one and sends intents (ADR 0012). It does not draw each frame.
 

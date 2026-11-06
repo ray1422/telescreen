@@ -42,6 +42,9 @@ pub enum Request {
     /// `{"cmd":"move_control","x":<x>,"y":<y>}`: moves the control window, in
     /// logical pixels. The portal opens on the display of this window.
     MoveControl { x: f64, y: f64 },
+    /// `{"cmd":"menu","show":<bool>}`: opens or closes the native menu (UI-9), and
+    /// returns the last view model and the panel frame. `show` is optional.
+    Menu { show: Option<bool> },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +102,9 @@ pub fn parse_request(line: &str) -> Result<Request, DebugError> {
         "choose_computer" => Ok(Request::ChooseComputer {
             computer: ComputerId::from(string_field(&value, "computer")?),
         }),
+        "menu" => Ok(Request::Menu {
+            show: value.get("show").and_then(Value::as_bool),
+        }),
         "move_control" => Ok(Request::MoveControl {
             x: number_field(&value, "x")?,
             y: number_field(&value, "y")?,
@@ -128,6 +134,11 @@ fn number_field(value: &Value, field: &str) -> Result<f64, DebugError> {
 }
 
 fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
+    // The JSON form of the native UI (UI-18).
+    if value.get("kind").is_some() {
+        return serde_json::from_value(value.clone())
+            .map_err(|error| DebugError::Request(error.to_string()));
+    }
     if let Some(name) = value.as_str() {
         return match name {
             "ClosePortal" => Ok(Intent::ClosePortal),

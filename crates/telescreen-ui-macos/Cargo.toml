@@ -1,0 +1,18 @@
+[package]
+name = "telescreen-ui-macos"
+description = "The native macOS UI of Telescreen: SwiftUI views in windows of the Rust main loop (ADR 0012)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+telescreen-view.workspace = true
+serde_json.workspace = true
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["NSString", "NSArray", "NSGeometry", "NSNotification", "NSObject"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSWindow", "NSPanel", "NSView", "NSResponder", "NSColor", "NSGraphics", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSScreen", "NSImage", "NSRunningApplication"] }

@@ -111,6 +111,8 @@ The sequence can change after the spikes.
   - Step e: the menu view model must show "Waiting for <peer>" for each control request that this peer sent. The controller has it only as `control_request_pending()`.
   - Steps f and g: call `evaluate_displays` at the start; call `set_trusted` with the local trust list (else every computer shows "Not trusted"); push `menu_screen` and `main_screen` through a `Publisher` after each event.
   - Steps f and g: the evaluation at the start runs the `portal-match` helpers of each display and dials the candidates. On macOS, a new install then shows the Local Network question at the start, not at the first portal.
+  - Step f: a `rustc-link-arg` of a dependency does not reach the final binary. `telescreen-app/build.rs` sets the rpath to the Swift runtime. Without it, the bundle does not start ("Library not loaded: @rpath/libswift_Concurrency.dylib"), and macOS shows a dialog that tells the user to ask the developer.
+  - Step f: the status glyph uses system symbols as placeholders until the UI-17 glyph exists.
   - Step h: the window layer must call `take_portal_window_request` also after network events. A received control request sets the request in `on_net`. Without that call, no portal window opens on the receiving peer, and the user cannot acknowledge.
 
 - Corners (user, 2026-11-06): use continuous (G2) corners on all surfaces that Telescreen draws, on both platforms. The HTML mockups use circular corners; do not copy that.
