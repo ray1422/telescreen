@@ -21,6 +21,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telescreen_core::config::Config;
@@ -461,8 +462,17 @@ impl App {
         token: DisplayToken,
         opened: bool,
     ) {
+        // FLOW-26: the title names this portal, so that Accessibility can find it.
+        static NEXT_PORTAL: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_PORTAL.fetch_add(1, Ordering::Relaxed);
+        // UI-13: the main window leaves the display before the portal enters
+        // fullscreen there.
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.set_portal_displays(&cg_ids(&token));
+        }
         let mut attributes = platform::window_attributes(Window::default_attributes())
-            .with_title("Telescreen portal");
+            .with_title(format!("Telescreen portal {id}"));
         // Make the window on the display first. The fullscreen request then uses
         // the display of the window.
         if let Some(bounds) = self.controller.display(&token).and_then(|d| d.bounds) {
@@ -591,9 +601,21 @@ impl App {
         {
             self.hooks.focus_portal(&portal.surface.window);
         }
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            // UI-13: the main window does not take the Space of a portal display.
+            let ids = self
+                .portal
+                .as_ref()
+                .map(|portal| cg_ids(&portal.token))
+                .unwrap_or_default();
+            native.set_portal_displays(&ids);
+        }
         if let Some(portal) = &self.portal {
             let hidden = self.controller.portal_hidden();
-            self.hooks.portal_hidden(&portal.surface.window, hidden);
+            let forwarding = self.controller.forwarding();
+            self.hooks
+                .portal_hidden(&portal.surface.window, hidden, forwarding);
         }
         for request in self.hooks.take_prompt_requests() {
             self.prompt_request(event_loop, request);
@@ -820,6 +842,11 @@ impl App {
         };
         match event {
             WindowEvent::Focused(focused) => {
+                #[cfg(target_os = "macos")]
+                eprintln!(
+                    "telescreen: {}: portal focused: {focused}",
+                    telescreen_platform_macos::clock()
+                );
                 self.controller.set_portal_focus(*focused);
                 self.hooks
                     .portal_focus(&window, *focused, self.controller.guarded());
@@ -829,6 +856,11 @@ impl App {
                 false
             }
             WindowEvent::Occluded(occluded) => {
+                #[cfg(target_os = "macos")]
+                eprintln!(
+                    "telescreen: {}: portal occluded: {occluded}",
+                    telescreen_platform_macos::clock()
+                );
                 if self.hooks.reports_portal_visibility() {
                     self.controller.set_portal_visible(!occluded);
                 }
@@ -1235,4 +1267,15 @@ fn log_job(output: &JobOutput) {
             eprintln!("telescreen: handoff: {result:?} {error:?}")
         }
     }
+}
+
+/// The Core Graphics display id of a macOS display token (`cg-<id>`).
+#[cfg(target_os = "macos")]
+fn cg_ids(token: &DisplayToken) -> Vec<u32> {
+    token
+        .0
+        .strip_prefix("cg-")
+        .and_then(|id| id.parse().ok())
+        .into_iter()
+        .collect()
 }

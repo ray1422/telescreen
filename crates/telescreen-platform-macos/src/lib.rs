@@ -65,3 +65,12 @@ pub fn secure_event_input() -> bool {
     // SAFETY: a read-only query.
     unsafe { ffi::IsSecureEventInputEnabled() }
 }
+
+/// The wall clock time as seconds and milliseconds, for log lines of the window
+/// events (FLOW-26).
+pub fn clock() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}.{:03}", now.as_secs() % 86_400, now.subsec_millis())
+}

@@ -500,7 +500,9 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
                 return keys.router.keyboard_in_portal();
             };
             let forwarded = route(shared, &mut keys, InputEvent::Key { key, down });
-            if forwarded && down && key == Key::ESC && safety_exit(&mut keys) {
+            // IN-8: count each Escape while forwarding, also when the key stays
+            // on macOS, for example while the portal has no focus (FLOW-26).
+            if forwarding && down && key == Key::ESC && safety_exit(&mut keys) {
                 shared.stop(CapturedEvent::SafetyExit);
             }
             forwarded

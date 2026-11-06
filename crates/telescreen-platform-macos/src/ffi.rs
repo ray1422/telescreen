@@ -154,6 +154,16 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+// libdispatch is part of libSystem.
+unsafe extern "C" {
+    pub static _dispatch_main_q: c_void;
+    pub fn dispatch_async_f(
+        queue: *const c_void,
+        context: *mut c_void,
+        work: extern "C" fn(*mut c_void),
+    );
+}
+
 #[link(name = "Carbon", kind = "framework")]
 unsafe extern "C" {
     pub fn IsSecureEventInputEnabled() -> bool;

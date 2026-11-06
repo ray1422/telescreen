@@ -390,7 +390,7 @@ impl Hooks {
         false
     }
 
-    pub(crate) fn portal_hidden(&mut self, _: &Window, _: bool) {}
+    pub(crate) fn portal_hidden(&mut self, _: &Window, _: bool, _: bool) {}
 
     pub(crate) fn portal_focus(&mut self, _: &Window, focused: bool, _: bool) {
         self.capture.0.borrow_mut().portal_focus(focused);

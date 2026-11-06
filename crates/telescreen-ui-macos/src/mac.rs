@@ -12,12 +12,13 @@ use std::time::{Duration, Instant};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWindow};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen, NSWindow};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSImage, NSPanel, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength, NSView, NSWindowDelegate, NSWindowStyleMask,
+    NSVariableStatusItemLength, NSView, NSWindowCollectionBehavior, NSWindowDelegate,
+    NSWindowStyleMask,
 };
-use objc2_foundation::{NSNotification, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSNotification, NSNumber, NSPoint, NSRect, NSSize, NSString};
 use telescreen_view::{Glyph, Intent, MainScreen, MenuScreen};
 
 unsafe extern "C" {
@@ -121,8 +122,86 @@ define_class!(
                     .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
             }
         }
+
+        // SAFETY: the signature matches NSWindowDelegate.
+        #[unsafe(method(windowDidMove:))]
+        fn window_did_move(&self, _notification: &NSNotification) {
+            check_main();
+        }
+
+        // SAFETY: the signature matches NSWindowDelegate.
+        #[unsafe(method(windowDidChangeScreen:))]
+        fn window_did_change_screen(&self, _notification: &NSNotification) {
+            check_main();
+        }
     }
 );
+
+/// UI-13: the main window does not show on a display with a portal: it goes
+/// to the Dock. AppKit tells each move and each change of the screen. First it
+/// moves to a display with no portal, so that it comes back there from the
+/// Dock.
+fn check_main() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let key = NSString::from_str("NSScreenNumber");
+    let id = |screen: &NSScreen| {
+        screen
+            .deviceDescription()
+            .objectForKey(&key)
+            .and_then(|n| n.downcast::<NSNumber>().ok())
+            .map(|n| n.unsignedIntValue())
+    };
+    let portals = PORTALS.with_borrow(Clone::clone);
+    STATE.with(|state| {
+        let Ok(state) = state.try_borrow() else {
+            return;
+        };
+        let Some(state) = state.as_ref() else { return };
+        let main = &state.main;
+        if !main.isVisible() || main.isMiniaturized() {
+            return;
+        }
+        let on_portal = main
+            .screen()
+            .and_then(|screen| id(&screen))
+            .is_some_and(|id| portals.contains(&id));
+        if !on_portal {
+            return;
+        }
+        eprintln!("telescreen: minimize the main window on a portal display");
+        let free = NSScreen::screens(mtm)
+            .iter()
+            .find(|s| id(s).is_some_and(|id| !portals.contains(&id)));
+        if let Some(free) = free {
+            let area = free.visibleFrame();
+            let size = main.frame().size;
+            main.setFrameOrigin(NSPoint::new(
+                area.origin.x + (area.size.width - size.width).max(0.0) / 2.0,
+                area.origin.y + (area.size.height - size.height).max(0.0) / 2.0,
+            ));
+        }
+        main.miniaturize(None);
+        MINIMIZED.set(true);
+    });
+}
+
+/// UI-13: when no portal is open, the main window that Telescreen minimized
+/// comes back.
+fn restore_main() {
+    if !MINIMIZED.replace(false) {
+        return;
+    }
+    STATE.with(|state| {
+        if let Ok(state) = state.try_borrow()
+            && let Some(state) = state.as_ref()
+            && state.main.isMiniaturized()
+        {
+            state.main.deminiaturize(None);
+        }
+    });
+}
 
 define_class!(
     // SAFETY: a main-thread object with no ivars.
@@ -157,6 +236,10 @@ thread_local! {
     /// The size that SwiftUI wants. It can arrive before the panel exists.
     static SIZE: Cell<Option<NSSize>> = const { Cell::new(None) };
     static HIDDEN_AT: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// The Core Graphics ids of the displays with a portal (UI-13).
+    static PORTALS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+    /// Telescreen minimized the main window (UI-13).
+    static MINIMIZED: Cell<bool> = const { Cell::new(false) };
 }
 
 fn emit(event: UiEvent) {
@@ -290,6 +373,7 @@ fn show_main() {
             let _: () = unsafe { msg_send![&*app, activate] };
         }
     });
+    check_main();
 }
 
 /// The native UI. Main thread only; it is not `Send`.
@@ -320,6 +404,14 @@ impl MacUi {
         panel.setOpaque(false);
         panel.setBackgroundColor(Some(&NSColor::clearColor()));
         panel.setHasShadow(true);
+        // UI-13: the menu shows on each Space and over the fullscreen portal, so
+        // that macOS does not change the Space of a portal display for it.
+        panel.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        );
+        // Above the portal (level 26): `NSPopUpMenuWindowLevel`.
+        panel.setLevel(101);
         // SAFETY: the panel lives in STATE and is never released by AppKit.
         unsafe { panel.setReleasedWhenClosed(false) };
         panel.setContentView(Some(&view));
@@ -354,6 +446,13 @@ impl MacUi {
         // SAFETY: the window lives in STATE and is never released by AppKit.
         unsafe { main.setReleasedWhenClosed(false) };
         main.setContentView(Some(&main_view));
+        // UI-13: the main window never becomes fullscreen or a tile. Else the
+        // user can drag it into the portal Space in Mission Control, where it
+        // cannot move away.
+        main.setCollectionBehavior(
+            NSWindowCollectionBehavior::FullScreenNone
+                | NSWindowCollectionBehavior::FullScreenDisallowsTiling,
+        );
         main.center();
         // SAFETY: plain init of a class with no ivars.
         let main_delegate: Retained<MainDelegate> =
@@ -459,6 +558,23 @@ impl MacUi {
                 .and_then(|s| s.as_ref().map(|s| s.main.isVisible()))
                 .unwrap_or(false)
         })
+    }
+
+    /// UI-13: the displays with a portal, as Core Graphics display ids. The
+    /// main window goes to the Dock when it is on one of them, now and later.
+    pub fn set_portal_displays(&self, portals: &[u32]) {
+        let changed = PORTALS.with_borrow_mut(|old| {
+            let changed = old.as_slice() != portals;
+            if changed {
+                *old = portals.to_vec();
+            }
+            changed
+        });
+        if changed && portals.is_empty() {
+            restore_main();
+        } else if changed {
+            check_main();
+        }
     }
 
     /// Closes the main window as the close button does.

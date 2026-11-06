@@ -3,6 +3,7 @@
 //! Call them on the main thread.
 
 use std::cell::OnceCell;
+use std::ffi::{CStr, c_void};
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
 use objc2::rc::Retained;
@@ -94,6 +95,7 @@ define_class!(
         // SAFETY: a notification method with one notification argument.
         #[unsafe(method(activeSpaceDidChange:))]
         fn active_space_did_change(&self, _notification: &NSNotification) {
+            eprintln!("telescreen: {}: the active Space changed", crate::clock());
             SPACE_CHANGED.store(true, SeqCst);
         }
     }
@@ -135,43 +137,97 @@ pub fn take_space_change() -> bool {
     SPACE_CHANGED.swap(false, SeqCst)
 }
 
-/// FLOW-22: makes Telescreen the frontmost app through Accessibility. macOS can
-/// refuse `activate` for an app in the background. Not tested on hardware: if
-/// macOS can refuse this request too. The app answers the request on its main
-/// thread, so this call runs on a different thread, and it does not wait.
-pub fn make_frontmost() {
+/// True if Telescreen is the frontmost app (FLOW-26).
+pub fn is_frontmost() -> bool {
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .is_some_and(|app| app.processIdentifier() == std::process::id() as i32)
+}
+
+/// FLOW-22: makes Telescreen the frontmost app through Accessibility, then
+/// makes `window` the key window on the main thread. When only the app becomes
+/// frontmost, macOS gives the focus to one of its windows on screen, which can
+/// be the main window (FLOW-26). macOS can refuse `activate` for an app in the
+/// background. The Accessibility request runs on a different thread, and this
+/// call does not wait. AppKit windows change only on the main thread: an
+/// in-process `AXMain` request on a different thread stopped the app.
+pub fn make_frontmost(window: Option<&impl HasWindowHandle>) {
+    let window = window
+        .and_then(ns_window)
+        .map(|w| MainWindow(Retained::into_raw(w)));
     let spawned = std::thread::Builder::new()
         .name("frontmost".into())
-        .spawn(|| {
-            // SAFETY: the attribute and the element are released below. The
-            // value is a constant CoreFoundation object.
+        .spawn(move || {
+            let window = window;
+            // SAFETY: the element is valid until the release below.
             let error = unsafe {
-                let attribute = core_foundation_sys::string::CFStringCreateWithCString(
-                    std::ptr::null(),
-                    c"AXFrontmost".as_ptr(),
-                    core_foundation_sys::string::kCFStringEncodingUTF8,
-                );
                 let app = ffi::AXUIElementCreateApplication(std::process::id() as i32);
-                let error = if app.is_null() || attribute.is_null() {
+                if app.is_null() {
                     -1
                 } else {
-                    ffi::AXUIElementSetAttributeValue(
-                        app,
-                        attribute.cast(),
-                        core_foundation_sys::number::kCFBooleanTrue.cast(),
-                    )
-                };
-                ffi::release(app);
-                ffi::release(attribute as *mut _);
-                error
+                    let error = ax_set_true(app, c"AXFrontmost");
+                    ffi::release(app);
+                    error
+                }
             };
             if error != 0 {
                 eprintln!("telescreen: Accessibility: frontmost failed ({error})");
+            }
+            if let Some(MainWindow(window)) = window {
+                // SAFETY: the main queue runs `focus_on_main` once, which takes
+                // the reference of `into_raw`.
+                unsafe {
+                    ffi::dispatch_async_f(
+                        &raw const ffi::_dispatch_main_q,
+                        window.cast(),
+                        focus_on_main,
+                    );
+                }
             }
         });
     if let Err(e) = spawned {
         eprintln!("telescreen: frontmost: {e}");
     }
+}
+
+/// A retained window that only the main thread uses.
+struct MainWindow(*mut NSWindow);
+// SAFETY: the other thread only gives the pointer to the main queue.
+unsafe impl Send for MainWindow {}
+
+extern "C" fn focus_on_main(context: *mut c_void) {
+    // SAFETY: the reference from `Retained::into_raw` in `make_frontmost`.
+    if let Some(window) = unsafe { Retained::from_raw(context.cast::<NSWindow>()) } {
+        window.makeKeyAndOrderFront(None);
+    }
+}
+
+/// Sets a boolean attribute of an AX element to true. Returns the AX error.
+///
+/// # Safety
+/// `element` must be a valid AX element.
+unsafe fn ax_set_true(element: *mut c_void, attribute: &CStr) -> i32 {
+    // SAFETY: a valid C string; we own the result.
+    let attribute = unsafe {
+        core_foundation_sys::string::CFStringCreateWithCString(
+            std::ptr::null(),
+            attribute.as_ptr(),
+            core_foundation_sys::string::kCFStringEncodingUTF8,
+        ) as *mut c_void
+    };
+    if attribute.is_null() {
+        return -1;
+    }
+    // SAFETY: valid element, attribute, and constant value.
+    let error = unsafe {
+        ffi::AXUIElementSetAttributeValue(
+            element,
+            attribute,
+            core_foundation_sys::number::kCFBooleanTrue.cast(),
+        )
+    };
+    ffi::release(attribute);
+    error
 }
 
 /// The localized name of a display (for example "LG HDR WFHD"), for the UI and
