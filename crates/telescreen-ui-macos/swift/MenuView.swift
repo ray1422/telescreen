@@ -10,7 +10,29 @@ struct MenuView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
-        let screen = model.screen
+        MenuContent(screen: model.screen)
+            .padding(12)
+            .frame(width: 330)
+            .background {
+                // UI-16: a fill that Telescreen draws becomes opaque.
+                if reduceTransparency {
+                    RoundedRectangle(cornerRadius: corner, style: .continuous)
+                        .fill(Color(nsColor: .windowBackgroundColor))
+                }
+            }
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
+                send(["ui": "menu_size", "width": size.width, "height": size.height])
+            }
+    }
+}
+
+/// The content of the menu. The main window shows it too (UI-13).
+struct MenuContent: View {
+    let screen: MenuScreen
+    var showsFooter = true
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Telescreen").font(.headline)
@@ -56,21 +78,10 @@ struct MenuView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
             }
-            MenuRow(title: "Telescreen Settings…") { sendUi("open_settings") }
-            MenuRow(title: "Quit Telescreen") { sendUi("quit") }
-        }
-        .padding(12)
-        .frame(width: 330)
-        .background {
-            // UI-16: a fill that Telescreen draws becomes opaque.
-            if reduceTransparency {
-                RoundedRectangle(cornerRadius: corner, style: .continuous)
-                    .fill(Color(nsColor: .windowBackgroundColor))
+            if showsFooter {
+                MenuRow(title: "Telescreen Settings…") { sendUi("open_settings") }
+                MenuRow(title: "Quit Telescreen") { sendUi("quit") }
             }
-        }
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
-            send(["ui": "menu_size", "width": size.width, "height": size.height])
         }
     }
 }

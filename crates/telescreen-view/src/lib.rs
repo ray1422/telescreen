@@ -31,7 +31,7 @@ pub struct ControlScreen {
 }
 
 /// "Allow discovery" (NET-14).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveryRow {
     /// The seconds until the end, or `None` if this computer is not discoverable.
     pub remaining_seconds: Option<u64>,
@@ -409,6 +409,8 @@ pub struct MainScreen {
     pub computers: Vec<ComputerRow>,
     /// The device states with "It is back" for an unknown device (VER-6).
     pub devices: Vec<DeviceRow>,
+    /// `None` if this computer has no `endpoint.discovery` (NET-14).
+    pub discovery: Option<DiscoveryRow>,
     pub notices: Vec<String>,
 }
 

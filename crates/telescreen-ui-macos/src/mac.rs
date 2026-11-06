@@ -12,18 +12,26 @@ use std::time::{Duration, Instant};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWindow};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSImage, NSPanel, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength, NSView, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{NSNotification, NSPoint, NSRect, NSSize, NSString};
-use telescreen_view::{Glyph, Intent, MenuScreen};
+use telescreen_view::{Glyph, Intent, MainScreen, MenuScreen};
 
 unsafe extern "C" {
     fn ts_set_event_callback(callback: extern "C" fn(*const c_char));
     fn ts_make_menu_view() -> *mut NSView;
     fn ts_push_menu(bytes: *const u8, len: usize) -> bool;
+    fn ts_make_main_view() -> *mut NSView;
+    fn ts_push_main(bytes: *const u8, len: usize) -> bool;
 }
+
+/// The Apple Event of a second start and of a click on the Dock icon:
+/// `kCoreEventClass` ('aevt') and `kAEReopenApplication` ('rapp').
+const CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
+const REOPEN_APPLICATION: u32 = u32::from_be_bytes(*b"rapp");
 
 /// What the user did in the native UI.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,7 +101,50 @@ define_class!(
 /// The receiver of the UI events (`MacUi::new`).
 type Sink = Box<dyn Fn(UiEvent)>;
 
+define_class!(
+    // SAFETY: a main-thread object with no ivars.
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "TelescreenMainDelegate"]
+    struct MainDelegate;
+
+    unsafe impl NSObjectProtocol for MainDelegate {}
+
+    unsafe impl NSWindowDelegate for MainDelegate {
+        // SAFETY: the signature matches NSWindowDelegate.
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            // UI-14 default: the Dock icon shows only while a window is open.
+            // UI-15: the app continues to run.
+            if let Some(mtm) = MainThreadMarker::new() {
+                NSApplication::sharedApplication(mtm)
+                    .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+            }
+        }
+    }
+);
+
+define_class!(
+    // SAFETY: a main-thread object with no ivars.
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "TelescreenReopenHandler"]
+    struct ReopenHandler;
+
+    impl ReopenHandler {
+        // SAFETY: the signature of an NSAppleEventManager handler.
+        #[unsafe(method(handleReopen:withReplyEvent:))]
+        fn handle_reopen(&self, _event: Option<&AnyObject>, _reply: Option<&AnyObject>) {
+            // UI-15: a second start opens the main window of this instance.
+            show_main();
+        }
+    }
+);
+
 struct State {
+    main: Retained<NSWindow>,
+    _main_delegate: Retained<MainDelegate>,
+    _reopen: Retained<ReopenHandler>,
     panel: Retained<MenuPanel>,
     item: Retained<NSStatusItem>,
     _target: Retained<StatusTarget>,
@@ -223,6 +274,24 @@ fn show() {
     });
 }
 
+fn show_main() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    hide();
+    STATE.with(|state| {
+        if let Ok(state) = state.try_borrow()
+            && let Some(state) = state.as_ref()
+        {
+            let app = NSApplication::sharedApplication(mtm);
+            app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+            state.main.makeKeyAndOrderFront(None);
+            // SAFETY: `activate` takes no argument (macOS 14 and later).
+            let _: () = unsafe { msg_send![&*app, activate] };
+        }
+    });
+}
+
 /// The native UI. Main thread only; it is not `Send`.
 #[derive(Debug)]
 pub struct MacUi {
@@ -268,8 +337,45 @@ impl MacUi {
                 button.setAction(Some(sel!(toggleMenu:)));
             }
         }
+        // SAFETY: ts_make_main_view returns a +1 retained NSHostingView.
+        let main_view: Retained<NSView> = unsafe { Retained::from_raw(ts_make_main_view()) }
+            .ok_or("Swift returned no main view")?;
+        let style = NSWindowStyleMask::Titled
+            | NSWindowStyleMask::Closable
+            | NSWindowStyleMask::Miniaturizable
+            | NSWindowStyleMask::Resizable;
+        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(900.0, 600.0));
+        // SAFETY: the NSWindow designated initializer, on the main thread.
+        let main: Retained<NSWindow> = unsafe {
+            msg_send![NSWindow::alloc(mtm), initWithContentRect: rect, styleMask: style,
+                backing: NSBackingStoreType::Buffered, defer: false]
+        };
+        main.setTitle(&NSString::from_str("Telescreen"));
+        // SAFETY: the window lives in STATE and is never released by AppKit.
+        unsafe { main.setReleasedWhenClosed(false) };
+        main.setContentView(Some(&main_view));
+        main.center();
+        // SAFETY: plain init of a class with no ivars.
+        let main_delegate: Retained<MainDelegate> =
+            unsafe { msg_send![MainDelegate::alloc(mtm), init] };
+        main.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(
+            &*main_delegate,
+        )));
+        // SAFETY: plain init of a class with no ivars.
+        let reopen: Retained<ReopenHandler> = unsafe { msg_send![ReopenHandler::alloc(mtm), init] };
+        // SAFETY: NSAppleEventManager keeps an unretained handler; STATE keeps it.
+        unsafe {
+            let manager: *mut AnyObject =
+                msg_send![objc2::class!(NSAppleEventManager), sharedAppleEventManager];
+            let _: () = msg_send![manager, setEventHandler: &*reopen,
+                andSelector: sel!(handleReopen:withReplyEvent:),
+                forEventClass: CORE_EVENT_CLASS, andEventID: REOPEN_APPLICATION];
+        }
         STATE.with_borrow_mut(|s| {
             *s = Some(State {
+                main,
+                _main_delegate: main_delegate,
+                _reopen: reopen,
                 panel,
                 item,
                 _target: target,
@@ -325,6 +431,53 @@ impl MacUi {
                 button.setImage(Some(&image));
             }
         });
+    }
+
+    /// Gives a full snapshot to the main window (UI-13, UI-18).
+    pub fn push_main(&self, main: &MainScreen) {
+        match serde_json::to_vec(main) {
+            // SAFETY: the bytes are valid for the call; Swift copies them.
+            Ok(json) => {
+                if !unsafe { ts_push_main(json.as_ptr(), json.len()) } {
+                    eprintln!("telescreen: the main window did not accept the view model");
+                }
+            }
+            Err(e) => eprintln!("telescreen: cannot encode the main window: {e}"),
+        }
+    }
+
+    /// Opens the main window and shows the Dock icon (UI-13, UI-14).
+    pub fn show_main_window(&self) {
+        show_main();
+    }
+
+    pub fn main_window_visible(&self) -> bool {
+        STATE.with(|state| {
+            state
+                .try_borrow()
+                .ok()
+                .and_then(|s| s.as_ref().map(|s| s.main.isVisible()))
+                .unwrap_or(false)
+        })
+    }
+
+    /// Closes the main window as the close button does.
+    pub fn close_main_window(&self) {
+        STATE.with(|state| {
+            if let Ok(state) = state.try_borrow()
+                && let Some(state) = state.as_ref()
+            {
+                state.main.performClose(None);
+            }
+        });
+    }
+
+    /// The activation policy: true while the Dock icon shows.
+    pub fn dock_icon_visible(&self) -> bool {
+        MainThreadMarker::new().is_some_and(|mtm| {
+            NSApplication::sharedApplication(mtm).activationPolicy()
+                == NSApplicationActivationPolicy::Regular
+        })
     }
 
     /// Opens the menu below the status item.

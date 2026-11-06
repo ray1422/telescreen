@@ -318,6 +318,8 @@ fn start_app(
         #[cfg(target_os = "macos")]
         menu: telescreen_view::Publisher::new(),
         #[cfg(target_os = "macos")]
+        main: telescreen_view::Publisher::new(),
+        #[cfg(target_os = "macos")]
         proxy: event_loop.create_proxy(),
     })
 }
@@ -428,6 +430,8 @@ struct App {
     native: Option<telescreen_ui_macos::MacUi>,
     #[cfg(target_os = "macos")]
     menu: telescreen_view::Publisher<telescreen_view::MenuScreen>,
+    #[cfg(target_os = "macos")]
+    main: telescreen_view::Publisher<telescreen_view::MainScreen>,
     #[cfg(target_os = "macos")]
     proxy: EventLoopProxy<UserEvent>,
 }
@@ -603,10 +607,34 @@ impl App {
         }
         // UI-18: push the menu only when it changed.
         #[cfg(target_os = "macos")]
-        if let Some(native) = &self.native
-            && let Some(menu) = self.menu.update(self.controller.menu_screen())
-        {
-            native.push_menu(menu);
+        if let Some(native) = &self.native {
+            if let Some(menu) = self.menu.update(self.controller.menu_screen()) {
+                native.push_menu(menu);
+            }
+            if let Some(main) = self.main.update(self.controller.main_screen()) {
+                native.push_main(main);
+            }
+        }
+    }
+
+    /// The egui control window (until the native main window replaces it).
+    #[cfg(not(target_os = "macos"))]
+    fn open_control_window(&mut self, event_loop: &ActiveEventLoop) {
+        let attributes = platform::window_attributes(Window::default_attributes())
+            .with_title("Telescreen")
+            .with_inner_size(LogicalSize::new(560.0, 520.0));
+        match event_loop.create_window(attributes) {
+            Ok(window) => {
+                let (surface, error) = Surface::new(window, &mut self.gpu);
+                if let Some(error) = error {
+                    eprintln!("telescreen: {error}");
+                }
+                self.control = Some(surface);
+            }
+            Err(e) => {
+                eprintln!("telescreen: cannot open the window: {e}");
+                event_loop.exit();
+            }
         }
     }
 
@@ -897,6 +925,24 @@ impl App {
                 let _ = show;
                 serde_json::json!({"ok": true, "menu": self.controller.menu_screen()}).to_string()
             }
+            Request::MainWindow { show } => {
+                #[cfg(target_os = "macos")]
+                if let Some(native) = &self.native {
+                    match show {
+                        Some(true) => native.show_main_window(),
+                        Some(false) => native.close_main_window(),
+                        None => {}
+                    }
+                    return serde_json::json!({
+                        "ok": true,
+                        "visible": native.main_window_visible(),
+                        "dock_icon": native.dock_icon_visible(),
+                    })
+                    .to_string();
+                }
+                let _ = show;
+                debug::error_response("no native main window")
+            }
         }
     }
 }
@@ -951,22 +997,20 @@ impl ApplicationHandler<UserEvent> for App {
         if self.control.is_some() {
             return;
         }
-        self.start_native_ui();
-        let attributes = platform::window_attributes(Window::default_attributes())
-            .with_title("Telescreen")
-            .with_inner_size(LogicalSize::new(560.0, 520.0));
-        match event_loop.create_window(attributes) {
-            Ok(window) => {
-                let (surface, error) = Surface::new(window, &mut self.gpu);
-                if let Some(error) = error {
-                    eprintln!("telescreen: {error}");
-                }
-                self.control = Some(surface);
+        // macOS: the native main window replaces the egui control window (UI-13).
+        #[cfg(target_os = "macos")]
+        if self.native.is_none() {
+            self.start_native_ui();
+            match &self.native {
+                Some(native) => native.show_main_window(),
+                None => event_loop.exit(),
             }
-            Err(e) => {
-                eprintln!("telescreen: cannot open the window: {e}");
-                event_loop.exit();
-            }
+            self.sync(event_loop);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.start_native_ui();
+            self.open_control_window(event_loop);
         }
     }
 

@@ -341,6 +341,7 @@ impl Controller {
             fingerprint: self.fingerprint.clone(),
             computers,
             devices,
+            discovery: self.control_screen().discovery,
             notices: self.notices.clone(),
         }
     }

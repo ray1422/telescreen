@@ -213,3 +213,42 @@ fn ui18_the_publisher_gives_only_changes() {
     assert_eq!(publisher.update(changed.clone()), Some(&changed));
     assert_eq!(publisher.update(changed), None);
 }
+
+#[test]
+fn ui18_the_main_window_json_shape() {
+    let main = MainScreen {
+        menu: MenuScreen::default(),
+        fingerprint: "sha256:00".into(),
+        computers: vec![ComputerRow {
+            id: ComputerId::from("pc1"),
+            label: "Linux".into(),
+            this_computer: false,
+            trusted: false,
+            connected: true,
+        }],
+        devices: vec![DeviceRow {
+            alias: "Desktop".into(),
+            device: DeviceId::from("shared-lg"),
+            state: VideoInput::Unknown,
+        }],
+        discovery: Some(DiscoveryRow {
+            remaining_seconds: Some(42),
+        }),
+        notices: vec!["hello".into()],
+    };
+    let value = serde_json::to_value(&main).unwrap();
+    assert_eq!(value["fingerprint"], "sha256:00");
+    assert_eq!(
+        value["computers"][0],
+        json!({"id": "pc1", "label": "Linux", "this_computer": false, "trusted": false, "connected": true})
+    );
+    assert_eq!(
+        value["devices"][0],
+        json!({"alias": "Desktop", "device": "shared-lg", "state": "unknown"})
+    );
+    assert_eq!(value["discovery"], json!({"remaining_seconds": 42}));
+    assert_eq!(value["notices"], json!(["hello"]));
+    assert_eq!(value["menu"]["glyph"], "idle");
+    let back: MainScreen = serde_json::from_value(value).unwrap();
+    assert_eq!(back, main);
+}

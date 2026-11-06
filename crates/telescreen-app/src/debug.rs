@@ -45,6 +45,9 @@ pub enum Request {
     /// `{"cmd":"menu","show":<bool>}`: opens or closes the native menu (UI-9), and
     /// returns the last view model and the panel frame. `show` is optional.
     Menu { show: Option<bool> },
+    /// `{"cmd":"main_window","show":<bool>}`: opens or closes the native main
+    /// window (UI-13), and returns its state and the Dock icon state (UI-14).
+    MainWindow { show: Option<bool> },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +106,9 @@ pub fn parse_request(line: &str) -> Result<Request, DebugError> {
             computer: ComputerId::from(string_field(&value, "computer")?),
         }),
         "menu" => Ok(Request::Menu {
+            show: value.get("show").and_then(Value::as_bool),
+        }),
+        "main_window" => Ok(Request::MainWindow {
             show: value.get("show").and_then(Value::as_bool),
         }),
         "move_control" => Ok(Request::MoveControl {
@@ -248,9 +254,13 @@ pub struct Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // Wake a blocking accept so it can observe the stop flag.
-        let _ = UnixStream::connect(&self.path);
-        if let Some(thread) = self.thread.take() {
+        // Wake a blocking accept so it can observe the stop flag. If the socket
+        // file is gone, nothing can wake it: do not wait for the thread, else the
+        // main thread hangs and the status item stops responding.
+        let woke = UnixStream::connect(&self.path).is_ok();
+        if let Some(thread) = self.thread.take()
+            && woke
+        {
             let _ = thread.join();
         }
         let _ = fs::remove_file(&self.path);
