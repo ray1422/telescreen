@@ -54,7 +54,7 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 
 ## Design records
 
-- Versions: Semantic Versioning, 0.x until a stable release. v0.1.0 = handoff + input forwarding in both directions. v0.2.0 = text clipboard. v0.1.0 and v0.2.0 are internal milestones with no tag and no release; the first release is v0.3.0 (user, 2026-10-27). Do not say "v1" for the first release.
+- Versions: Semantic Versioning, 0.x until a stable release. v0.1.0 = handoff + input forwarding in both directions. v0.2.0 = text clipboard. v0.1.0 and v0.2.0 are internal milestones with no tag and no release; the first release is v0.3.0 (user, 2026-10-27). From v0.600.0 (the UI redesign), the hundreds of the minor version mark a large release and the two last digits count small features: v0.601.0, v0.602.0, then v0.700.0 (user, 2026-11-07); see spec 2.1. Do not say "v1" for the first release.
 
 - When a spec question is open, use the `grilling` skill to ask the user. Use `domain-modeling` to record the result. Both are in `.claude/skills/` (MIT, from mattpocock/skills).
 - Terms are in `GLOSSARY.md` at the repository root. Use its terms in code, docs, and Codex prompts (peer, source, target, dialer, listener; never server/client). Hard-to-reverse decisions go in `docs/adr/NNNN-slug.md`.

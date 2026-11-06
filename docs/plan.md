@@ -54,7 +54,7 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M14 | `pointer-smooth`: the pointer on the target feels slow and not smooth (user, 2026-10-27; docs/test-plan.md section 6) | The loss, the latency, and the datagram interval are measured on the hardware; a fix is decided with the user and passes the same measurement | done (2026-10-28; docs/test-plan.md section 6): no loss. Mac to Linux: AWDL on the Wi-Fi of the Mac; Wi-Fi channel 149 or AWDL off removes it; README.md has the troubleshooting steps. Linux to Mac: datagrams waited in the event queue of the main loop; the target now injects only the newest position, and all pointer queues are bounded (NET-2). NET-8 and NET-9 measure it. No prediction (user, 2026-10-28) |
 | M15 | `scroll-speed`: the scroll speed is adjustable (user, 2026-10-27) | `scroll-speed` in the computer section of the target (IN-14, user, 2026-11-04) | done |
 | M19 | `kde-scroll`: Chrome animates the scroll on KDE, thus the scroll feels slow (user, 2026-11-05) | Button scroll on KWin (IN-15, spike 5) | done; the user checked the pointer shape and the scroll feel with a real trackpad |
-| M20 | `ui-redesign`: spec section 4.7, ADR 0012, ADR 0013 (user, 2026-11-06) | The steps of M20 are done, and the user accepts the UI on macOS and on KDE | spec and ADRs done (2026-11-06); mockups continue |
+| M20 | `ui-redesign` (v0.600.0): spec section 4.7, ADR 0012, ADR 0013 (user, 2026-11-06) | The steps of M20 are done, and the user accepts the UI on macOS and on KDE | spec and ADRs done (2026-11-06); mockups continue |
 
 ### M16: first binary release
 
