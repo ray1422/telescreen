@@ -97,7 +97,7 @@ The sequence can change after the spikes.
 | e | View models: the menu and the main window, stable row ids, a serializable form, and the push renderer contract | done (2026-11-07): `MenuScreen`, `MainScreen`, `Publisher` in `telescreen-view` (UI-18, JSON shape in `tests/json.rs`); `menu_screen`, `main_screen`, `evaluate_displays`, `set_trusted` in the controller (`controller/menu.rs`) |
 | f | macOS UI: Rust main loop, SwiftUI menu, status item, Control Center extension, main window, settings, lifecycle (UI-10, UI-13 to UI-16) | in progress: f1 (status item, menu, main window, reopen, Dock icon) done in `telescreen-ui-macos` (2026-11-07), checked with the bundle and the debug protocol, no clicks; winit still owns the run loop. Not done: settings (UI-14), the UI-17 glyph, the single instance for a second CLI start, f2 the Control Center button (spike first) |
 | g | Linux UI: Qt/QML through cxx-qt, the Plasma applet, the StatusNotifierItem fallback, the menu command, lifecycle (UI-11, UI-13 to UI-16) | not started |
-| h | More than one portal: one portal for each display (FLOW-2, FLOW-24). The controller keeps a portal for each display; the input capture watches more than one portal area and reports the portal of each event; the macOS and Linux captures and the portal windows follow | not started |
+| h | More than one portal: one portal for each display (FLOW-2, FLOW-25). The controller keeps a portal for each display; the input capture watches more than one portal area and reports the portal of each event; the macOS and Linux captures and the portal windows follow | not started |
 | i | Native portal windows; remove egui and winit | not started |
 
 ### M20 implementation notes
