@@ -11,14 +11,14 @@ use std::time::{Duration, Instant};
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
+use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen, NSWindow};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSImage, NSPanel, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength, NSView, NSWindowCollectionBehavior, NSWindowDelegate,
     NSWindowStyleMask, NSWindowTitleVisibility,
 };
-use objc2_foundation::{NSNotification, NSNumber, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSData, NSNotification, NSNumber, NSPoint, NSRect, NSSize, NSString};
 use telescreen_view::{Glyph, Intent, MainScreen, MenuScreen};
 
 unsafe extern "C" {
@@ -240,6 +240,8 @@ thread_local! {
     static PORTALS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
     /// Telescreen minimized the main window (UI-13).
     static MINIMIZED: Cell<bool> = const { Cell::new(false) };
+    /// The session state of the status glyph (UI-17).
+    static GLYPH: Cell<Glyph> = const { Cell::new(Glyph::Idle) };
 }
 
 fn emit(event: UiEvent) {
@@ -324,6 +326,7 @@ fn hide() {
             state.panel.orderOut(None);
         }
     });
+    refresh_glyph();
 }
 
 fn toggle() {
@@ -354,6 +357,44 @@ fn show() {
             state.panel.makeKeyAndOrderFront(None);
             state.panel.orderFrontRegardless();
         }
+    });
+    refresh_glyph();
+}
+
+/// The glyphs of UI-17 (tools/make_icon.py), black with alpha, at 1x and 2x.
+fn glyph_data(glyph: Glyph, menu_open: bool) -> &'static [u8] {
+    match glyph {
+        // "Menu open" is a state of the UI only, and only when idle.
+        Glyph::Idle if menu_open => include_bytes!("../../../assets/macos/glyph-menu-open.tiff"),
+        Glyph::Idle => include_bytes!("../../../assets/macos/glyph-idle.tiff"),
+        Glyph::Controlling => include_bytes!("../../../assets/macos/glyph-controlling.tiff"),
+        Glyph::Controlled => include_bytes!("../../../assets/macos/glyph-controlled.tiff"),
+    }
+}
+
+/// Shows the glyph of the session state and of the panel (UI-17).
+fn refresh_glyph() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATE.with(|state| {
+        let Ok(state) = state.try_borrow() else {
+            return;
+        };
+        let Some(state) = state.as_ref() else { return };
+        let Some(button) = state.item.button(mtm) else {
+            return;
+        };
+        let data = NSData::with_bytes(glyph_data(GLYPH.get(), state.panel.isVisible()));
+        let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+            eprintln!("telescreen: cannot read the status glyph");
+            return;
+        };
+        // A template image: macOS reads only the alpha.
+        image.setSize(NSSize::new(18.0, 16.0));
+        image.setTemplate(true);
+        image.setAccessibilityDescription(Some(&NSString::from_str("Telescreen")));
+        button.setImage(Some(&image));
     });
 }
 
@@ -508,34 +549,24 @@ impl MacUi {
         self.set_glyph(menu.glyph);
     }
 
-    /// The image of the status item (UI-17). The system symbols are placeholders
-    /// until the custom glyph exists.
+    /// The image of the status item (UI-17).
     pub fn set_glyph(&self, glyph: Glyph) {
+        if GLYPH.replace(glyph) != glyph || !self.glyph_shown() {
+            refresh_glyph();
+        }
+    }
+
+    fn glyph_shown(&self) -> bool {
         let Some(mtm) = MainThreadMarker::new() else {
-            return;
-        };
-        let name = match glyph {
-            Glyph::Idle => "display",
-            Glyph::Controlling => "cursorarrow.rays",
-            Glyph::Controlled => "av.remote",
+            return false;
         };
         STATE.with(|state| {
-            let Ok(state) = state.try_borrow() else {
-                return;
-            };
-            let Some(state) = state.as_ref() else { return };
-            let Some(button) = state.item.button(mtm) else {
-                return;
-            };
-            let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &NSString::from_str(name),
-                Some(&NSString::from_str("Telescreen")),
-            );
-            if let Some(image) = image {
-                image.setTemplate(true);
-                button.setImage(Some(&image));
-            }
-        });
+            state
+                .try_borrow()
+                .ok()
+                .and_then(|s| s.as_ref().and_then(|s| s.item.button(mtm)))
+                .is_some_and(|button| button.image().is_some())
+        })
     }
 
     /// Gives a full snapshot to the main window (UI-13, UI-18).

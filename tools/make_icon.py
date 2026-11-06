@@ -1,4 +1,5 @@
-"""Render the app icon (concept G, "CRT glass") to assets/macos/Telescreen.icns.
+"""Render the app icon (concept G, "CRT glass") to assets/macos/Telescreen.icns,
+and the status glyph (UI-17) to assets/macos/glyph-<state>.tiff.
 
 The shapes and the effects come from the "Icon concepts" artboard of the UI
 mockup canvas. Each size has its own variant, as on the artboard: the CRT
@@ -9,6 +10,9 @@ Usage (macOS; needs Google Chrome and iconutil). It renders with Chrome,
 because the artboard effects were checked in Chrome:
 
     uv run python tools/make_icon.py
+
+The glyph comes from the "Glyph at real size" artboard: 18 x 16 pt, black
+with alpha, for a template image. Each TIFF has a 1x and a 2x image.
 
 The script writes temporary files to a temporary directory only.
 """
@@ -221,15 +225,100 @@ ICONSET = [
 ]
 
 
-def render(svg_path: Path, png_path: Path, px: int) -> None:
+def render(svg_path: Path, png_path: Path, px: int, height: int | None = None) -> None:
     subprocess.run(
         [
             str(CHROME), "--headless", "--disable-gpu", "--hide-scrollbars",
             "--force-device-scale-factor=1", "--default-background-color=00000000",
-            f"--window-size={px},{px}", f"--screenshot={png_path}", svg_path.as_uri(),
+            f"--window-size={px},{height or px}", f"--screenshot={png_path}", svg_path.as_uri(),
         ],
         check=True, capture_output=True,
     )
+
+
+# ----- The status glyph (UI-17) -----
+
+GLYPH_SHELL = sq(1, 0.4, 16, 12.4, 10, CAM) + " " + sq(2.9, 2.2, 12.2, 8.8, 10, 2.5)
+GLYPH_VISOR = sq(2.9, 2.2, 12.2, 8.8, 10, 2.5)
+GLYPH_CURSOR = "M7.6 3.3L7.6 9.3L9.05 8L10.05 10.2L11.1 9.7L10.1 7.55L12 7.55Z"
+
+# The lens alpha, the cursor, and the remote control of each state.
+GLYPH_STATES = {
+    "idle": (0.45, False, False),
+    "menu-open": (1.0, False, False),
+    "controlling": (0.0, True, False),
+    "controlled": (0.0, False, True),
+}
+
+
+def cradle() -> str:
+    """The stand: its top edge is 1.9 below the bottom of the shell, along the
+    normal, and its bottom is flat. A 1.4 round stroke rounds the corners."""
+    g, bottom, xmin, xmax, e, cx, cy, p = 1.9, 14.9, 3.4, 14.6, 6.2, 7.2, 6.6, CAM
+
+    def at(t: float) -> tuple[float, float]:
+        return (cx - e * math.cos(t) ** (2 / p), cy + e * math.sin(t) ** (2 / p))
+
+    left = []
+    for i in range(1, 41):
+        t = i / 40 * math.pi / 2
+        a, b, q = at(max(t - 0.01, 0.001)), at(min(t + 0.01, math.pi / 2)), at(t)
+        tx, ty = b[0] - a[0], b[1] - a[1]
+        length = math.hypot(tx, ty)
+        nx, ny = -ty / length, tx / length
+        if nx * (q[0] - cx) + ny * (q[1] - cy) < 0:
+            nx, ny = -nx, -ny
+        left.append((q[0] + g * nx, q[1] + g * ny))
+    right = [(18 - x, y) for x, y in reversed(left)]
+    pts = [v for v in left + right if xmin <= v[0] <= xmax]
+    middle = "L".join(f"{f(x)} {f(min(y, bottom - 0.2))}" for x, y in pts)
+    return f"M{xmin:g} {bottom:g}L{middle}L{xmax:g} {bottom:g}Z"
+
+
+GLYPH_CRADLE = cradle()
+
+
+def glyph_svg(state: str, scale: int) -> str:
+    lens, cursor, remote = GLYPH_STATES[state]
+    inside = ""
+    if cursor:
+        inside += f'<path d="{GLYPH_CURSOR}" fill="#000"/>'
+    if remote:
+        # The buttons are holes in the remote control.
+        holes = "".join(
+            f'<rect x="{x}" y="{y}" width="1.2" height="1.2" rx="0.35" fill="#000"/>'
+            for x, y in ((9.9, 5.1), (11.9, 5.1), (9.9, 7.1), (11.9, 7.1))
+        )
+        inside += (
+            '<mask id="keys" maskUnits="userSpaceOnUse" x="0" y="0" width="18" height="16">'
+            f'<rect width="18" height="16" fill="#fff"/>{holes}</mask>'
+            '<g transform="rotate(-35 11.5 10)">'
+            '<rect x="8.4" y="3.6" width="6.2" height="12" rx="2.2" fill="#000" mask="url(#keys)"/></g>'
+        )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{18 * scale}" height="{16 * scale}" viewBox="0 0 18 16">'
+        f'<defs><clipPath id="visor"><path d="{GLYPH_VISOR}"/></clipPath></defs>'
+        f'<path d="{GLYPH_SHELL}" fill="#000" fill-rule="evenodd"/>'
+        f'<circle cx="9" cy="6.6" r="2.5" fill="#000" fill-opacity="{lens:g}"/>'
+        f'<g clip-path="url(#visor)">{inside}</g>'
+        f'<path d="{GLYPH_CRADLE}" fill="#000" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/>'
+        "</svg>"
+    )
+
+
+def render_glyphs(work: Path) -> None:
+    for state in GLYPH_STATES:
+        images = []
+        for scale in (1, 2):
+            source = work / f"glyph-{state}@{scale}x.svg"
+            source.write_text(glyph_svg(state, scale))
+            png = work / f"glyph-{state}@{scale}x.png"
+            render(source, png, 18 * scale, 16 * scale)
+            images.append(str(png))
+        out = OUTPUT.parent / f"glyph-{state}.tiff"
+        subprocess.run(["tiffutil", "-cathidpicheck", *images, "-out", str(out)],
+                       check=True, capture_output=True)
+        print(f"make_icon: wrote {out.relative_to(ROOT)}")
 
 
 def main() -> int:
@@ -246,6 +335,7 @@ def main() -> int:
             render(source, iconset / f"{name}.png", px)
         OUTPUT.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(OUTPUT)], check=True)
+        render_glyphs(work)
     print(f"make_icon: wrote {OUTPUT.relative_to(ROOT)}")
     return 0
 
