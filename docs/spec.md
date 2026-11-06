@@ -153,9 +153,9 @@ Menu and entry points:
 
 Main window, settings, and lifecycle:
 
-- **UI-13** The main window opens when the user starts Telescreen, and when the user starts it again while it runs. It shows the content of the menu, the computers, pairing and trust, the device states with "It is back" (VER-6), and the notices. It has the start window of UI-8 when no computer is selected.
-  - The main window can trust a peer (user, 2026-11-07). The user enters the fingerprint that the other peer shows in its main window, and presses "Trust". This has the same effect as `telescreen trust <computer-id> <fingerprint>` (ADR 0004). Telescreen does not take the fingerprint from a connection: the user enters it, so this is not trust on first use (Claude decides, 2026-11-07).
-  - The computers in the main window are the computers of the config. A computer that has no fingerprint in the local trust list shows "Not trusted" and "Trust fingerprint…". Telescreen does not list a computer that is not in the config, and a search result with an unknown fingerprint does not show (NET-16) (Claude decides, 2026-11-07).
+- **UI-13** The main window opens when the user starts Telescreen, and when the user starts it again while it runs. It shows the content of the menu, the computers and their trust state, the device states with "It is back" (VER-6), and the notices. It has the start window of UI-8 when no computer is selected.
+  - The main window does not trust a peer (user, 2026-11-07). To type a fingerprint is too difficult. A later pairing flow replaces it. Until then, the user adds a fingerprint with `telescreen trust` (ADR 0004).
+  - The computers in the main window are the computers of the config. A computer that has no fingerprint in the local trust list shows "Not trusted" and the `telescreen trust` command. Telescreen does not list a computer that is not in the config, and a search result with an unknown fingerprint does not show (NET-16) (Claude decides, 2026-11-07).
 - **UI-14** Settings:
   - macOS: the status item on or off (UI-10), how to add the Control Center button, and the Dock icon: "Only while a window is open" (default) or "Always" (user, 2026-11-06).
   - Both platforms: start at login, off by default (user, 2026-11-06). Reason: Telescreen listens on a network port.
