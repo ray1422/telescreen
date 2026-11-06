@@ -3678,6 +3678,23 @@ fn ui9_hb3_hand_back_from_the_session_part_of_the_source() {
     );
 }
 
+#[test]
+fn act5_hb3_a_hand_back_from_the_source_closes_the_portal() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::SwitchAndControl {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    w.advance_to_forwarding_from_confirmation();
+    act(&mut w, Intent::SourceHandBack);
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+}
+
 fn request_rows(peer: &Peer) -> Vec<(String, bool)> {
     peer.controller
         .menu_screen()

@@ -119,7 +119,7 @@ pub fn launch(launch: Launch) -> Result<(), String> {
     };
     #[cfg(not(feature = "debug-protocol"))]
     let _ = launch.debug_socket;
-    let mut gpu = SharedGpu::default();
+    let mut gpu = SharedGpu::new(event_loop.owned_display_handle());
     let (config, local) = match startup {
         Startup::Run { config, computer } => (config, computer),
         _ => {
@@ -303,7 +303,7 @@ fn start_app(
     Ok(App {
         controller,
         pointer_mailbox,
-        gpu: std::mem::take(gpu),
+        gpu: std::mem::replace(gpu, SharedGpu::new(event_loop.owned_display_handle())),
         #[cfg(feature = "debug-protocol")]
         _debug_server: None,
         hooks: parts.hooks,

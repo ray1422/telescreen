@@ -6,6 +6,7 @@ use telescreen_view::{
     ControlScreen, Intent, PortalScreen, PromptScreen, SetupIntent, SetupScreen,
 };
 use winit::event::WindowEvent;
+use winit::event_loop::OwnedDisplayHandle;
 use winit::window::Window;
 
 #[derive(Debug, thiserror::Error)]
@@ -34,13 +35,28 @@ impl std::fmt::Debug for WindowRenderer {
 /// The wgpu instance, adapter, device, and queue that all windows share. The
 /// first window makes them. With one device for each window, NVIDIA on Wayland
 /// crashed when one window closed (hardware test 2026-10-27).
-#[derive(Default)]
-pub struct SharedGpu(Option<egui_wgpu::WgpuSetupExisting>);
+pub struct SharedGpu {
+    /// The display of the event loop. The instance keeps its display handle
+    /// for its lifetime. A window as the display handle never closes: winit
+    /// closes a window when its last `Arc` goes (the first portal on macOS
+    /// stayed open after its session, 2026-11-07).
+    display: OwnedDisplayHandle,
+    existing: Option<egui_wgpu::WgpuSetupExisting>,
+}
+
+impl SharedGpu {
+    pub fn new(display: OwnedDisplayHandle) -> Self {
+        Self {
+            display,
+            existing: None,
+        }
+    }
+}
 
 impl std::fmt::Debug for SharedGpu {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SharedGpu")
-            .field("ready", &self.0.is_some())
+            .field("ready", &self.existing.is_some())
             .finish()
     }
 }
@@ -51,9 +67,9 @@ impl WindowRenderer {
     /// the shared GPU objects in `gpu`; the other windows use them.
     pub fn new(window: Arc<Window>, gpu: &mut SharedGpu) -> Result<Self, RenderError> {
         let context = egui::Context::default();
-        let wgpu_setup = match &gpu.0 {
+        let wgpu_setup = match &gpu.existing {
             Some(existing) => egui_wgpu::WgpuSetup::Existing(existing.clone()),
-            None => egui_wgpu::WgpuSetup::from_display_handle(Arc::clone(&window)),
+            None => egui_wgpu::WgpuSetup::from_display_handle(gpu.display.clone()),
         };
         let config = egui_wgpu::WgpuConfiguration {
             wgpu_setup,
@@ -75,10 +91,10 @@ impl WindowRenderer {
             Ok::<_, egui_wgpu::WgpuError>(painter)
         })
         .map_err(|error| RenderError::Setup(error.to_string()))?;
-        if gpu.0.is_none()
+        if gpu.existing.is_none()
             && let Some(render_state) = painter.render_state()
         {
-            gpu.0 = Some(egui_wgpu::WgpuSetupExisting {
+            gpu.existing = Some(egui_wgpu::WgpuSetupExisting {
                 instance: render_state.instance,
                 adapter: render_state.adapter,
                 device: render_state.device,
