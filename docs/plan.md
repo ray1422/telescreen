@@ -97,7 +97,8 @@ The sequence can change after the spikes.
 | e | View models: the menu and the main window, stable row ids, a serializable form, and the push renderer contract | done (2026-11-07): `MenuScreen`, `MainScreen`, `Publisher` in `telescreen-view` (UI-18, JSON shape in `tests/json.rs`); `menu_screen`, `main_screen`, `evaluate_displays`, `set_trusted` in the controller (`controller/menu.rs`) |
 | f | macOS UI: Rust main loop, SwiftUI menu, status item, Control Center extension, main window, settings, lifecycle (UI-10, UI-13 to UI-16) | in progress: f1 (status item, menu, main window, reopen, Dock icon) done in `telescreen-ui-macos` (2026-11-07), checked with the bundle and the debug protocol, no clicks; winit still owns the run loop. Not done: settings (UI-14), the UI-17 glyph, the single instance for a second CLI start, f2 the Control Center button (spike first) |
 | g | Linux UI: Qt/QML through cxx-qt, the Plasma applet, the StatusNotifierItem fallback, the menu command, lifecycle (UI-11, UI-13 to UI-16) | not started |
-| h | Native portal windows; remove egui and winit | not started |
+| h | More than one portal: one portal for each display (FLOW-2, FLOW-24). The controller keeps a portal for each display; the input capture watches more than one portal area and reports the portal of each event; the macOS and Linux captures and the portal windows follow | not started |
+| i | Native portal windows; remove egui and winit | not started |
 
 ### M20 implementation notes
 
@@ -113,9 +114,10 @@ The sequence can change after the spikes.
   - Steps f and g: the evaluation at the start runs the `portal-match` helpers of each display and dials the candidates. On macOS, a new install then shows the Local Network question at the start, not at the first portal.
   - Step f: a `rustc-link-arg` of a dependency does not reach the final binary. `telescreen-app/build.rs` sets the rpath to the Swift runtime. Without it, the bundle does not start ("Library not loaded: @rpath/libswift_Concurrency.dylib"), and macOS shows a dialog that tells the user to ask the developer.
   - Step f: the status glyph uses system symbols as placeholders until the UI-17 glyph exists.
-  - Step f: on macOS the native main window replaces the egui control window. The start window (UI-8) and the verifier prompt (UI-5) stay egui until step h.
-  - Step h: the verifier prompt window (UI-5) is egui too. Replace it before egui goes away.
-  - Step h: the window layer must call `take_portal_window_request` also after network events. A received control request sets the request in `on_net`. Without that call, no portal window opens on the receiving peer, and the user cannot acknowledge.
+  - Step f: on macOS the native main window replaces the egui control window. The start window (UI-8) and the verifier prompt (UI-5) stay egui until step i.
+  - Step h: `control_request` and `control_match_done` in `controller/actions.rs` refuse with `Busy` if any source session exists. Change them to check only the matching display (ACT-6).
+  - Step i: the verifier prompt window (UI-5) is egui too. Replace it before egui goes away.
+  - Step i: the window layer must call `take_portal_window_request` also after network events. A received control request sets the request in `on_net`. Without that call, no portal window opens on the receiving peer, and the user cannot acknowledge.
 
 - Corners (user, 2026-11-06): use continuous (G2) corners on all surfaces that Telescreen draws, on both platforms. The HTML mockups use circular corners; do not copy that.
   - macOS: SwiftUI gives G2 corners with `RoundedRectangle(cornerRadius:style: .continuous)`.
