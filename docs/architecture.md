@@ -1,5 +1,7 @@
 # Technology Selection (2026-10-27)
 
+ADR 0012 (2026-11-06) replaces winit and egui with a native UI on each platform: SwiftUI on macOS, and Qt/QML on Linux. The UI sections below describe the current code until the redesign (spec section 4.7) is implemented.
+
 ## Recommendation: Rust core + winit windowing + egui UI + per-platform native backends
 
 Rust is applicable to low-latency event handling, a background agent, and native API integration. You can make a separate Rust package for macOS, Linux, and Windows. Cross-platform means a shared core and a shared protocol. It does not mean that each OS can use the same input implementation. This is a recommendation for the selection. No on-hardware prototype in this project has validated it yet. No dependency versions are pinned.

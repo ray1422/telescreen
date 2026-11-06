@@ -24,6 +24,7 @@ v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user,
 | v0.2.0 | Text clipboard sync. It syncs only in an active, authenticated session, with no loops between the peers, and it sends nothing after the user disables it or after a disconnect. |
 | v0.3.0 | Hand back, FLOW-24, the verification model, and the operation drivers (section 10; user, 2026-10-27). |
 | v0.4.0 (candidate) | Separate clipboard stream: image clipboard (PNG) and texts larger than 256 KiB (CLIP-6). An image is sent only when the other peer pastes, with a "Pasting from <label>…" overlay. |
+| UI redesign (version not assigned) | Section 4.7, ADR 0012, ADR 0013: separate switch and control actions, the control request, a portal only during a session, the menu, the main window, and a native UI on each platform. |
 
 ### 2.2 Not part of v0.1.0
 
@@ -49,7 +50,7 @@ Video streaming, clipboard (see 2.1), file transfer, atomic switching of device 
 ### 4.1 Portal and candidates
 
 - **FLOW-1** Read and validate the config. Detect the local capabilities (input capture, injection, permissions).
-- **FLOW-2** The user opens a portal. The portal is not in the config. The control window lists the displays, and each display has its own "Open portal" button (user, 2026-11-05; this replaces the rule that the portal opens on the display of the control window). The control window can be on a different display. If a portal is open on a different display, the new portal replaces it, and the session of the old portal ends. On the display of the portal, evaluate `portal-match` of the local devices. No match: tell the user. More than one match: the user selects one. Do not use the first match silently.
+- **FLOW-2** The user opens a portal. The portal is not in the config. The control window lists the displays, and each display has its own "Open portal" button (user, 2026-11-05; this replaces the rule that the portal opens on the display of the control window). The control window can be on a different display. If a portal is open on a different display, the new portal replaces it, and the session of the old portal ends. On the display of the portal, evaluate `portal-match` of the local devices. No match: tell the user. More than one match: the user selects one. Do not use the first match silently. The UI redesign replaces the "Open portal" button (ACT-5).
 - **FLOW-3** Make the candidate targets: the local `handoff` keys that are also computers with the same device `id`. Show a candidate that is offline, that has no permission, or that has no `input-target` as unavailable, with the reason.
 - **FLOW-4** When the portal moves to a different display, or the display topology changes, evaluate `portal-match` again. The previous device binding and its coordinates must not continue to apply.
 
@@ -115,6 +116,50 @@ ADR 0009. The **destination** is the computer that a handoff switches the device
 - **HB-4** If the target has no route back when the source requests a hand back, the session ends, and the target shows a notice that the user must switch the display by hand. The target shows it, because the display shows the target. The source adds the same notice to its control window.
 - **HB-5** The safety exit (IN-8) only ends the session. It does not start a hand back.
 
+### 4.7 UI redesign
+
+ADR 0012 and ADR 0013 (user, 2026-11-06). This section replaces some current rules when the redesign is implemented. Until then, the current rules apply. Each replaced rule names its replacement. In this section, "the menu" is the panel of UI-9, and "the main window" is the window of UI-12. The main window replaces the control window: when the redesign is implemented, "control window" in this spec means the main window.
+
+Actions:
+
+- **ACT-1** Each candidate of a display has three actions (ADR 0013):
+  - "Switch & control": the handoff and a session, by FLOW-5 to FLOW-12.
+  - "Switch display only": the handoff with no session. FLOW-6 and FLOW-12 apply to the steps. The destination does not need to run Telescreen.
+  - "Control only": an attach (ACT-3).
+- **ACT-2** After "Switch display only", the destination verifies by VER-1 if it is reachable. The acknowledgement is on the destination, as for a hand back (VER-4), because no session and no portal exist. If the destination is not reachable, nobody verifies, and the source shows "switched, not verified" (Claude decides, 2026-11-06).
+- **ACT-3** An attach is a session with no handoff steps, for a device that already shows the target. The target grants the lease by FLOW-5 and verifies by VER-1, as after the steps of a handoff (user, 2026-11-06). The acknowledgement follows VER-4 and FLOW-8. Then forwarding starts by FLOW-10. A candidate that is offline cannot attach, and the menu shows the reason (FLOW-3).
+- **ACT-4** Control request: a peer can ask a different peer to control it on a device (ADR 0013). The label on the asking peer is "Let <peer> control this display". The request names only the device id. The receiving peer evaluates `portal-match` for that device id. It opens a portal on the matching display, and it attaches to the asking peer (ACT-3). It does not ask its user first (user, 2026-11-06). Reason: its display can show the asking peer at that time, so its user cannot see a question. The acknowledgement on the keyboard of the receiving peer is the consent.
+  - Only a paired, authenticated peer can send a control request.
+  - While the receiving peer waits for the acknowledgement, FLOW-21 applies. Its user ends the wait with the safety exit (IN-8), or the prompt times out (VER-5).
+  - If the receiving peer has no matching display, has no capture permission, or already has a session as the source on that display, it refuses the request. The asking peer shows the reason (Claude decides, 2026-11-06).
+- **ACT-5** The portal exists only while a session exists on the source. The source opens it when a session starts, before the handoff steps, so that FLOW-21 applies. It closes the portal when the session ends. This replaces "Open portal" in FLOW-2: the menu and the main window list the displays, and FLOW-2 to FLOW-4 apply to that list. The portal shows no candidates. It shows at most one status line.
+
+Menu and entry points:
+
+- **UI-9** The menu is a small panel. It has one view model on all platforms:
+  - At the top, one part for each session of this peer: as the source, the target, the state, the device state (VER-6), "Hand back", and "End session"; as the target, the actions of FLOW-17.
+  - Then one part for each local display, with the result of `portal-match`, and the candidates with the actions of ACT-1. An unavailable action shows its reason. A display with no route shows "No handoff routes in the config".
+  - On a peer that is the destination of a device, "Let <peer> control this display" (ACT-4) for each peer that can be the source.
+  - The text clipboard switch (CLIP-1), "Settings…", and "Quit Telescreen".
+- **UI-10** macOS entry points. Both can be on at the same time (user, 2026-11-06):
+  - A status item. A setting turns it on and off.
+  - A Control Center button (a WidgetKit `ControlWidgetButton`). It opens the menu, which Telescreen draws itself. The user adds the button in Control Center; Telescreen cannot add it. From the Control Center button, the menu opens below the menu bar at the right edge of the screen with the pointer. From the status item, the menu opens below the status item (Claude decides, 2026-11-06).
+  - The menu uses the system glass material.
+- **UI-11** Linux entry points:
+  - KDE: a Plasma applet in the system tray (user, 2026-11-06: in the first version of the redesign). It reads the menu view model over D-Bus.
+  - With no applet: a StatusNotifierItem with a D-Bus menu that has the same items.
+  - With no tray host: a command opens the menu (the command name is open). The user binds it to a key in the desktop or compositor.
+- **UI-12** Telescreen does not listen for global shortcuts on any platform (user, 2026-11-06). The hand back shortcut (IN-7) and the safety exit (IN-8) are not global shortcuts: the input capture handles them during a session. A macOS Shortcuts action is deferred.
+
+Main window, settings, and lifecycle:
+
+- **UI-13** The main window opens when the user starts Telescreen, and when the user starts it again while it runs. It shows the content of the menu, the computers, pairing and trust, the device states with "It is back" (VER-6), and the notices. It has the start window of UI-8 when no computer is selected.
+- **UI-14** Settings:
+  - macOS: the status item on or off (UI-10), how to add the Control Center button, and the Dock icon: "Only while a window is open" (default) or "Always" (user, 2026-11-06).
+  - Both platforms: start at login, off by default (user, 2026-11-06). Reason: Telescreen listens on a network port.
+- **UI-15** Telescreen continues to run when the user closes all its windows. One process does all the work. Only one instance runs: a second start tells the first instance to open the main window, and then it stops (macOS: the reopen event; Linux: D-Bus). "Quit Telescreen" ends each session as for a quit (`TargetDisconnected`). Each platform implements the lifecycle in its own UI; the rules are in the core (user, 2026-11-06).
+- **UI-16** The menu and the windows use the system materials. A part that Telescreen draws semi-transparent itself becomes opaque when the system setting to reduce transparency is on, and it follows changes of that setting while the app runs.
+
 ## 5. Input
 
 - **IN-1** Capture, suppress, forward, and inject are four separate capabilities. Detect and report each one. Window key events and global hotkey registration are not input capture.
@@ -149,6 +194,7 @@ ADR 0009. The **destination** is the computer that a handoff switches the device
     - Each peer has a status icon: on macOS in the menu bar (`NSStatusItem`), on Linux as a StatusNotifierItem over D-Bus (not the X11 tray). The target icon shows who controls it and the state, for example "Controlled by <source> · forwarding". The source icon shows which target it controls.
     - The icon menu opens the control window. On the target, it also has the actions of each incoming session: "Hand back", "Control from here", and "Disconnect" (Claude decides, delegated by the user, 2026-10-27).
     - A StatusNotifierItem is visible only with a host (KDE, or a bar such as waybar; GNOME needs the AppIndicator extension). Without a host, only the control window shows the state.
+    - The UI redesign replaces the status icon menu with the menu of UI-9 to UI-11, and the portal shows no candidates (ACT-5).
 - **UI-5** The `prompt` verifier (VER-5) shows its window on the switched display of the destination. On macOS it is a window above the fullscreen level. On Linux it is a layer-shell overlay where the compositor has it; else a normal fullscreen window.
 - **UI-6** On Linux as the source, the portal is a fullscreen window. While forwarding, it inhibits compositor shortcuts (ADR 0006). It does not lock the pointer (FLOW-20). The keyboard focus is the native focus of the portal window (FLOW-22). When the portal loses it, the source sends `KeyboardAway` and applies IN-13. The shortcut inhibit is decided (user, 2026-10-27). When the portal opens, it requests the inhibit one time, so that a compositor that asks the user for permission asks then, and not after the handoff. Then it releases the inhibit, and it requests it again for the verification wait (FLOW-21) and for forwarding. If the compositor refuses, the portal shows a notice when it opens. niri asks for no permission. Not verified: whether GNOME keeps the permission after the release.
 - **UI-7** The focus holder on the target (FLOW-23) is a platform capability behind an interface, so that more backends can come later. It shows nothing and does not take pointer input. On Linux it is a layer-shell surface of one pixel with exclusive keyboard interactivity and an empty input region, on the input-target output. On macOS it is a transparent Telescreen window that becomes the key window; when it is removed, the application that was frontmost before is activated again. If the target has no focus holder backend (for example GNOME, which has no layer-shell), the target accepts the session (user, 2026-10-27). It sends one desktop notification at the session start: this computer cannot hide its text cursor, so the cursor can still blink here when the source has the keyboard focus, but the keys do not come here. The row of the session in the control window shows the same warning while the session runs. Later losses of the keyboard focus give no notification. On GNOME, an app cannot place a window, keep it on top, or make an overlay; only a GNOME Shell extension can. GNOME support is a later goal (user, 2026-10-27); see section 10.
@@ -287,7 +333,12 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - The effect of Wi-Fi delay spikes (spike 4: p99 about 85 ms) on the pointer in real use. Measure it in the product.
 - Minimum OS versions for each package. macOS: 27.0 for v0.1.0, the only tested version (user, 2026-10-27). Linux: open.
 - Drivers for the output format of one tool (for example `betterDisplay` or `ddcutil`, with `expect`): a later version, after their output is measured on the hardware (user, 2026-10-27). The other driver decisions are in `docs/config.md`.
-- A window that does not depend on the portal (a hub) is a different topic.
+- UI redesign (section 4.7, ADR 0012):
+  - The spikes of ADR 0012: the Wayland shortcut inhibit from a cxx-qt window, and the macOS data flow with `NSHostingView` and the C ABI.
+  - The name of the command that opens the menu on Linux (UI-11).
+  - The version number of the redesign.
+  - The look of the main window, the KDE "Controlling <peer>" state, and the icon: the mockups continue after this spec update.
+- Login screen control (a memo, not planned; user, 2026-11-06). Example: the Linux computer shows SDDM, and no user session runs. A system service that starts before the login can inject keys through uinput, because uinput is in the kernel and the greeter reads it through libinput. Limits: the service is not a client of the greeter compositor, so it does not know the output geometry, and the absolute pointer position is approximate; no clipboard; no `prompt` verifier. Open: the handover between the system service and the app of the user session (port, identity, trust keys), and the security of remote keys at a password field. A decision needs its own ADR.
 
 Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:
 

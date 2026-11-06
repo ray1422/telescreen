@@ -24,6 +24,7 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 - The app makes a view model from the session state and gives it to the renderer. The renderer returns intents. The app does not read the state of the renderer.
 - Window management (winit windows, fullscreen, window level, shortcut inhibit, input sources) is not part of the renderer. A different renderer uses the same windows.
 - The Linux layer-shell prompt draws the same prompt view model with its own small text renderer in `telescreen-platform-linux`.
+- ADR 0012 (user, 2026-11-06) replaces egui with a native UI on each platform: SwiftUI on macOS and Qt/QML on Linux. The view boundary stays. M20 changes the renderer contract and then removes egui and winit.
 
 ## Who does what
 
@@ -53,6 +54,7 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M14 | `pointer-smooth`: the pointer on the target feels slow and not smooth (user, 2026-10-27; docs/test-plan.md section 6) | The loss, the latency, and the datagram interval are measured on the hardware; a fix is decided with the user and passes the same measurement | done (2026-10-28; docs/test-plan.md section 6): no loss. Mac to Linux: AWDL on the Wi-Fi of the Mac; Wi-Fi channel 149 or AWDL off removes it; README.md has the troubleshooting steps. Linux to Mac: datagrams waited in the event queue of the main loop; the target now injects only the newest position, and all pointer queues are bounded (NET-2). NET-8 and NET-9 measure it. No prediction (user, 2026-10-28) |
 | M15 | `scroll-speed`: the scroll speed is adjustable (user, 2026-10-27) | `scroll-speed` in the computer section of the target (IN-14, user, 2026-11-04) | done |
 | M19 | `kde-scroll`: Chrome animates the scroll on KDE, thus the scroll feels slow (user, 2026-11-05) | Button scroll on KWin (IN-15, spike 5) | done; the user checked the pointer shape and the scroll feel with a real trackpad |
+| M20 | `ui-redesign`: spec section 4.7, ADR 0012, ADR 0013 (user, 2026-11-06) | The steps of M20 are done, and the user accepts the UI on macOS and on KDE | spec and ADRs done (2026-11-06); mockups continue |
 
 ### M16: first binary release
 
@@ -79,12 +81,27 @@ Each step is one commit or more. Claude writes the tests first; Codex implements
 | c | The driver runtime: `exec`, `command`, the search path | done (WIP on the `hand-back` branch) |
 | d | The verifier runtime (JSON lines, `prompt`) and the device state on the destination | done (WIP on the `hand-back` branch) |
 | e | Hand back on the wire and in the flows (HB-1 to HB-5, FLOW-17, FLOW-24) | done (WIP on the `hand-back` branch); FLOW-24 is tested with three controllers, step g adds a real third peer |
-| f | The status icons (UI-4): macOS `NSStatusItem`, Linux StatusNotifierItem | not started |
+| f | The status icons (UI-4): macOS `NSStatusItem`, Linux StatusNotifierItem | replaced by M20 (UI-9 to UI-11) |
 | g | The third peer for FLOW-24 (headless sway in a container) | not started |
+
+### M20 steps
+
+The sequence can change after the spikes.
+
+| Step | Content | Status |
+| --- | --- | --- |
+| a | Spec section 4.7, ADR 0012, ADR 0013, the glossary | done (2026-11-06) |
+| b | Mockups: the menu, the main window, the settings, the KDE applet, the control request flow, the icon | in progress |
+| c | Spikes (ADR 0012, open points): the Wayland shortcut inhibit from a cxx-qt window on niri and KWin; `NSHostingView` and the C ABI with the Rust main loop | not started |
+| d | Core: "Switch display only", the attach, and the control request on the wire (ACT-1 to ACT-5), with acceptance tests | not started |
+| e | View models: the menu and the main window, stable row ids, a serializable form, and the push renderer contract | not started |
+| f | macOS UI: Rust main loop, SwiftUI menu, status item, Control Center extension, main window, settings, lifecycle (UI-10, UI-13 to UI-16) | not started |
+| g | Linux UI: Qt/QML through cxx-qt, the Plasma applet, the StatusNotifierItem fallback, the menu command, lifecycle (UI-11, UI-13 to UI-16) | not started |
+| h | Native portal windows; remove egui and winit | not started |
 
 ## Not scheduled
 
-The user plans a new design of the UI later (user, 2026-10-27). Until then, do not spend time on UI details. The pairing UI is not scheduled:
+The pairing UI is not scheduled. M20 makes the main window where it can go later:
 
 - A pairing UI. Until then, pairing stays manual with `telescreen trust` (ADR 0004).
 - A question on the first use of the clipboard sync (user, 2026-10-27). Until then, the switch starts on (CLIP-1).
