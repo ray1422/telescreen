@@ -36,6 +36,10 @@ use telescreen_view::{
 
 use crate::pointer_mailbox::ReceivedPointer;
 
+mod actions;
+
+use actions::{ControlMatch, PendingStart};
+
 /// Sends commands to the transport.
 pub trait NetPort {
     fn send(&mut self, command: NetCommand);
@@ -196,6 +200,16 @@ enum Pending {
         peer: ComputerId,
         device: DeviceId,
     },
+    /// The steps of "Switch display only" (ACT-1).
+    SwitchOnly {
+        target: ComputerId,
+        device: DeviceId,
+    },
+    /// `portal-match` of one display for a control request (ACT-4).
+    ControlMatch {
+        request: u64,
+        display: DisplayInfo,
+    },
 }
 
 struct Portal {
@@ -209,7 +223,11 @@ struct Portal {
     matched: Vec<String>,
     match_error: Option<String>,
     device: Option<String>,
-    handoff_target: Option<ComputerId>,
+    /// The session to start after `portal-match` (FLOW-17, ACT-1, ACT-4).
+    pending_start: Option<PendingStart>,
+    /// The portal closes when its session ends (ACT-5). The portal of
+    /// `open_portal` stays until the redesign replaces it.
+    ephemeral: bool,
     session: Option<SourceSession>,
     pointer: Point,
     notice: Option<String>,
@@ -257,6 +275,13 @@ pub struct Controller {
     next_prompt: u64,
     pending_hand_backs: BTreeSet<(ComputerId, DeviceId)>,
     hand_back_verifications: BTreeMap<DeviceId, HandBackVerification>,
+    /// Control requests that this peer sent, with their deadline (ACT-6). A
+    /// request waits in `unsent_control` until its peer connects.
+    control_requests: BTreeMap<(ComputerId, DeviceId), Instant>,
+    unsent_control: BTreeSet<(ComputerId, DeviceId)>,
+    /// `portal-match` runs for the control requests that this peer received (ACT-4).
+    control_matches: BTreeMap<u64, ControlMatch>,
+    next_control_match: u64,
     notices: Vec<String>,
     /// The last display list, for the view. `displays()` refreshes it.
     display_cache: Vec<DisplayInfo>,
@@ -343,6 +368,10 @@ impl Controller {
             next_prompt: 1,
             pending_hand_backs: BTreeSet::new(),
             hand_back_verifications: BTreeMap::new(),
+            control_requests: BTreeMap::new(),
+            unsent_control: BTreeSet::new(),
+            control_matches: BTreeMap::new(),
+            next_control_match: 1,
             notices: Vec::new(),
             display_cache: Vec::new(),
             last_heartbeat: None,
@@ -495,7 +524,8 @@ impl Controller {
             matched: Vec::new(),
             match_error: None,
             device: None,
-            handoff_target: None,
+            pending_start: None,
+            ephemeral: false,
             session: None,
             pointer: Point::default(),
             notice: None,
@@ -523,7 +553,7 @@ impl Controller {
         portal.display = display;
         portal.bounds = bounds;
         portal.device = None;
-        portal.handoff_target = None;
+        portal.pending_start = None;
         self.evaluate_portal_match();
     }
 
@@ -622,14 +652,10 @@ impl Controller {
         if matches!(portal.matching, Matching::Evaluating) {
             return;
         }
-        let Some(target) = portal.handoff_target.take() else {
+        let Some(pending) = portal.pending_start.take() else {
             return;
         };
-        if !matches!(portal.matching, Matching::Matched(_)) {
-            self.notice("Cannot control from here: the portal needs one matching device.".into());
-            return;
-        }
-        self.start_handoff(target);
+        self.start_pending(pending);
     }
 
     fn portal_device(&self) -> Option<Device> {
@@ -915,6 +941,7 @@ impl Controller {
         if finished {
             self.set_guard(false);
             self.ports.capture.disarm();
+            self.close_ephemeral_portal();
         }
         self.update_clipboard();
     }
@@ -1058,6 +1085,7 @@ impl Controller {
         {
             self.stop_discovery();
         }
+        self.expire_control_requests(now);
         if self
             .last_heartbeat
             .is_none_or(|t| now.duration_since(t) >= HEARTBEAT)
@@ -1319,10 +1347,12 @@ impl Controller {
         match event {
             NetEvent::Connected { peer } => {
                 self.dialing.remove(&peer);
-                self.connected.insert(peer);
+                self.connected.insert(peer.clone());
                 if !self.candidate_to_search() {
                     self.stop_search();
                 }
+                self.send_control_requests(&peer);
+                self.start_pending_handoff();
             }
             NetEvent::Disconnected { peer, reason } => {
                 self.connected.remove(&peer);
@@ -1331,6 +1361,7 @@ impl Controller {
             }
             NetEvent::DialFailed { peer, reason } => {
                 self.dialing.remove(&peer);
+                self.dial_failed(&peer);
                 self.notice(format!(
                     "Cannot connect to {}: {reason}",
                     self.label_of(&peer)
@@ -1400,7 +1431,12 @@ impl Controller {
                 self.source_message(&peer, &message, now)
             }
             // To the target side.
-            Message::RequestSession { device } => self.request_session(peer, device.clone()),
+            Message::RequestSession { device } => {
+                // ACT-6: the attach of a control request ends the wait.
+                self.control_requests
+                    .remove(&(peer.clone(), device.clone()));
+                self.request_session(peer, device.clone());
+            }
             Message::HandoffDone { session }
             | Message::HandBackRequest { session }
             | Message::Ack { session }
@@ -1431,10 +1467,13 @@ impl Controller {
                 self.run_target_actions_at(session, actions, now);
             }
             Message::Hello { .. } | Message::Heartbeat => {}
-            // ACT-6: M20 step d.
-            Message::DisplaySwitched { .. }
-            | Message::ControlRequest { .. }
-            | Message::ControlRefused { .. } => {}
+            Message::DisplaySwitched { device } => {
+                self.display_switched(peer, device.clone(), now);
+            }
+            Message::ControlRequest { device } => self.control_request(peer, device.clone()),
+            Message::ControlRefused { device, reason } => {
+                self.control_refused(&peer, device, *reason);
+            }
         }
     }
 
@@ -1458,6 +1497,15 @@ impl Controller {
             && let Some(portal) = self.portal.as_mut()
         {
             portal.notice = Some(refuse_text(*reason));
+            // ACT-5: the portal closes with its session, so keep the reason.
+            if portal.ephemeral {
+                let text = format!(
+                    "{} refused the session: {}",
+                    self.label_of(peer),
+                    refuse_text(*reason)
+                );
+                self.notice(text);
+            }
         }
         self.run_source_actions(actions);
     }
@@ -1978,22 +2026,26 @@ impl Controller {
                     self.device_states.insert(device, VideoInput::Unknown);
                 }
             }
-            HandBackOutcome::Done => {
-                self.device_states
-                    .insert(device.clone(), VideoInput::Unverified);
-                let prompt = self.allocate_prompt();
-                self.hand_back_verifications.insert(
-                    device.clone(),
-                    HandBackVerification {
-                        prompt,
-                        display: None,
-                        verification: Verification::new(),
-                        verifier: None,
-                    },
-                );
-                self.start_hand_back_input_target(peer, device, prompt, now);
-            }
+            HandBackOutcome::Done => self.verify_as_destination(peer, device, now),
         }
+    }
+
+    /// Verifies as the destination with no session: after a hand back (HB-1) and
+    /// after "Switch display only" (ACT-2).
+    fn verify_as_destination(&mut self, peer: ComputerId, device: DeviceId, now: Instant) {
+        self.device_states
+            .insert(device.clone(), VideoInput::Unverified);
+        let prompt = self.allocate_prompt();
+        self.hand_back_verifications.insert(
+            device.clone(),
+            HandBackVerification {
+                prompt,
+                display: None,
+                verification: Verification::new(),
+                verifier: None,
+            },
+        );
+        self.start_hand_back_input_target(peer, device, prompt, now);
     }
 
     fn hand_back_verification_failed(
@@ -2354,6 +2406,12 @@ impl Controller {
                 }
                 self.send_hand_back_result(peer, device, outcome);
             }
+            Pending::SwitchOnly { target, device } => {
+                self.switch_only_done(target, device, output);
+            }
+            Pending::ControlMatch { request, display } => {
+                self.control_match_done(request, display, output);
+            }
             Pending::HandBackInputTarget {
                 prompt,
                 peer,
@@ -2432,6 +2490,22 @@ impl Controller {
             }
             Intent::StopSession { session } => self.end_incoming(session, EndReason::TargetStopped),
             Intent::ControlFromHere { session } => self.control_from_here(session),
+            Intent::SwitchAndControl {
+                display,
+                device,
+                target,
+            } => self.start_on_display(&display, device, target, false),
+            Intent::ControlOnly {
+                display,
+                device,
+                target,
+            } => self.start_on_display(&display, device, target, true),
+            Intent::SwitchDisplayOnly {
+                display,
+                device,
+                target,
+            } => self.switch_display_only(&display, device, target),
+            Intent::LetControl { peer, device } => self.let_control(peer, device),
         }
     }
 
@@ -2454,7 +2528,11 @@ impl Controller {
         let Some(portal) = self.portal.as_mut() else {
             return;
         };
-        portal.handoff_target = Some(source);
+        portal.pending_start = Some(PendingStart {
+            target: source,
+            device: None,
+            attach: false,
+        });
         self.portal_window_request = Some(token);
         self.start_pending_handoff();
     }
@@ -2543,6 +2621,12 @@ impl Controller {
     }
 
     /// The bounds of all displays except the one with this token.
+    /// True while a control request to `peer` for `device` waits (ACT-6).
+    pub fn control_request_pending(&self, peer: &ComputerId, device: &DeviceId) -> bool {
+        self.control_requests
+            .contains_key(&(peer.clone(), device.clone()))
+    }
+
     pub fn has_portal(&self) -> bool {
         self.portal.is_some()
     }

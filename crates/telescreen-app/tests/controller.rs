@@ -549,11 +549,15 @@ impl World {
                             request,
                             ..
                         } => {
-                            // Only the external display matches.
+                            // Only the external display matches. "broken" fails.
                             let token = request.portal.unwrap().display_token.unwrap();
-                            JobOutput::Operation(Ok(Outcome::Matched(
-                                token.0 == "lg" || token.0 == "HDMI-A-2",
-                            )))
+                            if token.0 == "broken" {
+                                JobOutput::Operation(Err("no EDID".into()))
+                            } else {
+                                JobOutput::Operation(Ok(Outcome::Matched(
+                                    token.0 == "lg" || token.0 == "HDMI-A-2",
+                                )))
+                            }
                         }
                         Job::Operation {
                             kind: OperationKind::InputTarget,
@@ -2793,4 +2797,527 @@ fn net12_ac48_an_announce_error_gives_a_notice() {
             .iter()
             .any(|n| n.contains("no responder"))
     );
+}
+
+// ----- ACT-1 to ACT-6: the three actions and the control request -----
+
+fn lg() -> DisplayToken {
+    DisplayToken::from("lg")
+}
+
+fn shared() -> DeviceId {
+    DeviceId::from("shared-lg")
+}
+
+/// Connects the Mac and pc1 with no portal and no session.
+fn connect(w: &mut World) {
+    w.open_portal();
+    w.mac.controller.close_portal(EndReason::SourceClosed);
+    w.pump();
+    assert!(!w.mac.controller.has_portal());
+}
+
+fn act(w: &mut World, intent: Intent) {
+    w.mac.controller.on_intent(intent);
+    w.pump();
+}
+
+fn handoff_jobs(peer: &Peer) -> usize {
+    peer.log
+        .borrow()
+        .target
+        .iter()
+        .filter(|t| t.starts_with("handoff"))
+        .count()
+}
+
+fn armed(peer: &Peer) -> bool {
+    peer.log
+        .borrow()
+        .capture
+        .iter()
+        .any(|c| c.starts_with("arm"))
+}
+
+fn waiting_for_ack() -> Option<SessionPhase> {
+    Some(SessionPhase::WaitingForAck {
+        key: "Return".into(),
+    })
+}
+
+#[test]
+fn act1_act2_switch_display_only_runs_the_steps_with_no_session() {
+    let mut w = World::new();
+    connect(&mut w);
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(handoff_jobs(&w.mac), 1, "the steps of handoff.pc1");
+    assert!(!w.mac.controller.has_portal(), "ACT-6: no portal");
+    assert!(!armed(&w.mac), "ACT-6: no capture");
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    // The destination verifies, as after a hand back (ACT-2, VER-4).
+    assert!(w.pc1.controller.awaiting_local_ack());
+    assert_eq!(pc1_state(&w), VideoInput::Unverified);
+    assert!(w.pc1.controller.acknowledge_local());
+    assert_eq!(pc1_state(&w), VideoInput::Confirmed);
+    // VER-6: the device left the Mac.
+    assert_eq!(mac_state(&w), VideoInput::Unchanged);
+}
+
+#[test]
+fn act2_switch_display_only_to_a_destination_that_is_not_connected() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(
+        handoff_jobs(&w.mac),
+        1,
+        "ACT-1: no Telescreen on the destination is necessary"
+    );
+    assert!(!w.pc1.controller.awaiting_local_ack());
+    assert!(has_notice(&w.mac, "not verified"));
+    assert!(
+        !w.mac.log.borrow().closed.contains(&ComputerId::from("pc1")),
+        "no dial and no close"
+    );
+}
+
+#[test]
+fn act6_switch_display_only_needs_no_capture_permission() {
+    let mut w = World::new();
+    w.mac = peer_with(
+        "mac",
+        vec![display("lg", 0.0, 3400.0)],
+        InputCapabilities {
+            capture: Capability::Missing("grant Input Monitoring".into()),
+            suppress: Capability::Missing("grant Accessibility".into()),
+            inject: Capability::Available,
+        },
+    );
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(handoff_jobs(&w.mac), 1);
+}
+
+#[test]
+fn act6_switch_display_only_needs_a_route() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc2"),
+        },
+    );
+    assert_eq!(handoff_jobs(&w.mac), 0);
+    assert!(has_notice(&w.mac, "no handoff route"));
+}
+
+#[test]
+fn flow12_a_partial_switch_display_only_makes_the_device_unknown() {
+    let mut w = World::new();
+    w.handoff = HandoffResult::Failed { completed_steps: 1 };
+    connect(&mut w);
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(mac_state(&w), VideoInput::Unknown);
+    assert!(
+        !w.pc1.controller.awaiting_local_ack(),
+        "no DisplaySwitched after a failure"
+    );
+}
+
+#[test]
+fn act6_display_switched_from_a_peer_with_no_route_is_ignored() {
+    let mut w = World::new();
+    // pc2 has no handoff.mac route for the device.
+    w.mac.controller.on_net(
+        NetEvent::Message {
+            peer: ComputerId::from("pc2"),
+            message: Message::DisplaySwitched { device: shared() },
+        },
+        w.now,
+    );
+    w.pump();
+    assert!(!w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), VideoInput::Unchanged);
+}
+
+#[test]
+fn act6_flow6_display_switched_ends_the_sessions_of_the_device() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert!(matches!(w.phase(), Some(SessionPhase::Ended { .. }) | None));
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert!(w.pc1.controller.awaiting_local_ack());
+}
+
+#[test]
+fn act3_control_only_attaches_with_no_steps() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::ControlOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(w.mac.controller.take_portal_window_request(), Some(lg()));
+    assert_eq!(handoff_jobs(&w.mac), 0, "ACT-3: no steps");
+    assert_eq!(w.phase(), waiting_for_ack());
+    // FLOW-21: the portal guards the keyboard while it waits.
+    assert!(armed(&w.mac));
+    assert!(w.mac.log.borrow().capture.contains(&"guard on".to_string()));
+    w.advance_to_forwarding_from_confirmation();
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+    assert_eq!(pc1_state(&w), VideoInput::Confirmed);
+}
+
+#[test]
+fn act3_flow3_control_only_with_an_offline_target_does_nothing() {
+    let mut w = World::new();
+    // The dial does not connect: drop it.
+    w.mac.controller.on_intent(Intent::ControlOnly {
+        display: lg(),
+        device: shared(),
+        target: ComputerId::from("pc2"),
+    });
+    w.pump();
+    assert_eq!(w.phase(), None);
+    assert!(has_notice(&w.mac, "Cannot"));
+}
+
+#[test]
+fn act5_switch_and_control_opens_the_portal_and_closes_it_at_the_end() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::SwitchAndControl {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(w.mac.controller.take_portal_window_request(), Some(lg()));
+    assert_eq!(handoff_jobs(&w.mac), 1);
+    assert_eq!(w.phase(), waiting_for_ack());
+    w.advance_to_forwarding_from_confirmation();
+    act(&mut w, Intent::EndSession);
+    assert!(
+        !w.mac.controller.has_portal(),
+        "ACT-5: the portal exists only with its session"
+    );
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+}
+
+#[test]
+fn act5_a_refused_session_closes_the_portal() {
+    let mut w = world_with_pc1_verify(None);
+    w.pc1 = peer_full(
+        "pc1",
+        vec![display("HDMI-A-2", 0.0, 2048.0)],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+        false,
+    );
+    act(
+        &mut w,
+        Intent::ControlOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert!(!w.mac.controller.has_portal());
+    assert!(!w.mac.controller.control_screen().notices.is_empty());
+}
+
+#[test]
+fn act5_the_portal_of_open_portal_stays_after_the_session() {
+    // The current flow stays until the redesign replaces it (spec 4.7).
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    act(&mut w, Intent::EndSession);
+    assert!(w.mac.controller.has_portal());
+}
+
+#[test]
+fn act6_an_action_on_a_display_that_does_not_match_the_device() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::ControlOnly {
+            display: DisplayToken::from("builtin"),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(w.phase(), None);
+    assert!(!w.mac.controller.has_portal());
+    assert!(has_notice(&w.mac, "does not match"));
+}
+
+fn let_control(w: &mut World) {
+    w.pc1.controller.on_intent(Intent::LetControl {
+        peer: ComputerId::from("mac"),
+        device: shared(),
+    });
+    w.pump();
+}
+
+#[test]
+fn act4_a_control_request_makes_the_receiver_attach() {
+    let mut w = World::new();
+    let_control(&mut w);
+    // The Mac opens a portal on the matching display and attaches (ACT-4).
+    assert_eq!(w.mac.controller.take_portal_window_request(), Some(lg()));
+    assert_eq!(handoff_jobs(&w.mac), 0);
+    assert_eq!(w.phase(), waiting_for_ack());
+    assert!(
+        !w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared()),
+        "the attach request ends the wait"
+    );
+    // The prompt shows on pc1, the asking peer, and the Mac keyboard acknowledges.
+    assert!(w.pc1.log.borrow().prompt_visible);
+    w.advance_to_forwarding_from_confirmation();
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+    assert_eq!(w.pc1.controller.control_screen().incoming.len(), 1);
+}
+
+#[test]
+fn act6_a_control_request_waits_15_seconds() {
+    let mut w = World::new();
+    w.pc1.controller.on_intent(Intent::LetControl {
+        peer: ComputerId::from("mac"),
+        device: shared(),
+    });
+    assert!(
+        w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared())
+    );
+    // The Mac never answers.
+    w.pc1.log.borrow_mut().net.clear();
+    w.now += Duration::from_secs(14);
+    w.pc1.controller.tick(w.now);
+    assert!(
+        w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared())
+    );
+    w.now += Duration::from_secs(2);
+    w.pc1.controller.tick(w.now);
+    assert!(
+        !w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared())
+    );
+    assert!(has_notice(&w.pc1, "did not answer"));
+}
+
+/// The asking peer got `ControlRefused` and shows a notice with this text.
+fn refused(w: &World, text: &str) {
+    assert!(
+        !w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared())
+    );
+    assert!(
+        has_notice(&w.pc1, text),
+        "{:?}",
+        w.pc1.controller.control_screen().notices
+    );
+    assert!(!w.mac.controller.has_portal());
+}
+
+#[test]
+fn act6_a_control_request_with_no_capture_is_refused() {
+    let mut w = World::new();
+    w.mac = peer_with(
+        "mac",
+        vec![display("lg", 0.0, 3400.0)],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Missing("grant Accessibility".into()),
+            inject: Capability::Available,
+        },
+    );
+    let_control(&mut w);
+    refused(&w, "cannot capture");
+}
+
+#[test]
+fn act6_a_control_request_with_two_matching_displays_is_refused() {
+    let mut w = World::new();
+    w.mac = peer(
+        "mac",
+        vec![
+            display("lg", 0.0, 3400.0),
+            display("HDMI-A-2", 3400.0, 2048.0),
+        ],
+    );
+    let_control(&mut w);
+    refused(&w, "more than one display");
+}
+
+#[test]
+fn act6_a_control_request_with_no_matching_display_is_refused() {
+    let mut w = World::new();
+    w.mac = peer("mac", vec![display("builtin", -1500.0, 1500.0)]);
+    let_control(&mut w);
+    refused(&w, "no display");
+}
+
+#[test]
+fn act6_a_control_request_while_the_receiver_is_a_source_is_refused() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let_control(&mut w);
+    assert!(has_notice(&w.pc1, "already controls"));
+    assert_eq!(
+        w.phase(),
+        Some(SessionPhase::Forwarding),
+        "the session stays"
+    );
+}
+
+#[test]
+fn act6_a_control_request_with_no_route_is_refused() {
+    let mut w = World::new();
+    w.extra.push(pc4());
+    // The Mac has no handoff.pc4 route for the device.
+    w.extra[0].controller.on_intent(Intent::LetControl {
+        peer: ComputerId::from("mac"),
+        device: shared(),
+    });
+    w.pump();
+    assert!(has_notice(&w.extra[0], "no route"));
+    assert!(!w.mac.controller.has_portal());
+}
+
+#[test]
+fn act6_a_control_request_for_an_unknown_device_is_refused() {
+    let mut w = World::new();
+    w.mac.controller.on_net(
+        NetEvent::Message {
+            peer: ComputerId::from("pc1"),
+            message: Message::ControlRequest {
+                device: DeviceId::from("nope"),
+            },
+        },
+        w.now,
+    );
+    let sent = w.mac.log.borrow().net.iter().any(|c| {
+        matches!(
+            c,
+            NetCommand::Send {
+                message: Message::ControlRefused {
+                    reason: telescreen_core::wire::ControlRefuseReason::UnknownDevice,
+                    ..
+                },
+                ..
+            }
+        )
+    });
+    assert!(sent);
+}
+
+#[test]
+fn act6_ac9_a_portal_match_error_refuses_the_control_request() {
+    let mut w = World::new();
+    w.mac = peer(
+        "mac",
+        vec![
+            display("broken", -1500.0, 1500.0),
+            display("lg", 0.0, 3400.0),
+        ],
+    );
+    let_control(&mut w);
+    refused(&w, "portal-match failed");
+}
+
+#[test]
+fn act6_an_action_dials_when_the_display_matches_two_devices() {
+    let mut w = world_with(|config| {
+        let mac = config.computers.get_mut(&ComputerId::from("mac")).unwrap();
+        let usb: telescreen_core::config::Device = serde_json::from_value(json!({
+            "id": "usb-switch",
+            "portal-match": {"driver": "command", "command": ["/bin/match"]}
+        }))
+        .unwrap();
+        mac.devices.insert("Usb".into(), usb);
+    });
+    act(
+        &mut w,
+        Intent::ControlOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(w.phase(), waiting_for_ack());
+}
+
+#[test]
+fn act4_in8_the_safety_exit_ends_the_wait_of_a_control_request() {
+    let mut w = World::new();
+    let_control(&mut w);
+    assert_eq!(w.phase(), waiting_for_ack());
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
+    w.pump();
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    assert!(!w.pc1.log.borrow().prompt_visible);
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+}
+
+#[test]
+fn act4_ver5_the_prompt_timeout_ends_the_wait_of_a_control_request() {
+    let mut w = World::new();
+    let_control(&mut w);
+    w.pc1.controller.tick(w.now + Duration::from_secs(61));
+    w.pump();
+    assert!(!w.pc1.log.borrow().prompt_visible);
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
 }

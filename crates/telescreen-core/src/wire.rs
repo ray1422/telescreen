@@ -162,6 +162,8 @@ pub enum ControlRefuseReason {
     NoDisplay,
     /// More than one display of the receiver matches the device.
     AmbiguousDisplay,
+    /// `portal-match` failed on a display of the receiver (AC-9).
+    MatchFailed,
     /// The receiver cannot capture or suppress input.
     NoCapture,
     /// The receiver already is the source of a session on the matching display.

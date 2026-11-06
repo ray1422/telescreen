@@ -225,6 +225,29 @@ pub enum Intent {
     ControlFromHere {
         session: SessionId,
     },
+    /// "Switch & control": open a portal on the display, then hand off (ACT-1, ACT-5).
+    SwitchAndControl {
+        display: DisplayToken,
+        device: DeviceId,
+        target: ComputerId,
+    },
+    /// "Switch display only": the handoff steps with no session (ACT-1, ACT-2).
+    SwitchDisplayOnly {
+        display: DisplayToken,
+        device: DeviceId,
+        target: ComputerId,
+    },
+    /// "Control only": open a portal on the display, then attach (ACT-3, ACT-5).
+    ControlOnly {
+        display: DisplayToken,
+        device: DeviceId,
+        target: ComputerId,
+    },
+    /// "Let <peer> control this display": send a control request (ACT-4).
+    LetControl {
+        peer: ComputerId,
+        device: DeviceId,
+    },
 }
 
 impl VideoInputText for VideoInput {

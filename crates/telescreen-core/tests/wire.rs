@@ -146,6 +146,7 @@ fn act6_each_control_refuse_reason_round_trips() {
         NoRoute,
         NoDisplay,
         AmbiguousDisplay,
+        MatchFailed,
         NoCapture,
         Busy,
     ] {
