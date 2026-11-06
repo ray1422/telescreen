@@ -10,7 +10,8 @@ pub mod source;
 pub mod target;
 
 /// What the source knows about the video input of the shared display (UI-4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VideoInput {
     /// No handoff ran in this session.
     Unchanged,

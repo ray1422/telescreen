@@ -159,6 +159,14 @@ Menu and entry points:
   - With no applet: a StatusNotifierItem with a D-Bus menu that has the same items.
   - With no tray host: the command `telescreen show menu` opens the menu (user, 2026-11-07). The user binds it to a key in the desktop or compositor. `show` is the prefix of each command that opens a part of the UI.
 - **UI-12** Telescreen does not listen for global shortcuts on any platform (user, 2026-11-06). The hand back shortcut (IN-7) and the safety exit (IN-8) are not global shortcuts: the input capture handles them during a session. A macOS Shortcuts action is deferred.
+- **UI-18** The view model of the menu (Claude decides, 2026-11-07):
+  - It is one serializable value (`MenuScreen`), the same on all platforms. The KDE applet reads it over D-Bus as JSON. Intents come back as JSON too.
+  - Each row has a stable id: a display has its token, a candidate has its computer id, a session has `Portal` or the session id of an incoming session, and a control request row has the computer id and the device id.
+  - Each local display shows its own `portal-match` result. Telescreen evaluates `portal-match` for each display at the start, when the displays change, and with "Refresh". This evaluation dials the candidates of each matching device, as a portal does (NET-10).
+  - Each candidate shows each action of ACT-1 with its reason when it is not available. "Switch display only" needs only the route. "Switch & control" and "Control only" need the conditions of FLOW-3.
+  - "Let <peer> control this display" shows for each local device and each peer whose config has `handoff.<this computer>` for that device. While the request waits, the row shows "Waiting for <peer>".
+  - The status glyph state (UI-17) is part of the view model: idle, controlling, or controlled. "Menu open" is a state of the UI only.
+  - The core gives a new view model when a value changes. A UI draws the newest one and sends intents (ADR 0012). It does not draw each frame.
 
 Main window, settings, and lifecycle:
 

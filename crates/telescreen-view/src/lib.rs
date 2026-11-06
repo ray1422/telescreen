@@ -5,6 +5,7 @@
 //! This crate has no UI library, so that a different renderer can replace
 //! `telescreen-render-egui` (`docs/plan.md`, "View boundary").
 
+use serde::{Deserialize, Serialize};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::session::VideoInput;
@@ -45,7 +46,7 @@ pub struct DisplayRow {
 }
 
 /// A local device and its state on this destination (VER-6).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceRow {
     pub alias: String,
     pub device: DeviceId,
@@ -113,7 +114,8 @@ pub struct SessionRow {
 }
 
 /// The session state that the portal shows (UI-4).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionPhase {
     Requesting,
     HandingOff,
@@ -182,8 +184,9 @@ pub enum SetupIntent {
     CheckAgain,
 }
 
-/// What the user did in a window.
-#[derive(Debug, Clone, PartialEq)]
+/// What the user did in a window. The KDE applet sends it as JSON (UI-18).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Intent {
     /// The user says an unknown device is back on this computer (VER-6).
     DeviceIsBack {
@@ -248,6 +251,8 @@ pub enum Intent {
         peer: ComputerId,
         device: DeviceId,
     },
+    /// "Hand back" in the session part of the menu, on the source (UI-9, HB-3).
+    SourceHandBack,
 }
 
 impl VideoInputText for VideoInput {
@@ -276,4 +281,166 @@ pub trait PromptPresenter {
         screen: &PromptScreen,
     ) -> Result<(), String>;
     fn hide(&mut self, prompt: PromptId);
+}
+
+// ----- The menu and the main window (UI-9, UI-13, UI-18) -----
+
+/// The menu (UI-9). One value for all platforms; the KDE applet reads it as JSON.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MenuScreen {
+    /// The label of this computer.
+    pub computer: String,
+    pub glyph: Glyph,
+    /// The sessions of this peer, as the source and as the target.
+    pub sessions: Vec<MenuSession>,
+    pub displays: Vec<MenuDisplay>,
+    /// "Let <peer> control this display" (ACT-4).
+    pub control_requests: Vec<ControlRequestRow>,
+    /// The text clipboard switch, or `None` without a backend (CLIP-1).
+    pub clipboard: Option<bool>,
+}
+
+/// The state of the status glyph (UI-17). "Menu open" is a state of the UI only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Glyph {
+    #[default]
+    Idle,
+    /// This peer is the source of a session. Also when it is a target too.
+    Controlling,
+    /// This peer is the target of a session.
+    Controlled,
+}
+
+/// The stable id of a session row (UI-18).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MenuSessionId {
+    /// The session of the portal on this source.
+    Portal,
+    /// A session where this peer is the target.
+    Incoming { session: SessionId },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MenuSession {
+    pub id: MenuSessionId,
+    /// The other peer of the session.
+    pub peer: ComputerId,
+    pub peer_label: String,
+    pub device: DeviceId,
+    pub role: MenuRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MenuRole {
+    /// Actions: `SourceHandBack` and `EndSession`.
+    Source {
+        phase: SessionPhase,
+        video_input: VideoInput,
+    },
+    /// Actions of FLOW-17: `HandBack`, `StopSession`, and `ControlFromHere`.
+    Target {
+        state: String,
+        /// `None` if "Hand back" is available, else the cause (HB-2).
+        hand_back: Option<String>,
+    },
+}
+
+/// A local display and its `portal-match` result (UI-9, UI-18).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MenuDisplay {
+    pub token: DisplayToken,
+    pub name: String,
+    pub matching: DisplayMatching,
+    /// The local devices that match this display, each with its candidates.
+    pub devices: Vec<MenuDevice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DisplayMatching {
+    /// `portal-match` did not run yet, or it runs.
+    Evaluating,
+    /// `portal-match` finished. `devices` can be empty.
+    Done,
+    /// A `portal-match` error. No device shows (AC-9).
+    Failed { error: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MenuDevice {
+    pub device: DeviceId,
+    pub alias: String,
+    pub label: String,
+    /// Empty: the menu shows "No handoff routes in the config".
+    pub candidates: Vec<MenuCandidate>,
+}
+
+/// A candidate with the actions of ACT-1. `None` is available; else the reason.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MenuCandidate {
+    pub target: ComputerId,
+    pub label: String,
+    /// "online", "connecting", "searching", or "offline".
+    pub status: String,
+    pub switch_and_control: Option<String>,
+    pub switch_display_only: Option<String>,
+    pub control_only: Option<String>,
+}
+
+/// "Let <peer> control this display" for one device (ACT-4, UI-18).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlRequestRow {
+    pub peer: ComputerId,
+    pub peer_label: String,
+    pub device: DeviceId,
+    pub device_label: String,
+    /// True while the request waits: the menu shows "Waiting for <peer>".
+    pub waiting: bool,
+}
+
+/// The main window (UI-13): the menu, the computers, the devices, the notices.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MainScreen {
+    pub menu: MenuScreen,
+    pub fingerprint: String,
+    pub computers: Vec<ComputerRow>,
+    /// The device states with "It is back" for an unknown device (VER-6).
+    pub devices: Vec<DeviceRow>,
+    pub notices: Vec<String>,
+}
+
+/// A computer of the config (UI-13).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComputerRow {
+    pub id: ComputerId,
+    pub label: String,
+    pub this_computer: bool,
+    /// The local trust list has a fingerprint for it. Else the main window shows
+    /// "Not trusted" and the `telescreen trust` command.
+    pub trusted: bool,
+    pub connected: bool,
+}
+
+/// Gives a view model to a UI only when it changed (UI-18, ADR 0012).
+#[derive(Debug, Default)]
+pub struct Publisher<T> {
+    last: Option<T>,
+}
+
+impl<T: PartialEq + Clone> Publisher<T> {
+    pub fn new() -> Self {
+        Self { last: None }
+    }
+
+    /// Returns the value if it is the first one or different from the last one.
+    pub fn update(&mut self, value: T) -> Option<&T> {
+        if self.last.as_ref() == Some(&value) {
+            return None;
+        }
+        self.last = Some(value);
+        self.last.as_ref()
+    }
 }

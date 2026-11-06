@@ -37,8 +37,10 @@ use telescreen_view::{
 use crate::pointer_mailbox::ReceivedPointer;
 
 mod actions;
+mod menu;
 
 use actions::{ControlMatch, PendingStart};
+use menu::DisplayEvaluation;
 
 /// Sends commands to the transport.
 pub trait NetPort {
@@ -210,6 +212,12 @@ enum Pending {
         request: u64,
         display: DisplayInfo,
     },
+    /// `portal-match` of one device on one display for the menu (UI-18).
+    DisplayMatch {
+        generation: u64,
+        token: DisplayToken,
+        alias: String,
+    },
 }
 
 struct Portal {
@@ -282,6 +290,11 @@ pub struct Controller {
     /// `portal-match` runs for the control requests that this peer received (ACT-4).
     control_matches: BTreeMap<u64, ControlMatch>,
     next_control_match: u64,
+    /// `portal-match` of each display for the menu (UI-18). `None` until the
+    /// first `evaluate_displays`.
+    display_evaluation: Option<DisplayEvaluation>,
+    /// The computers with a fingerprint in the local trust list (UI-13).
+    trusted: BTreeSet<ComputerId>,
     notices: Vec<String>,
     /// The last display list, for the view. `displays()` refreshes it.
     display_cache: Vec<DisplayInfo>,
@@ -372,6 +385,8 @@ impl Controller {
             unsent_control: BTreeSet::new(),
             control_matches: BTreeMap::new(),
             next_control_match: 1,
+            display_evaluation: None,
+            trusted: BTreeSet::new(),
             notices: Vec::new(),
             display_cache: Vec::new(),
             last_heartbeat: None,
@@ -839,7 +854,12 @@ impl Controller {
 
     fn candidate_unavailable(&self, target: &ComputerId) -> Option<String> {
         let device = self.portal_device()?;
-        let route = routes::candidates(&self.config, &device)
+        self.route_unavailable(&device, target)
+    }
+
+    /// The FLOW-3 conditions of a session to `target` for a local device.
+    fn route_unavailable(&self, device: &Device, target: &ComputerId) -> Option<String> {
+        let route = routes::candidates(&self.config, device)
             .into_iter()
             .find(|r| r.target == target);
         let Some(route) = route else {
@@ -2412,6 +2432,11 @@ impl Controller {
             Pending::ControlMatch { request, display } => {
                 self.control_match_done(request, display, output);
             }
+            Pending::DisplayMatch {
+                generation,
+                token,
+                alias,
+            } => self.display_match_done(generation, token, alias, output),
             Pending::HandBackInputTarget {
                 prompt,
                 peer,
@@ -2447,7 +2472,13 @@ impl Controller {
                 // The window layer opens and closes the portal window, then calls
                 // `open_portal` or `close_portal`.
             }
-            Intent::Refresh => self.dial_candidates(),
+            Intent::Refresh => {
+                self.dial_candidates();
+                // UI-18: the menu evaluates again only after its first evaluation.
+                if self.display_evaluation.is_some() {
+                    self.evaluate_displays();
+                }
+            }
             Intent::AllowDiscovery => {
                 if self.discovery_enabled(&self.local) {
                     if self.discovery_deadline.is_some() {
@@ -2506,6 +2537,7 @@ impl Controller {
                 target,
             } => self.switch_display_only(&display, device, target),
             Intent::LetControl { peer, device } => self.let_control(peer, device),
+            Intent::SourceHandBack => self.portal_left_fullscreen(),
         }
     }
 
@@ -2586,6 +2618,9 @@ impl Controller {
             .collect();
         for session in gone {
             self.end_incoming(session, EndReason::DisplayGone);
+        }
+        if self.displays_differ(&displays) {
+            self.evaluate_displays();
         }
         let portal_token = self.portal.as_ref().map(|p| p.display.token.clone());
         if let Some(token) = portal_token {

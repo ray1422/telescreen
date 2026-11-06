@@ -3321,3 +3321,250 @@ fn act4_ver5_the_prompt_timeout_ends_the_wait_of_a_control_request() {
     assert!(!w.mac.controller.has_portal(), "ACT-5");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
 }
+
+// ----- UI-18: the menu view model -----
+
+fn evaluated() -> World {
+    let mut w = World::new();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    w
+}
+
+fn lg_row(peer: &Peer) -> telescreen_view::MenuDisplay {
+    peer.controller
+        .menu_screen()
+        .displays
+        .into_iter()
+        .find(|d| d.token == lg())
+        .expect("a row for the LG display")
+}
+
+fn pc1_candidate(peer: &Peer) -> telescreen_view::MenuCandidate {
+    let row = lg_row(peer);
+    assert_eq!(row.devices.len(), 1);
+    row.devices[0]
+        .candidates
+        .iter()
+        .find(|c| c.target == ComputerId::from("pc1"))
+        .cloned()
+        .expect("pc1 is a candidate")
+}
+
+#[test]
+fn ui18_no_display_rows_before_the_first_evaluation() {
+    let w = World::new();
+    assert!(w.mac.controller.menu_screen().displays.is_empty());
+    assert!(
+        w.mac.log.borrow().jobs.is_empty(),
+        "no portal-match at the start"
+    );
+}
+
+#[test]
+fn ui18_each_display_shows_its_matching_devices_and_candidates() {
+    let w = evaluated();
+    let menu = w.mac.controller.menu_screen();
+    let tokens: Vec<_> = menu.displays.iter().map(|d| d.token.0.as_str()).collect();
+    assert_eq!(tokens, ["builtin", "lg"], "stable ids: the display tokens");
+    let builtin = &menu.displays[0];
+    assert_eq!(builtin.matching, telescreen_view::DisplayMatching::Done);
+    assert!(builtin.devices.is_empty());
+    let lg = lg_row(&w.mac);
+    assert_eq!(lg.devices[0].device, shared());
+    assert_eq!(lg.devices[0].alias, "Desktop");
+    // NET-10: the evaluation dialed the candidate.
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.label, "Linux");
+    assert_eq!(candidate.status, "online");
+    assert_eq!(candidate.switch_and_control, None);
+    assert_eq!(candidate.switch_display_only, None);
+    assert_eq!(candidate.control_only, None);
+}
+
+#[test]
+fn ui18_an_offline_target_leaves_only_switch_display_only() {
+    let mut w = world_with(|config| endpoint_of(config, "pc1").hosts.clear());
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.status, "offline");
+    assert_eq!(candidate.switch_and_control.as_deref(), Some("offline"));
+    assert_eq!(candidate.control_only.as_deref(), Some("offline"));
+    assert_eq!(candidate.switch_display_only, None, "ACT-6");
+}
+
+#[test]
+fn ui18_missing_capture_leaves_only_switch_display_only() {
+    let mut w = World::new();
+    w.mac = peer_with(
+        "mac",
+        vec![display("lg", 0.0, 3400.0)],
+        InputCapabilities {
+            capture: Capability::Missing("grant Input Monitoring".into()),
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+    );
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    let candidate = pc1_candidate(&w.mac);
+    assert!(
+        candidate
+            .switch_and_control
+            .unwrap()
+            .contains("input capture")
+    );
+    assert!(candidate.control_only.unwrap().contains("input capture"));
+    assert_eq!(candidate.switch_display_only, None);
+}
+
+#[test]
+fn ui18_a_stale_portal_match_result_is_dropped() {
+    let mut w = World::new();
+    w.mac.controller.evaluate_displays();
+    // The first job is the built-in display. Keep it, and evaluate again.
+    let (old, _) = w.mac.log.borrow_mut().jobs.pop_front().unwrap();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    w.mac
+        .controller
+        .on_job_done(old, JobOutput::Operation(Ok(Outcome::Matched(true))));
+    let menu = w.mac.controller.menu_screen();
+    assert!(
+        menu.displays[0].devices.is_empty(),
+        "the old result has no effect"
+    );
+}
+
+#[test]
+fn ui18_refresh_evaluates_again_only_after_the_first_evaluation() {
+    let mut w = evaluated();
+    assert!(w.mac.log.borrow().jobs.is_empty());
+    w.mac.controller.on_intent(Intent::Refresh);
+    assert!(!w.mac.log.borrow().jobs.is_empty());
+}
+
+#[test]
+fn ui18_the_session_rows_and_the_glyph() {
+    let mut w = World::new();
+    assert_eq!(
+        w.mac.controller.menu_screen().glyph,
+        telescreen_view::Glyph::Idle
+    );
+    w.advance_to_forwarding();
+    let mac = w.mac.controller.menu_screen();
+    assert_eq!(mac.glyph, telescreen_view::Glyph::Controlling);
+    assert_eq!(mac.sessions.len(), 1);
+    assert_eq!(mac.sessions[0].id, telescreen_view::MenuSessionId::Portal);
+    assert_eq!(mac.sessions[0].peer, ComputerId::from("pc1"));
+    assert!(matches!(
+        mac.sessions[0].role,
+        telescreen_view::MenuRole::Source {
+            phase: SessionPhase::Forwarding,
+            ..
+        }
+    ));
+    let pc1 = w.pc1.controller.menu_screen();
+    assert_eq!(pc1.glyph, telescreen_view::Glyph::Controlled);
+    let session = w.pc1.controller.control_screen().incoming[0].session;
+    assert_eq!(
+        pc1.sessions[0].id,
+        telescreen_view::MenuSessionId::Incoming { session }
+    );
+    assert!(matches!(
+        pc1.sessions[0].role,
+        telescreen_view::MenuRole::Target {
+            hand_back: None,
+            ..
+        }
+    ));
+    act(&mut w, Intent::EndSession);
+    assert_eq!(
+        w.mac.controller.menu_screen().glyph,
+        telescreen_view::Glyph::Idle
+    );
+    assert!(w.mac.controller.menu_screen().sessions.is_empty());
+}
+
+#[test]
+fn ui9_hb3_hand_back_from_the_session_part_of_the_source() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    act(&mut w, Intent::SourceHandBack);
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert!(
+        w.mac.controller.awaiting_local_ack(),
+        "HB-1: the Mac verifies"
+    );
+}
+
+fn request_rows(peer: &Peer) -> Vec<(String, bool)> {
+    peer.controller
+        .menu_screen()
+        .control_requests
+        .into_iter()
+        .map(|r| (r.peer.0, r.waiting))
+        .collect()
+}
+
+#[test]
+fn ui18_let_control_rows_and_the_waiting_state() {
+    let mut w = World::new();
+    // The Mac and pc3 have handoff.pc1 for the device.
+    assert_eq!(
+        request_rows(&w.pc1),
+        [("mac".to_string(), false), ("pc3".to_string(), false)]
+    );
+    w.pc1.controller.on_intent(Intent::LetControl {
+        peer: ComputerId::from("mac"),
+        device: shared(),
+    });
+    w.pc1.log.borrow_mut().net.clear();
+    assert_eq!(request_rows(&w.pc1)[0], ("mac".to_string(), true));
+    w.pc1.controller.tick(w.now + Duration::from_secs(16));
+    assert_eq!(request_rows(&w.pc1)[0], ("mac".to_string(), false));
+}
+
+#[test]
+fn ui18_a_refusal_ends_the_waiting_state() {
+    let mut w = World::new();
+    w.mac = peer("mac", vec![display("builtin", -1500.0, 1500.0)]);
+    let_control(&mut w);
+    assert_eq!(request_rows(&w.pc1)[0], ("mac".to_string(), false));
+}
+
+#[test]
+fn ui13_the_main_window_lists_the_computers_and_their_trust() {
+    let mut w = World::new();
+    let row = |w: &World, id: &str| {
+        w.mac
+            .controller
+            .main_screen()
+            .computers
+            .into_iter()
+            .find(|c| c.id == ComputerId::from(id))
+            .unwrap()
+    };
+    assert!(row(&w, "mac").this_computer);
+    assert!(!row(&w, "pc1").trusted, "the app sets the trust state");
+    assert!(!row(&w, "pc1").connected);
+    w.mac
+        .controller
+        .set_trusted([ComputerId::from("pc1")].into_iter().collect());
+    w.open_portal();
+    assert!(row(&w, "pc1").trusted);
+    assert!(row(&w, "pc1").connected);
+    assert_eq!(w.mac.controller.main_screen().devices.len(), 1);
+}
+
+#[test]
+fn ui18_the_same_display_list_does_not_evaluate_again() {
+    // The window layer calls `displays_changed` every 2 seconds.
+    let mut w = evaluated();
+    w.mac.controller.displays_changed();
+    assert!(
+        w.mac.log.borrow().jobs.is_empty(),
+        "no portal-match helper runs"
+    );
+}

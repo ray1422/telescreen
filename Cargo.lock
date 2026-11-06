@@ -3403,6 +3403,8 @@ dependencies = [
 name = "telescreen-view"
 version = "0.5.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "telescreen-core",
 ]
 

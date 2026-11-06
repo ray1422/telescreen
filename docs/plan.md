@@ -94,7 +94,7 @@ The sequence can change after the spikes.
 | b | Mockups: the menu, the main window, the settings, the KDE applet, the control request flow, the icon | done (2026-11-07) |
 | c | Spikes (ADR 0012, open points): the Wayland shortcut inhibit from a cxx-qt window on niri and KWin; `NSHostingView` and the C ABI with the Rust main loop | done (2026-11-07, spikes 6 and 7: KWin, nested niri, macOS); a supervised key test not run |
 | d | Core: "Switch display only", the attach, and the control request on the wire (ACT-1 to ACT-5), with acceptance tests | done (2026-11-07): wire protocol 6, `SourceSession::attach`, and the new intents in the controller (`controller/actions.rs`); the current portal flow is not changed. Not tested on the hardware; no UI calls the intents yet (steps e to g) |
-| e | View models: the menu and the main window, stable row ids, a serializable form, and the push renderer contract | not started |
+| e | View models: the menu and the main window, stable row ids, a serializable form, and the push renderer contract | done (2026-11-07): `MenuScreen`, `MainScreen`, `Publisher` in `telescreen-view` (UI-18, JSON shape in `tests/json.rs`); `menu_screen`, `main_screen`, `evaluate_displays`, `set_trusted` in the controller (`controller/menu.rs`) |
 | f | macOS UI: Rust main loop, SwiftUI menu, status item, Control Center extension, main window, settings, lifecycle (UI-10, UI-13 to UI-16) | not started |
 | g | Linux UI: Qt/QML through cxx-qt, the Plasma applet, the StatusNotifierItem fallback, the menu command, lifecycle (UI-11, UI-13 to UI-16) | not started |
 | h | Native portal windows; remove egui and winit | not started |
@@ -109,6 +109,8 @@ The sequence can change after the spikes.
   - Linux: the `wl_surface` comes from a private Qt API. Get it again for each inhibit request.
 - From step d (2026-11-07):
   - Step e: the menu view model must show "Waiting for <peer>" for each control request that this peer sent. The controller has it only as `control_request_pending()`.
+  - Steps f and g: call `evaluate_displays` at the start; call `set_trusted` with the local trust list (else every computer shows "Not trusted"); push `menu_screen` and `main_screen` through a `Publisher` after each event.
+  - Steps f and g: the evaluation at the start runs the `portal-match` helpers of each display and dials the candidates. On macOS, a new install then shows the Local Network question at the start, not at the first portal.
   - Step h: the window layer must call `take_portal_window_request` also after network events. A received control request sets the request in `on_net`. Without that call, no portal window opens on the receiving peer, and the user cannot acknowledge.
 
 - Corners (user, 2026-11-06): use continuous (G2) corners on all surfaces that Telescreen draws, on both platforms. The HTML mockups use circular corners; do not copy that.
