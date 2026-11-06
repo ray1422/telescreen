@@ -308,7 +308,8 @@ impl Shared {
     fn cursor_at(&self, at: Point) {
         let in_area = self.portal().contains(at);
         let visible = self.visible.load(SeqCst);
-        self.over_hidden.store(in_area && !visible, SeqCst);
+        let over_hidden = in_area && !visible;
+        let was_over_hidden = self.over_hidden.swap(over_hidden, SeqCst);
         let inside = in_area && visible;
         if inside != self.entered.swap(inside, SeqCst) {
             self.push(if inside {
@@ -317,7 +318,10 @@ impl Shared {
                 CapturedEvent::PointerLeft
             });
         }
-        if inside && self.mode.load(SeqCst) == FORWARDING {
+        // FLOW-26: while the portal is hidden, the position in the portal area
+        // and the move out of it go to the warning on the target.
+        let report = inside || over_hidden || was_over_hidden;
+        if report && self.mode.load(SeqCst) == FORWARDING {
             self.moved[0].store(at.x.to_bits(), SeqCst);
             self.moved[1].store(at.y.to_bits(), SeqCst);
             if !self.move_queued.swap(true, SeqCst) {

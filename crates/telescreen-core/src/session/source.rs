@@ -59,6 +59,8 @@ pub struct SourceSession {
     keyboard_in_portal: bool,
     /// The target knows that the portal is on screen (FLOW-26).
     portal_shown: bool,
+    /// The last cursor position that the target got while the portal is hidden.
+    portal_cursor: Option<Normalized>,
     /// An attach runs no handoff steps (ACT-3).
     attach: bool,
     held: HeldInputs,
@@ -85,6 +87,7 @@ impl SourceSession {
             ack_wanted: false,
             keyboard_in_portal: true,
             portal_shown: true,
+            portal_cursor: None,
             attach: false,
             held: HeldInputs::default(),
             seq: 0,
@@ -192,6 +195,7 @@ impl SourceSession {
                 self.last_pointer = None;
                 self.keyboard_in_portal = true;
                 self.portal_shown = true;
+                self.portal_cursor = None;
                 return vec![SourceAction::StartForwarding];
             }
             Message::End { session, reason } if self.session == Some(session) => {
@@ -268,12 +272,26 @@ impl SourceSession {
             return Vec::new();
         };
         self.portal_shown = visible;
+        self.portal_cursor = None;
         let message = if visible {
             Message::PortalShown { session }
         } else {
             Message::PortalHidden { session }
         };
         vec![SourceAction::Send(message)]
+    }
+
+    /// The cursor of the source while the portal is not on screen (FLOW-26).
+    /// `None`: the cursor is out of the portal area. Sends only a change.
+    pub fn portal_cursor(&mut self, at: Option<Normalized>) -> Vec<SourceAction> {
+        if self.phase != SourcePhase::Forwarding || self.portal_shown || self.portal_cursor == at {
+            return Vec::new();
+        }
+        let Some(session) = self.session else {
+            return Vec::new();
+        };
+        self.portal_cursor = at;
+        vec![SourceAction::Send(Message::PortalCursor { session, at })]
     }
 
     /// Releases held input when the capture can no longer see up events (IN-13).

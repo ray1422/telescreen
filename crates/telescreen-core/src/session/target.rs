@@ -54,6 +54,8 @@ pub enum TargetAction {
     /// Shows or removes the warning that the source does not show its portal
     /// (FLOW-26). It takes no input.
     PortalWarning(bool),
+    /// Draws the cursor of the source on the warning, or removes it (FLOW-26).
+    PortalCursor(Option<Normalized>),
     /// Release the device lease of this session.
     ReleaseLease,
     /// Run this computer's route back to the source for the device (HB-1).
@@ -144,6 +146,7 @@ impl TargetSession {
             | Message::KeyboardBack { session }
             | Message::PortalHidden { session }
             | Message::PortalShown { session }
+            | Message::PortalCursor { session, .. }
             | Message::End { session, .. } => session,
             _ => return Vec::new(),
         };
@@ -200,6 +203,9 @@ impl TargetSession {
             Message::PortalShown { .. } if self.portal_warning => {
                 self.portal_warning = false;
                 vec![TargetAction::PortalWarning(false)]
+            }
+            Message::PortalCursor { at, .. } if self.portal_warning => {
+                vec![TargetAction::PortalCursor(*at)]
             }
             Message::End { reason, .. } => self.finish(*reason, false),
             _ => Vec::new(),

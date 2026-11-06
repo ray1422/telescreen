@@ -55,7 +55,7 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M15 | `scroll-speed`: the scroll speed is adjustable (user, 2026-10-27) | `scroll-speed` in the computer section of the target (IN-14, user, 2026-11-04) | done |
 | M19 | `kde-scroll`: Chrome animates the scroll on KDE, thus the scroll feels slow (user, 2026-11-05) | Button scroll on KWin (IN-15, spike 5) | done; the user checked the pointer shape and the scroll feel with a real trackpad |
 | M20 | `ui-redesign` (v0.600.0): spec section 4.7, ADR 0012, ADR 0013 (user, 2026-11-06) | The steps of M20 are done, and the user accepts the UI on macOS and on KDE | spec and ADRs done (2026-11-06); mockups continue |
-| M21 | `focus-scroll`: in v0.5.0 the keys went to the target with no end after Mission Control, and one application did not scroll (user, 2026-11-07) | The native focus is the only keyboard focus state (FLOW-22); the target warns while the portal is not on screen (FLOW-26); macOS suppresses forwarded buttons (IN-17); each forwarded scroll has an end (IN-18); AC-51 to AC-53 pass | code done (2026-11-07): tests pass on macOS and Linux; the hardware tests AC-51 to AC-53 are open |
+| M21 | `focus-scroll`: in v0.5.0 the keys went to the target with no end after Mission Control, and one application did not scroll (user, 2026-11-07) | The native focus is the only keyboard focus state (FLOW-22); the target warns while the portal is not on screen, and shows the source cursor on the warning (FLOW-26); macOS suppresses forwarded buttons (IN-17); each forwarded scroll has an end (IN-18); AC-51 to AC-54 pass | code done (2026-11-07): tests pass on macOS and Linux; the hardware tests AC-51 to AC-54 are open |
 
 ### M16: first binary release
 

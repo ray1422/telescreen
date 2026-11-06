@@ -24,6 +24,7 @@
 //! KeyboardBack{session} ────────▶          release keyboard focus holder
 //! PortalHidden{session} ────────▶          show the portal warning (FLOW-26)
 //! PortalShown{session} ─────────▶          hide the portal warning
+//! PortalCursor{session, at} ────▶          the source cursor on the warning
 //! ClipboardText{session, text} ◀▶          sync text while forwarding (CLIP-2)
 //! ClipboardClear{session}     ◀▶          the sent concealed text went away (CLIP-7)
 //! End{session, reason}  ◀──────▶  End{session, reason}
@@ -100,6 +101,12 @@ pub enum Message {
     /// The portal is on the screen of the source again (FLOW-26).
     PortalShown {
         session: SessionId,
+    },
+    /// The cursor of the source while the portal is not on screen (FLOW-26).
+    /// `None`: the cursor is not in the portal area.
+    PortalCursor {
+        session: SessionId,
+        at: Option<Normalized>,
     },
     /// Plain text in both directions while forwarding (CLIP-2). `concealed` is the
     /// concealed mark of a password manager (CLIP-7).

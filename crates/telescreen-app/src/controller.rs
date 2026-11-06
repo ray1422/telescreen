@@ -1165,6 +1165,16 @@ impl Controller {
         let actions = match event {
             CapturedEvent::Input(input) => session.on_input(input),
             CapturedEvent::PointerMoved { at } => {
+                if !portal.visible {
+                    // FLOW-26: the warning on the target shows the cursor.
+                    let cursor = portal
+                        .bounds
+                        .contains(at)
+                        .then(|| pointer::normalize(portal.bounds, at));
+                    let actions = session.portal_cursor(cursor);
+                    self.run_source_actions(actions);
+                    return;
+                }
                 portal.pointer = portal.bounds.clamp(at);
                 if session.phase() == SourcePhase::Forwarding {
                     self.send_pointer();
@@ -1582,6 +1592,7 @@ impl Controller {
             | Message::KeyboardBack { session }
             | Message::PortalHidden { session }
             | Message::PortalShown { session }
+            | Message::PortalCursor { session, .. }
             | Message::End { session, .. } => {
                 let session = *session;
                 let Some(target) = self.incoming.get_mut(&session) else {
@@ -1981,10 +1992,18 @@ impl Controller {
                     self.show_portal_warning(session, &source, true)
                 }
                 TargetAction::PortalWarning(false) => {
+                    if let Some(prompt) = self.portal_warnings.get(&session) {
+                        self.ports.prompt.cursor(*prompt, None);
+                    }
                     if self.ports.prompt.keeps_blank() {
                         self.show_portal_warning(session, &source, false);
                     } else if let Some(prompt) = self.portal_warnings.remove(&session) {
                         self.ports.prompt.hide(prompt);
+                    }
+                }
+                TargetAction::PortalCursor(at) => {
+                    if let Some(prompt) = self.portal_warnings.get(&session) {
+                        self.ports.prompt.cursor(*prompt, at);
                     }
                 }
                 TargetAction::ReleaseKeyboard => {

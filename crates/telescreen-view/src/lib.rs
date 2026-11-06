@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::platform::DisplayInfo;
+use telescreen_core::pointer::Normalized;
 use telescreen_core::session::VideoInput;
 
 /// Identifies a verifier window, independently of a session.
@@ -319,6 +320,9 @@ pub trait PromptPresenter {
     fn keeps_blank(&self) -> bool {
         false
     }
+    /// Draws the cursor of the source on a shown prompt at a position in the
+    /// display, or removes it (FLOW-26). It takes no input.
+    fn cursor(&mut self, _prompt: PromptId, _at: Option<Normalized>) {}
 }
 
 // ----- The menu and the main window (UI-9, UI-13, UI-18) -----

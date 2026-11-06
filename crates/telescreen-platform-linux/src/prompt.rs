@@ -12,9 +12,11 @@ use std::thread;
 use std::time::Duration;
 
 use telescreen_core::platform::DisplayInfo;
+use telescreen_core::pointer::Normalized;
 use telescreen_view::{PromptId, PromptPresenter, PromptScreen};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
+    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_subcompositor, wl_subsurface,
+    wl_surface,
 };
 use wayland_client::{Connection, Dispatch, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -28,6 +30,8 @@ ignore_events!(
     wl_shm_pool::WlShmPool,
     wl_buffer::WlBuffer,
     wl_surface::WlSurface,
+    wl_subcompositor::WlSubcompositor,
+    wl_subsurface::WlSubsurface,
     zwlr_layer_shell_v1::ZwlrLayerShellV1
 );
 
@@ -67,6 +71,10 @@ enum Command {
     },
     Hide {
         prompt: PromptId,
+    },
+    Cursor {
+        prompt: PromptId,
+        at: Option<Normalized>,
     },
 }
 
@@ -127,6 +135,17 @@ impl PromptPresenter for LayerPrompt {
     fn keeps_blank(&self) -> bool {
         true
     }
+
+    fn cursor(&mut self, prompt: PromptId, at: Option<Normalized>) {
+        let _ = self.commands.send(Command::Cursor { prompt, at });
+    }
+}
+
+/// The cursor of the source on the warning (FLOW-26): a subsurface with an empty
+/// input region, so that it takes no pointer input.
+struct Cursor {
+    surface: wl_surface::WlSurface,
+    subsurface: wl_subsurface::WlSubsurface,
 }
 
 struct Surface {
@@ -137,6 +156,7 @@ struct Surface {
     output: String,
     /// The size of the last configure.
     size: Option<(u32, u32)>,
+    cursor: Option<Cursor>,
 }
 
 struct Overlay {
@@ -144,6 +164,10 @@ struct Overlay {
     compositor: wl_compositor::WlCompositor,
     shm: wl_shm::WlShm,
     shell: zwlr_layer_shell_v1::ZwlrLayerShellV1,
+    /// `None`: the compositor has no subsurfaces, and the warning shows no cursor.
+    subcompositor: Option<wl_subcompositor::WlSubcompositor>,
+    /// The cursor image and its size, made at the first use.
+    cursor_image: Option<(wl_buffer::WlBuffer, i32, i32)>,
     surfaces: HashMap<u64, Surface>,
 }
 
@@ -163,11 +187,14 @@ impl Overlay {
             .list
             .bind(&qh, 1..=4, ())
             .map_err(|_| "the compositor has no zwlr_layer_shell_v1".to_string())?;
+        let subcompositor = globals.list.bind(&qh, 1..=1, ()).ok();
         Ok(Self {
             globals,
             compositor,
             shm,
             shell,
+            subcompositor,
+            cursor_image: None,
             surfaces: HashMap::new(),
         })
     }
@@ -175,15 +202,14 @@ impl Overlay {
     fn run(mut self, commands: Receiver<Command>, results: Sender<Result<(), String>>) {
         loop {
             match commands.recv_timeout(Duration::from_millis(250)) {
-                Ok(Command::Show {
-                    prompt,
-                    output,
-                    screen,
-                }) => {
-                    let result = self.show(prompt.0, &output, screen);
-                    let _ = results.send(result);
+                Ok(command) => {
+                    self.apply(command, &results);
+                    // The cursor moves often: apply all waiting commands before
+                    // the roundtrip.
+                    while let Ok(command) = commands.try_recv() {
+                        self.apply(command, &results);
+                    }
                 }
-                Ok(Command::Hide { prompt }) => self.hide(prompt.0),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             }
@@ -191,6 +217,25 @@ impl Overlay {
                 return;
             }
             self.handle_events();
+        }
+    }
+
+    fn apply(&mut self, command: Command, results: &Sender<Result<(), String>>) {
+        match command {
+            Command::Show {
+                prompt,
+                output,
+                screen,
+            } => {
+                let result = self.show(prompt.0, &output, screen);
+                let _ = results.send(result);
+            }
+            Command::Hide { prompt } => self.hide(prompt.0),
+            Command::Cursor { prompt, at } => {
+                if let Err(e) = self.cursor(prompt.0, at) {
+                    eprintln!("telescreen: prompt cursor: {e}");
+                }
+            }
         }
     }
 
@@ -239,6 +284,7 @@ impl Overlay {
                 screen,
                 output: output_name,
                 size: None,
+                cursor: None,
             },
         );
         self.globals.roundtrip()?;
@@ -251,6 +297,10 @@ impl Overlay {
 
     fn hide(&mut self, id: u64) {
         if let Some(surface) = self.surfaces.remove(&id) {
+            if let Some(cursor) = surface.cursor {
+                cursor.subsurface.destroy();
+                cursor.surface.destroy();
+            }
             surface.layer.destroy();
             surface.surface.destroy();
             if let Some(buffer) = surface.buffer {
@@ -319,6 +369,129 @@ impl Overlay {
     }
 }
 
+impl Overlay {
+    /// Moves the cursor of the source on a shown prompt, or removes it (FLOW-26).
+    fn cursor(&mut self, id: u64, at: Option<Normalized>) -> Result<(), String> {
+        let Some(subcompositor) = self.subcompositor.clone() else {
+            return Ok(());
+        };
+        let image = match (&self.cursor_image, at) {
+            (_, None) => None,
+            (Some(image), Some(_)) => Some(image.clone()),
+            (None, Some(_)) => {
+                let image = self.cursor_buffer()?;
+                self.cursor_image = Some(image.clone());
+                Some(image)
+            }
+        };
+        let qh = self.globals.handle();
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return Ok(());
+        };
+        let Some((width, height)) = surface.size else {
+            return Ok(());
+        };
+        let (Some(at), Some((buffer, image_width, image_height))) = (at, image) else {
+            if let Some(cursor) = &surface.cursor {
+                cursor.surface.attach(None, 0, 0);
+                cursor.surface.commit();
+                surface.surface.commit();
+            }
+            return self.globals.connection.flush().map_err(|e| e.to_string());
+        };
+        let cursor = surface.cursor.get_or_insert_with(|| {
+            let child = self.compositor.create_surface(&qh, ());
+            let region = self.compositor.create_region(&qh, ());
+            child.set_input_region(Some(&region));
+            region.destroy();
+            let subsurface = subcompositor.get_subsurface(&child, &surface.surface, &qh, ());
+            subsurface.set_desync();
+            Cursor {
+                surface: child,
+                subsurface,
+            }
+        });
+        // The hot spot of the image is its top-left pixel.
+        let x = (f64::from(at.x.clamp(0.0, 1.0)) * f64::from(width.saturating_sub(1))).round();
+        let y = (f64::from(at.y.clamp(0.0, 1.0)) * f64::from(height.saturating_sub(1))).round();
+        cursor.subsurface.set_position(x as i32, y as i32);
+        cursor.surface.attach(Some(&buffer), 0, 0);
+        cursor
+            .surface
+            .damage_buffer(0, 0, image_width, image_height);
+        cursor.surface.commit();
+        // The position applies at the next commit of the parent.
+        surface.surface.commit();
+        self.globals.connection.flush().map_err(|e| e.to_string())
+    }
+
+    fn cursor_buffer(&self) -> Result<(wl_buffer::WlBuffer, i32, i32), String> {
+        let (width, height, pixels) = cursor_pixels();
+        let bytes: Vec<u8> = pixels.iter().flat_map(|p| p.to_le_bytes()).collect();
+        let file = shared_memory(bytes.len())?;
+        file.write_all_at(&bytes, 0).map_err(|e| e.to_string())?;
+        let size = i32::try_from(bytes.len()).map_err(|e| e.to_string())?;
+        let width = i32::try_from(width).map_err(|e| e.to_string())?;
+        let height = i32::try_from(height).map_err(|e| e.to_string())?;
+        let qh = self.globals.handle();
+        let pool = self.shm.create_pool(file.as_fd(), size, &qh, ());
+        let buffer = pool.create_buffer(
+            0,
+            width,
+            height,
+            width * 4,
+            wl_shm::Format::Argb8888,
+            &qh,
+            (),
+        );
+        pool.destroy();
+        Ok((buffer, width, height))
+    }
+}
+
+/// An arrow: `X` is the black edge, `o` is the white fill.
+const ARROW: [&str; 17] = [
+    "X",
+    "XX",
+    "XoX",
+    "XooX",
+    "XoooX",
+    "XooooX",
+    "XoooooX",
+    "XooooooX",
+    "XoooooooX",
+    "XooooooooX",
+    "XoooooXXXXX",
+    "XooXooX",
+    "XoX XooX",
+    "XX  XooX",
+    "X    XooX",
+    "     XooX",
+    "      XX",
+];
+const ARROW_SCALE: usize = 2;
+
+/// The cursor image: its width, its height, and premultiplied ARGB pixels.
+fn cursor_pixels() -> (usize, usize, Vec<u32>) {
+    let columns = ARROW.iter().map(|row| row.len()).max().unwrap_or(0);
+    let (width, height) = (columns * ARROW_SCALE, ARROW.len() * ARROW_SCALE);
+    let mut pixels = vec![0; width * height];
+    for (row, line) in ARROW.iter().enumerate() {
+        for (column, cell) in line.bytes().enumerate() {
+            let color = match cell {
+                b'X' => 0xFF00_0000,
+                b'o' => 0xFFFF_FFFF,
+                _ => continue,
+            };
+            for dy in 0..ARROW_SCALE {
+                let start = (row * ARROW_SCALE + dy) * width + column * ARROW_SCALE;
+                pixels[start..start + ARROW_SCALE].fill(color);
+            }
+        }
+    }
+    (width, height, pixels)
+}
+
 /// An anonymous shared memory file for a wl_shm pool.
 fn shared_memory(size: usize) -> Result<File, String> {
     // SAFETY: memfd_create with a valid C string; the new fd is owned by the File.
@@ -330,4 +503,18 @@ fn shared_memory(size: usize) -> Result<File, String> {
     let file = unsafe { File::from_raw_fd(fd) };
     file.set_len(size as u64).map_err(|e| e.to_string())?;
     Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flow26_cursor_image_has_its_hot_spot_at_the_top_left() {
+        let (width, height, pixels) = cursor_pixels();
+        assert_eq!((width, height), (22, 34));
+        assert_eq!(pixels[0], 0xFF00_0000);
+        assert_eq!(pixels[width - 1], 0);
+        assert!(pixels.contains(&0xFFFF_FFFF));
+    }
 }

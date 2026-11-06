@@ -108,6 +108,8 @@ struct Log {
     pointer: Vec<Normalized>,
     prompts: Vec<String>,
     prompt_visible: bool,
+    /// The cursor positions on the prompt (FLOW-26).
+    prompt_cursor: Vec<Option<Normalized>>,
     /// Peers of each `NetCommand::Close`.
     closed: Vec<ComputerId>,
     /// The number of `NetPort::shutdown` calls.
@@ -313,6 +315,9 @@ impl PromptPresenter for Prompt {
     }
     fn hide(&mut self, _: PromptId) {
         self.0.borrow_mut().prompt_visible = false;
+    }
+    fn cursor(&mut self, _: PromptId, at: Option<Normalized>) {
+        self.0.borrow_mut().prompt_cursor.push(at);
     }
 }
 
@@ -1087,6 +1092,46 @@ fn flow26_ac51_the_target_warns_while_the_portal_is_hidden() {
     );
     assert!(!w.mac.controller.portal_hidden());
     assert!(!w.pc1.log.borrow().prompt_visible);
+}
+
+#[test]
+fn flow26_the_warning_shows_the_cursor_of_the_source() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    let datagrams = w.pc1.log.borrow().pointer.len();
+    let moved = |w: &mut World, x: f64| {
+        w.mac.controller.on_captured(CapturedEvent::PointerMoved {
+            at: Point { x, y: 500.0 },
+        });
+        w.pump();
+    };
+    moved(&mut w, 1699.0);
+    {
+        let log = w.pc1.log.borrow();
+        let at = log.prompt_cursor.last().unwrap().unwrap();
+        assert!((at.x - 1699.0 / 3399.0).abs() < 1e-4, "{at:?}");
+        assert_eq!(log.pointer.len(), datagrams, "the target pointer stays");
+    }
+    moved(&mut w, 1699.0);
+    assert_eq!(w.pc1.log.borrow().prompt_cursor.len(), 1, "no change");
+    // Out of the portal area: the cursor image goes away.
+    moved(&mut w, -100.0);
+    moved(&mut w, -200.0);
+    assert_eq!(w.pc1.log.borrow().prompt_cursor[1..], [None]);
+
+    moved(&mut w, 100.0);
+    w.mac.controller.set_portal_visible(true);
+    w.pump();
+    assert_eq!(*w.pc1.log.borrow().prompt_cursor.last().unwrap(), None);
+    let count = w.pc1.log.borrow().prompt_cursor.len();
+    moved(&mut w, 200.0);
+    assert_eq!(w.pc1.log.borrow().prompt_cursor.len(), count);
+    assert!(
+        w.pc1.log.borrow().pointer.len() > datagrams,
+        "forwarding again"
+    );
 }
 
 #[test]
