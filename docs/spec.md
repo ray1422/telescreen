@@ -133,6 +133,15 @@ Actions:
   - While the receiving peer waits for the acknowledgement, FLOW-21 applies. Its user ends the wait with the safety exit (IN-8), or the prompt times out (VER-5).
   - If the receiving peer has no matching display, has no capture permission, or already has a session as the source on that display, it refuses the request. The asking peer shows the reason (Claude decides, 2026-11-06).
 - **ACT-5** The portal exists only while a session exists on the source. The source opens it when a session starts, before the handoff steps, so that FLOW-21 applies. It closes the portal when the session ends. This replaces "Open portal" in FLOW-2: the menu and the main window list the displays, and FLOW-2 to FLOW-4 apply to that list. The portal shows no candidates. It shows at most one status line.
+- **ACT-6** Rules for the implementation of ACT-1 to ACT-5 (Claude decides, 2026-11-07):
+  - Each action names the display, the device id, and the target. The menu knows the device from the `portal-match` result of each display. The portal does not choose a device.
+  - An attach needs the same route as a handoff: the source has `handoff.<target>` for the device, and the target refuses with `NoRoute` by NET-4 if it does not. The wire has no separate attach request: the source sends `RequestSession`, and after `SessionGranted` it sends `HandoffDone` at once with no steps.
+  - The device state after an attach: `confirmed` if the target verified, else `switched, not verified`, because the user switched the display by hand. At the end of the session, `switched, not verified` becomes `unknown`, as after a handoff (FLOW-16).
+  - "Switch display only" needs a route and nothing more. It works when the destination is offline and when the source has no capture or suppress permission. It makes no session and no portal, and it does not arm the capture. It runs the same `handoff.<target>.steps` as "Switch & control". The `portal` field of the driver request describes the chosen display, with no portal window.
+  - After the steps of "Switch display only", the source sends `DisplaySwitched { device }` if the destination is connected. The destination accepts it only if the config of the sender has `handoff.<destination>` for the device (NET-4). Else it ignores the message. When it accepts, it ends its sessions of that device in both roles (FLOW-6), and it verifies as after a hand back (HB-1, VER-4). The source shows the device state `switched, not verified`.
+  - The receiving peer of a control request refuses with `ControlRefused { device, reason }`. The reasons: the device is unknown; the receiving peer has no `handoff.<asking peer>` route for the device; no display matches; more than one display matches; the receiving peer cannot capture or suppress; it already has a session as the source on the matching display. It does not guess between two matching displays.
+  - The asking peer shows "Waiting for <peer>" until the attach `RequestSession` of that peer for that device arrives, until `ControlRefused` arrives, or for 15 seconds. After 15 seconds it shows "<peer> did not answer".
+  - The wire protocol version is 6.
 
 Menu and entry points:
 

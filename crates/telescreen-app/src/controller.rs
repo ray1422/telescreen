@@ -1431,6 +1431,10 @@ impl Controller {
                 self.run_target_actions_at(session, actions, now);
             }
             Message::Hello { .. } | Message::Heartbeat => {}
+            // ACT-6: M20 step d.
+            Message::DisplaySwitched { .. }
+            | Message::ControlRequest { .. }
+            | Message::ControlRefused { .. } => {}
         }
     }
 

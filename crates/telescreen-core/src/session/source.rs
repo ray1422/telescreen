@@ -88,6 +88,18 @@ impl SourceSession {
         (source, actions)
     }
 
+    /// Starts an attach to `target` for `device` (ACT-3): a session with no
+    /// handoff steps. Returns `[Send(RequestSession { device })]`, as `start`.
+    pub fn attach(target: ComputerId, device: DeviceId) -> (Self, Vec<SourceAction>) {
+        let _ = (target, device);
+        todo!("ACT-3")
+    }
+
+    /// True for a session that [`SourceSession::attach`] made.
+    pub fn is_attach(&self) -> bool {
+        todo!("ACT-3")
+    }
+
     pub fn target(&self) -> &ComputerId {
         &self.target
     }

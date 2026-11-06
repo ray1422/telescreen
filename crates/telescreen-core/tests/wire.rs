@@ -82,6 +82,17 @@ fn messages_round_trip() {
             session: s,
             reason: EndReason::SafetyExit,
         },
+        // ACT-6.
+        Message::DisplaySwitched {
+            device: DeviceId::from("shared-lg"),
+        },
+        Message::ControlRequest {
+            device: DeviceId::from("shared-lg"),
+        },
+        Message::ControlRefused {
+            device: DeviceId::from("shared-lg"),
+            reason: ControlRefuseReason::AmbiguousDisplay,
+        },
     ];
     for message in messages {
         let bytes = encode_message(&message).unwrap();
@@ -121,10 +132,23 @@ fn net2_pointer_round_trip_and_order() {
 }
 
 #[test]
-fn protocol_version_5_has_the_verification_messages() {
-    // VER-3 changed the messages (AckWanted, Ack, Started.verified), so an older
+fn act6_protocol_version_6_has_the_control_request_messages() {
+    // ACT-6 added DisplaySwitched, ControlRequest, and ControlRefused, so an older
     // peer is refused.
-    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 5);
+    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 6);
+}
+
+#[test]
+fn act6_each_control_refuse_reason_round_trips() {
+    use ControlRefuseReason::*;
+    for reason in [UnknownDevice, NoRoute, NoDisplay, AmbiguousDisplay, NoCapture, Busy] {
+        let message = Message::ControlRefused {
+            device: DeviceId::from("d"),
+            reason,
+        };
+        let bytes = encode_message(&message).unwrap();
+        assert_eq!(decode_message(&bytes).unwrap(), message);
+    }
 }
 
 #[test]
