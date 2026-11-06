@@ -160,6 +160,13 @@ impl Hooks {
         }
     }
 
+    /// FLOW-22: the capture gave the portal the keyboard, for example for a middle
+    /// click. macOS does not focus a window for that click, so focus it here.
+    pub(crate) fn focus_portal(&mut self, portal: &Window) {
+        window::activate_app();
+        portal.focus_window();
+    }
+
     /// Keeps forwarded pointer input out of the portal UI (FLOW-22).
     pub(crate) fn portal_window_event(&mut self, event: &WindowEvent, forwarding: bool) -> bool {
         forwarding

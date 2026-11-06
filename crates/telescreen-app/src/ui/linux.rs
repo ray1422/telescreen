@@ -377,6 +377,10 @@ impl Hooks {
     }
 
     /// Records native keyboard focus independently of the cursor (FLOW-22, UI-6).
+    /// FLOW-22: the compositor gives the portal the focus for the click itself. A
+    /// Wayland client cannot take the focus (FLOW-21).
+    pub(crate) fn focus_portal(&mut self, _: &Window) {}
+
     pub(crate) fn portal_focus(&mut self, _: &Window, focused: bool, _: bool) {
         self.capture.0.borrow_mut().portal_focus(focused);
     }

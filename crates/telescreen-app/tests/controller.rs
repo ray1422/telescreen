@@ -981,6 +981,25 @@ fn flow23_ac27_one_visible_keyboard_focus() {
 }
 
 #[test]
+fn flow22_input_to_the_portal_gives_it_the_native_focus() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.set_portal_focus(false);
+    assert!(!w.mac.controller.take_portal_focus_request());
+
+    // A middle click in the portal: macOS does not focus the window for it.
+    w.mac.controller.on_captured(CapturedEvent::KeyboardEntered);
+    assert!(w.mac.controller.take_portal_focus_request());
+    assert!(!w.mac.controller.take_portal_focus_request(), "once");
+
+    // The native focus comes first: no request.
+    w.mac.controller.on_captured(CapturedEvent::KeyboardLeft);
+    w.mac.controller.on_captured(CapturedEvent::KeyboardEntered);
+    w.mac.controller.set_portal_focus(true);
+    assert!(!w.mac.controller.take_portal_focus_request());
+}
+
+#[test]
 fn flow23_session_end_removes_the_holder() {
     let mut w = World::new();
     w.advance_to_forwarding();

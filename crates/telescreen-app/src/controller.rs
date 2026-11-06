@@ -225,6 +225,9 @@ struct Portal {
     display: DisplayInfo,
     bounds: Rect,
     focused: bool,
+    /// The capture gave the keyboard to the portal, but the window does not have
+    /// the native focus yet (FLOW-22).
+    focus_wanted: bool,
     guarded: bool,
     matching: Matching,
     match_pending: usize,
@@ -533,6 +536,7 @@ impl Controller {
             display,
             bounds,
             focused: true,
+            focus_wanted: false,
             guarded: false,
             matching: Matching::Evaluating,
             match_pending: 0,
@@ -546,6 +550,15 @@ impl Controller {
             notice: None,
         });
         self.evaluate_portal_match();
+    }
+
+    /// True once when the window layer must give the portal window the native
+    /// focus (FLOW-22). The capture gave it the keyboard for a click that the OS
+    /// does not use to focus a window, for example a middle click on macOS.
+    pub fn take_portal_focus_request(&mut self) -> bool {
+        self.portal
+            .as_mut()
+            .is_some_and(|portal| std::mem::take(&mut portal.focus_wanted))
     }
 
     /// Takes the portal window request from FLOW-17.
@@ -790,6 +803,7 @@ impl Controller {
     pub fn set_portal_focus(&mut self, focused: bool) {
         if let Some(portal) = self.portal.as_mut() {
             portal.focused = focused;
+            portal.focus_wanted &= !focused;
             self.ports.capture.set_portal_focus(focused);
         }
     }
@@ -1079,7 +1093,11 @@ impl Controller {
                 return;
             }
             CapturedEvent::PointerLeft => return,
-            CapturedEvent::KeyboardEntered => session.on_keyboard(true),
+            CapturedEvent::KeyboardEntered => {
+                // FLOW-22: input that goes to the portal gives the portal the focus.
+                portal.focus_wanted = !portal.focused;
+                session.on_keyboard(true)
+            }
             CapturedEvent::KeyboardLeft => session.on_keyboard(false),
             CapturedEvent::InputLost => session.on_input_lost(),
             CapturedEvent::HandBackShortcut => session.request_hand_back(),

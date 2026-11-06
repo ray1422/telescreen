@@ -586,6 +586,11 @@ impl App {
         for event in self.hooks.drain_captured() {
             self.controller.on_captured(event);
         }
+        if self.controller.take_portal_focus_request()
+            && let Some(portal) = &self.portal
+        {
+            self.hooks.focus_portal(&portal.surface.window);
+        }
         for request in self.hooks.take_prompt_requests() {
             self.prompt_request(event_loop, request);
         }
