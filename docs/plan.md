@@ -91,7 +91,7 @@ The sequence can change after the spikes.
 | Step | Content | Status |
 | --- | --- | --- |
 | a | Spec section 4.7, ADR 0012, ADR 0013, the glossary | done (2026-11-06) |
-| b | Mockups: the menu, the main window, the settings, the KDE applet, the control request flow, the icon | in progress |
+| b | Mockups: the menu, the main window, the settings, the KDE applet, the control request flow, the icon | done (2026-11-07) |
 | c | Spikes (ADR 0012, open points): the Wayland shortcut inhibit from a cxx-qt window on niri and KWin; `NSHostingView` and the C ABI with the Rust main loop | not started |
 | d | Core: "Switch display only", the attach, and the control request on the wire (ACT-1 to ACT-5), with acceptance tests | not started |
 | e | View models: the menu and the main window, stable row ids, a serializable form, and the push renderer contract | not started |

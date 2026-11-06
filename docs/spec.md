@@ -148,7 +148,7 @@ Menu and entry points:
 - **UI-11** Linux entry points:
   - KDE: a Plasma applet in the system tray (user, 2026-11-06: in the first version of the redesign). It reads the menu view model over D-Bus.
   - With no applet: a StatusNotifierItem with a D-Bus menu that has the same items.
-  - With no tray host: a command opens the menu (the command name is open). The user binds it to a key in the desktop or compositor.
+  - With no tray host: the command `telescreen show menu` opens the menu (user, 2026-11-07). The user binds it to a key in the desktop or compositor. `show` is the prefix of each command that opens a part of the UI.
 - **UI-12** Telescreen does not listen for global shortcuts on any platform (user, 2026-11-06). The hand back shortcut (IN-7) and the safety exit (IN-8) are not global shortcuts: the input capture handles them during a session. A macOS Shortcuts action is deferred.
 
 Main window, settings, and lifecycle:
@@ -159,6 +159,13 @@ Main window, settings, and lifecycle:
   - Both platforms: start at login, off by default (user, 2026-11-06). Reason: Telescreen listens on a network port.
 - **UI-15** Telescreen continues to run when the user closes all its windows. One process does all the work. Only one instance runs: a second start tells the first instance to open the main window, and then it stops (macOS: the reopen event; Linux: D-Bus). "Quit Telescreen" ends each session as for a quit (`TargetDisconnected`). Each platform implements the lifecycle in its own UI; the rules are in the core (user, 2026-11-06).
 - **UI-16** The menu and the windows use the system materials. A part that Telescreen draws semi-transparent itself becomes opaque when the system setting to reduce transparency is on, and it follows changes of that setting while the app runs.
+- **UI-17** The status glyph (user, 2026-11-07; the mockups have the shapes) is a display shell with a stand. It has four states:
+  - Idle: the lens in the shell, at half opacity.
+  - Menu open: the lens at full opacity.
+  - Controlling (this peer is the source of a session): no lens; a pointer in the shell.
+  - Controlled (this peer is the target of a session): no lens; a remote control at an angle, with four keys in a 2 by 2 grid.
+
+  The status item and the tray use a template image. The Control Center button uses a custom SF Symbol. In the Controlling and Controlled states, its button is on, with the red of the app icon.
 
 ## 5. Input
 
@@ -335,8 +342,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Drivers for the output format of one tool (for example `betterDisplay` or `ddcutil`, with `expect`): a later version, after their output is measured on the hardware (user, 2026-10-27). The other driver decisions are in `docs/config.md`.
 - UI redesign (section 4.7, ADR 0012):
   - The spikes of ADR 0012: the Wayland shortcut inhibit from a cxx-qt window, and the macOS data flow with `NSHostingView` and the C ABI.
-  - The name of the command that opens the menu on Linux (UI-11).
-  - The look of the main window, the KDE "Controlling <peer>" state, and the icon: the mockups continue after this spec update.
+  - Can the main window trust a fingerprint? ADR 0004 has only the command `telescreen trust`, and UI-13 only shows pairing and trust.
 - Login screen control (a memo, not planned; user, 2026-11-06). Example: the Linux computer shows SDDM, and no user session runs. A system service that starts before the login can inject keys through uinput, because uinput is in the kernel and the greeter reads it through libinput. Limits: the service is not a client of the greeter compositor, so it does not know the output geometry, and the absolute pointer position is approximate; no clipboard; no `prompt` verifier. Open: the handover between the system service and the app of the user session (port, identity, trust keys), and the security of remote keys at a password field. A decision needs its own ADR.
 
 Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:
