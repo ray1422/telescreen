@@ -385,7 +385,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Minimum OS versions for each package. macOS: 27.0 for v0.1.0, the only tested version (user, 2026-10-27). Linux: open.
 - Drivers for the output format of one tool (for example `betterDisplay` or `ddcutil`, with `expect`): a later version, after their output is measured on the hardware (user, 2026-10-27). The other driver decisions are in `docs/config.md`.
 - UI redesign (section 4.7, ADR 0012):
-  - The Wayland shortcut inhibit from a cxx-qt window on niri (spike 6 passed on KWin only), and a key test with the user that the inhibit blocks a compositor shortcut.
+  - A key test with the user that the inhibit of a cxx-qt window blocks a compositor shortcut (spike 6 saw only the `active` event).
 - Login screen control (a memo, not planned; user, 2026-11-06). Example: the Linux computer shows SDDM, and no user session runs. A system service that starts before the login can inject keys through uinput, because uinput is in the kernel and the greeter reads it through libinput. Limits: the service is not a client of the greeter compositor, so it does not know the output geometry, and the absolute pointer position is approximate; no clipboard; no `prompt` verifier. Open: the handover between the system service and the app of the user session (port, identity, trust keys), and the security of remote keys at a password field. A decision needs its own ADR.
 
 Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:

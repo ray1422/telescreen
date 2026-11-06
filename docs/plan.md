@@ -92,7 +92,7 @@ The sequence can change after the spikes.
 | --- | --- | --- |
 | a | Spec section 4.7, ADR 0012, ADR 0013, the glossary | done (2026-11-06) |
 | b | Mockups: the menu, the main window, the settings, the KDE applet, the control request flow, the icon | done (2026-11-07) |
-| c | Spikes (ADR 0012, open points): the Wayland shortcut inhibit from a cxx-qt window on niri and KWin; `NSHostingView` and the C ABI with the Rust main loop | done on KWin and macOS (2026-11-07, spikes 6 and 7); niri and a supervised key test not run |
+| c | Spikes (ADR 0012, open points): the Wayland shortcut inhibit from a cxx-qt window on niri and KWin; `NSHostingView` and the C ABI with the Rust main loop | done (2026-11-07, spikes 6 and 7: KWin, nested niri, macOS); a supervised key test not run |
 | d | Core: "Switch display only", the attach, and the control request on the wire (ACT-1 to ACT-5), with acceptance tests | not started |
 | e | View models: the menu and the main window, stable row ids, a serializable form, and the push renderer contract | not started |
 | f | macOS UI: Rust main loop, SwiftUI menu, status item, Control Center extension, main window, settings, lifecycle (UI-10, UI-13 to UI-16) | not started |

@@ -87,7 +87,7 @@ Code: `spikes/scroll-source/probe.py`. A script on the target makes the uinput d
 | Other browsers and Qt applications, each one on its own | Not reported. |
 | Button state after a compositor or session restart, a VT change, or a screen lock | Not tested. |
 
-## Spike 6: Wayland shortcut inhibit from a cxx-qt window (2026-11-07, KWin 6.8.2, Qt 6.12.0, cxx-qt 0.10.0)
+## Spike 6: Wayland shortcut inhibit from a cxx-qt window (2026-11-07, KWin 6.8.2 and nested niri 26.04, Qt 6.12.0, cxx-qt 0.10.0)
 
 Code: `spikes/qt-inhibit/`. Built and run on the Linux computer over SSH, with `QT_QPA_PLATFORM=wayland`. No key and no click.
 
@@ -103,7 +103,7 @@ Code: `spikes/qt-inhibit/`. Built and run on the Linux computer over SSH, with `
 | Release and request again (UI-6) | Works: `active` again. |
 | Exit | Fail with the first order: the process dumped core at exit when the Wayland proxies dropped after `QGuiApplication`. Pass when Telescreen drops all its Wayland objects before Qt closes the display. |
 | Shortcut actually blocked | Not tested. It needs a key press with the user. |
-| niri | Not tested. The Linux computer runs KWin now. |
+| niri | Works in a nested niri 26.04 (an empty config, in a window of the KWin session): `active` after each request, also after hide and show, and a clean exit. The window had the focus in niri with no click. A niri session on the hardware is not tested. |
 | cxx-qt bridge | A `#[cxx_qt::bridge]` does not accept a function pointer argument. The spike uses an `extern "C"` Rust function for the Qt timer. |
 
 ## Spike 7: SwiftUI in a window of the Rust main loop (2026-11-07, macOS 27, Swift 6.4, objc2 0.6)
