@@ -688,7 +688,10 @@ fn act3_flow11_a_failed_verification_of_an_attach_ends() {
         },
         now,
     );
-    assert!(actions.is_empty(), "not forwarding yet, and the target ended it");
+    assert!(
+        actions.is_empty(),
+        "not forwarding yet, and the target ended it"
+    );
     assert_eq!(s.phase(), SourcePhase::Ended(EndReason::VerifyFailed));
 }
 
@@ -718,7 +721,10 @@ fn act3_hb3_a_hand_back_request_during_an_attach() {
     );
     assert_eq!(
         s.request_hand_back(),
-        vec![StopForwarding, Send(Message::HandBackRequest { session: S })],
+        vec![
+            StopForwarding,
+            Send(Message::HandBackRequest { session: S })
+        ],
         "the same as after a handoff"
     );
     assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandBack));

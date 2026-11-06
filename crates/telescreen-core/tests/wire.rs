@@ -141,7 +141,14 @@ fn act6_protocol_version_6_has_the_control_request_messages() {
 #[test]
 fn act6_each_control_refuse_reason_round_trips() {
     use ControlRefuseReason::*;
-    for reason in [UnknownDevice, NoRoute, NoDisplay, AmbiguousDisplay, NoCapture, Busy] {
+    for reason in [
+        UnknownDevice,
+        NoRoute,
+        NoDisplay,
+        AmbiguousDisplay,
+        NoCapture,
+        Busy,
+    ] {
         let message = Message::ControlRefused {
             device: DeviceId::from("d"),
             reason,

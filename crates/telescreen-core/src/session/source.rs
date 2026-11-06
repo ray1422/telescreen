@@ -57,6 +57,8 @@ pub struct SourceSession {
     video: VideoInput,
     ack_wanted: bool,
     keyboard_in_portal: bool,
+    /// An attach runs no handoff steps (ACT-3).
+    attach: bool,
     held: HeldInputs,
     seq: u64,
     /// The position of the last pointer datagram (NET-2).
@@ -80,6 +82,7 @@ impl SourceSession {
             video: VideoInput::Unchanged,
             ack_wanted: false,
             keyboard_in_portal: true,
+            attach: false,
             held: HeldInputs::default(),
             seq: 0,
             last_pointer: None,
@@ -90,14 +93,16 @@ impl SourceSession {
 
     /// Starts an attach to `target` for `device` (ACT-3): a session with no
     /// handoff steps. Returns `[Send(RequestSession { device })]`, as `start`.
+    /// After `SessionGranted`, it sends `HandoffDone` at once (ACT-6).
     pub fn attach(target: ComputerId, device: DeviceId) -> (Self, Vec<SourceAction>) {
-        let _ = (target, device);
-        todo!("ACT-3")
+        let (mut session, actions) = Self::start(target, device);
+        session.attach = true;
+        (session, actions)
     }
 
     /// True for a session that [`SourceSession::attach`] made.
     pub fn is_attach(&self) -> bool {
-        todo!("ACT-3")
+        self.attach
     }
 
     pub fn target(&self) -> &ComputerId {
@@ -135,6 +140,9 @@ impl SourceSession {
     /// `SessionGranted` for this device after the session finished returns
     /// `Send(End { session, reason: SourceClosed })`, so that the target releases
     /// the lease.
+    ///
+    /// The `SessionGranted` of an attach goes to `Verifying` with no steps (ACT-3).
+    /// A `Started` with no verification makes an attach `Unverified` (ACT-6).
     pub fn on_message(&mut self, message: &Message, _now: Instant) -> Vec<SourceAction> {
         match *message {
             Message::SessionGranted {
@@ -149,6 +157,10 @@ impl SourceSession {
                 }
                 if self.phase == SourcePhase::Requesting {
                     self.session = Some(session);
+                    if self.attach {
+                        self.phase = SourcePhase::Verifying;
+                        return vec![SourceAction::Send(Message::HandoffDone { session })];
+                    }
                     self.phase = SourcePhase::HandingOff;
                     return vec![SourceAction::RunHandoff];
                 }
@@ -170,6 +182,9 @@ impl SourceSession {
                 self.ack_wanted = false;
                 if verified {
                     self.video = VideoInput::Confirmed;
+                } else if self.attach {
+                    // The user switched the display by hand (ACT-6).
+                    self.video = VideoInput::Unverified;
                 }
                 self.last_pointer = None;
                 self.keyboard_in_portal = true;
