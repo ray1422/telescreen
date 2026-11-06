@@ -99,6 +99,14 @@ The sequence can change after the spikes.
 | g | Linux UI: Qt/QML through cxx-qt, the Plasma applet, the StatusNotifierItem fallback, the menu command, lifecycle (UI-11, UI-13 to UI-16) | not started |
 | h | Native portal windows; remove egui and winit | not started |
 
+### M20 implementation notes
+
+- Corners (user, 2026-11-06): use continuous (G2) corners on all surfaces that Telescreen draws, on both platforms. The HTML mockups use circular corners; do not copy that.
+  - macOS: SwiftUI gives G2 corners with `RoundedRectangle(cornerRadius:style: .continuous)`.
+  - Qt Quick: `Rectangle.radius` draws circular arcs (G1). Make one shared QML component for a G2 rounded rectangle, for example a `QtQuick.Shapes` path with cubic corner curves, or a `ShaderEffect` with a superellipse distance function. Use it for all cards, buttons, and fields. Do not use `Rectangle.radius` directly.
+  - Qt Quick: to clip child items to a G2 shape, use a layer mask (for example `MultiEffect` with `maskSource`). This costs one more render pass, so use it only where a child must be clipped.
+  - KDE: the Plasma theme draws the frame of the applet popup. Telescreen cannot change those corners. G2 applies only to the items inside the popup.
+
 ## Not scheduled
 
 The pairing UI is not scheduled. M20 makes the main window where it can go later:
