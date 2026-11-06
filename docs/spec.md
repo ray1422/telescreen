@@ -173,8 +173,13 @@ Menu and entry points:
   - It is one serializable value (`MenuScreen`), the same on all platforms. The KDE applet reads it over D-Bus as JSON. Intents come back as JSON too.
   - Each row has a stable id: a display has its token, a candidate has its computer id, a session has `Portal` or the session id of an incoming session, and a control request row has the computer id and the device id.
   - Each local display shows its own `portal-match` result. Telescreen evaluates `portal-match` for each display at the start, when the displays change, and with "Refresh". This evaluation dials the candidates of each matching device, as a portal does (NET-10).
-  - Each candidate shows each action of ACT-1 with its reason when it is not available. "Switch display only" needs only the route. "Switch & control" and "Control only" need the conditions of FLOW-3.
-  - "Let <peer> control this display" shows for each local device and each peer whose config has `handoff.<this computer>` for that device. If the peer is a candidate of that device on a display, the action is in the card of the peer, as in the mockup (user, 2026-11-07). Else it has its own row with the device name. While the request waits, it shows "Waiting for <peer>".
+  - Each candidate has the actions of ACT-1. "Switch display only" needs only the route. "Switch & control" and "Control only" need the conditions of FLOW-3.
+  - Each candidate is one row (user, 2026-11-07, mockup version 57):
+    - A click on any part of the row runs the primary action: the first available action of "Switch & control", "Switch display only", and "Control only". The subtitle always shows the status and the primary action, for example "Online · Switch & control", because a touch screen has no hover. If no action is available, the row does nothing, and the subtitle shows the status and the reason of "Switch & control".
+    - A "⋯" button at the right of the row opens a flat native menu: the three actions, then a separator and "Let <peer> control this display". An unavailable action is disabled and shows its reason. There are no submenus. A right-click on the row opens the same menu. The row has no "⋯" when the menu has only one available item, for example for an offline candidate.
+    - The row has no colored fill for the primary action. Hover gives the row a light fill.
+    - All rows of the menu have the same left and right padding.
+  - "Let <peer> control this display" shows for each local device and each peer whose config has `handoff.<this computer>` for that device. If the peer is a candidate of that device on a display, the action is in the "⋯" menu of the peer (user, 2026-11-07). Else it has its own row with the device name. While the request waits, the row subtitle shows "Waiting for <peer>…".
   - The status glyph state (UI-17) is part of the view model: idle, controlling, or controlled. "Menu open" is a state of the UI only.
   - The core gives a new view model when a value changes. A UI draws the newest one and sends intents (ADR 0012). It does not draw each frame.
 

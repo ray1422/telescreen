@@ -39,7 +39,7 @@ struct MenuContent: View {
                 Spacer()
                 Text(screen.computer).font(.caption).foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 6)
+            .padding(.horizontal, 8)
             .padding(.bottom, 4)
 
             ForEach(screen.sessions) { session in
@@ -174,7 +174,7 @@ private struct DisplaySection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(display.name).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                .padding(.horizontal, 6)
+                .padding(.horizontal, 8)
                 .padding(.top, 6)
             switch display.matching.kind {
             case "evaluating":
@@ -206,70 +206,117 @@ private struct DisplaySection: View {
     }
 }
 
+private final class Hover: ObservableObject {
+    @Published var on = false
+}
+
 private struct CandidateCard: View {
     let display: MenuDisplay
     let device: MenuDevice
     let candidate: MenuCandidate
-    /// "Let <peer> control this display" in the card of that peer (UI-9).
+    /// "Let <peer> control this display" in the "⋯" menu of that peer (UI-18).
     let request: ControlRequestRow?
+    // The SwiftUI macros (`@State`) are not available to this swiftc build.
+    @StateObject private var hover = Hover()
 
-    private func intent(_ kind: String) -> [String: Any] {
-        ["kind": kind, "display": display.token, "device": device.device, "target": candidate.target]
+    private struct Action {
+        let title: String
+        let kind: String
+        let unavailable: String?
+    }
+
+    private var actions: [Action] {
+        [
+            Action(title: "Switch & control", kind: "switch_and_control",
+                   unavailable: candidate.switchAndControl),
+            Action(title: "Switch display only", kind: "switch_display_only",
+                   unavailable: candidate.switchDisplayOnly),
+            Action(title: "Control only", kind: "control_only", unavailable: candidate.controlOnly),
+        ]
+    }
+
+    /// The first available action (UI-18).
+    private var primary: Action? { actions.first { $0.unavailable == nil } }
+
+    private var subtitle: String {
+        let status = candidate.status.capitalized
+        if let request, request.waiting { return "Waiting for \(request.peerLabel)…" }
+        if let primary { return "\(status) · \(primary.title)" }
+        return [status, candidate.switchAndControl].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// The menu has more than one available item: the row shows "⋯".
+    private var hasMore: Bool {
+        let available = actions.filter { $0.unavailable == nil }.count
+        return available + (request.map { $0.waiting ? 0 : 1 } ?? 0) > 1
+    }
+
+    private func run(_ action: Action) {
+        sendIntent(["kind": action.kind, "display": display.token, "device": device.device,
+                    "target": candidate.target])
+    }
+
+    @ViewBuilder private var menuItems: some View {
+        ForEach(actions, id: \.kind) { action in
+            Button {
+                run(action)
+            } label: {
+                if let reason = action.unavailable {
+                    Text(action.title)
+                    Text(reason)
+                } else {
+                    Text(action.title)
+                }
+            }
+            .disabled(action.unavailable != nil)
+        }
+        if let request {
+            Divider()
+            Button("Let \(request.peerLabel) control this display") {
+                sendIntent(["kind": "let_control", "peer": request.peer, "device": request.device])
+            }
+            .disabled(request.waiting)
+        }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
+        HStack(spacing: 4) {
+            Button {
+                if let primary { run(primary) }
+            } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(candidate.label)
-                    Text(candidate.status.capitalized).font(.caption).foregroundStyle(.secondary)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
                 }
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .padding(.bottom, 4)
-            ActionButton(title: "Switch & control", unavailable: candidate.switchAndControl,
-                         prominent: true) { sendIntent(intent("switch_and_control")) }
-            ActionButton(title: "Switch display only", unavailable: candidate.switchDisplayOnly,
-                         prominent: false) { sendIntent(intent("switch_display_only")) }
-            ActionButton(title: "Control only", unavailable: candidate.controlOnly,
-                         prominent: false) { sendIntent(intent("control_only")) }
-            if let request {
-                ControlRequestButton(row: request, withDevice: false)
+            .buttonStyle(.plain)
+            .disabled(primary == nil)
+            if hasMore {
+                Menu {
+                    menuItems
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .opacity(hover.on ? 1 : 0.5)
+                .accessibilityLabel("More actions for \(candidate.label)")
             }
         }
-        .padding(10)
-        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-}
-
-private struct ActionButton: View {
-    let title: String
-    let unavailable: String?
-    let prominent: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Text(title)
-                Spacer()
-                if let reason = unavailable {
-                    Text(reason).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.leading, 8)
         .background {
-            if prominent && unavailable == nil {
-                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.accentColor)
+            if hover.on {
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.primary.opacity(0.08))
             }
         }
-        .foregroundStyle(prominent && unavailable == nil ? Color.white : Color.primary)
-        .disabled(unavailable != nil)
-        .opacity(unavailable == nil ? 1 : 0.55)
+        .onHover { hover.on = $0 }
+        .contextMenu { if hasMore { menuItems } }
     }
 }
 
