@@ -1238,11 +1238,16 @@ pub(crate) struct Parts {
 
 /// Writes a network event to stderr for diagnostics. It does not write input
 /// events, clipboard text, or pointer datagrams: they can contain private text.
+/// It does not write `PortalCursor` either: it comes with each pointer motion.
 fn log_net_event(event: &NetEvent) {
     match event {
         NetEvent::Pointer { .. } => {}
         NetEvent::Message {
-            message: Message::Heartbeat | Message::Input { .. } | Message::ClipboardText { .. },
+            message:
+                Message::Heartbeat
+                | Message::Input { .. }
+                | Message::ClipboardText { .. }
+                | Message::PortalCursor { .. },
             ..
         } => {}
         NetEvent::Message { peer, message } => eprintln!("telescreen: from {peer}: {message:?}"),
