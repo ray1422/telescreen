@@ -1,6 +1,6 @@
 # 0012: Native UI on each platform, with the Rust main loop
 
-Status: accepted (user, 2026-11-06). Spikes must confirm two points (see "Open points").
+Status: accepted (user, 2026-11-06). Spikes 6 and 7 confirmed the open points, except niri (see "Open points").
 
 ## Context
 
@@ -34,5 +34,5 @@ The macOS menu needs Swift in any case: the Control Center button is a WidgetKit
 
 ## Open points
 
-- Linux: can a cxx-qt window give its `wl_surface` to the keyboard shortcuts inhibit protocol (UI-6), on niri and on KWin?
-- macOS: does the data flow with `NSHostingView` and the C ABI work well with the Rust main loop?
+- Linux: can a cxx-qt window give its `wl_surface` to the keyboard shortcuts inhibit protocol (UI-6), on niri and on KWin? KWin: yes (spike 6, 2026-11-07), through a private Qt API. niri: not tested.
+- macOS: does the data flow with `NSHostingView` and the C ABI work well with the Rust main loop? Yes (spike 7, 2026-11-07): a plain C ABI with JSON snapshots. The Control Center extension in a bundle with a Rust main is not tested.

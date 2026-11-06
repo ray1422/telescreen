@@ -86,3 +86,39 @@ Code: `spikes/scroll-source/probe.py`. A script on the target makes the uinput d
 | Real trackpad on the product build, with the KWin setting turned off while the button is down | User observation: the pointer shape is normal, and the scroll feels normal. |
 | Other browsers and Qt applications, each one on its own | Not reported. |
 | Button state after a compositor or session restart, a VT change, or a screen lock | Not tested. |
+
+## Spike 6: Wayland shortcut inhibit from a cxx-qt window (2026-11-07, KWin 6.8.2, Qt 6.12.0, cxx-qt 0.10.0)
+
+Code: `spikes/qt-inhibit/`. Built and run on the Linux computer over SSH, with `QT_QPA_PLATFORM=wayland`. No key and no click.
+
+| Question | Result |
+| --- | --- |
+| Wayland platform | `QGuiApplication::platformName()` is `wayland`. |
+| `wl_display` | Public API: `nativeInterface<QNativeInterface::QWaylandApplication>()->display()`. |
+| `wl_surface` of a QML `Window` | Private API: `QWindow::nativeInterface<QNativeInterface::Private::QWaylandWindow>()->surface()`, from `QtGui/qpa/qplatformwindow_p.h`. The build adds the versioned private include directories of QtCore and QtGui (`qmake6 -query`). A Qt update can change this API. |
+| Second binding of the protocol | QtWaylandClient 6.12 does not bind `zwp_keyboard_shortcuts_inhibit_manager_v1` (no such string in the library). Thus the inhibitor of Telescreen is the only one for the surface. |
+| Inhibitor on KWin | Works. The connection of Qt is a foreign display for `wayland-client` (the same as `inhibit.rs`). `inhibit_shortcuts` gets the `active` event about 100 ms later. The window was active (`QWindow::isActive`) with no click, also when SSH started it. |
+| Events on the foreign display | A private event queue gets its events only when Telescreen dispatches it. The spike calls `dispatch_pending` from a Qt timer every 100 ms. |
+| Hide, show, inhibit again | Works: `active` again. The surface pointer was the same after the show. Get the surface again before each request in any case. |
+| Release and request again (UI-6) | Works: `active` again. |
+| Exit | Fail with the first order: the process dumped core at exit when the Wayland proxies dropped after `QGuiApplication`. Pass when Telescreen drops all its Wayland objects before Qt closes the display. |
+| Shortcut actually blocked | Not tested. It needs a key press with the user. |
+| niri | Not tested. The Linux computer runs KWin now. |
+| cxx-qt bridge | A `#[cxx_qt::bridge]` does not accept a function pointer argument. The spike uses an `extern "C"` Rust function for the Qt timer. |
+
+## Spike 7: SwiftUI in a window of the Rust main loop (2026-11-07, macOS 27, Swift 6.4, objc2 0.6)
+
+Code: `spikes/swiftui-host/`. `build.rs` compiles one Swift file into a static library with `swiftc -emit-library -static`. The Swift code exports C functions with `@_cdecl`. Plain C ABI with JSON, no UniFFI.
+
+| Question | Result |
+| --- | --- |
+| Link | Works with link search paths to the Swift libraries of the toolchain and the SDK, and an rpath to `/usr/lib/swift`. The binary uses the Swift runtime and SwiftUI of the system. |
+| Run loop | The Rust `main` makes `NSApplication` (accessory policy), an `NSPanel`, and an `NSStatusItem`, and calls `run`. Swift makes the `NSHostingView` and returns it retained. |
+| Push from a background thread | Works. Swift decodes the JSON on the caller thread and changes an `@Observable` model on the main thread (`DispatchQueue.main.async`). |
+| Push to SwiftUI update | 60 pushes per second: 100 of 100 snapshots reached `onChange`. Push to `onChange` p50 3.5 to 4.0 ms, p95 4.5 to 5.5 ms, max 11 ms (4 runs). |
+| Burst | 20 pushes with no wait: `onChange` saw 2 of them, the last one included. SwiftUI shows the newest snapshot and skips old ones. A view model must be a full state, not a change. |
+| Intent to Rust | Works. The C callback runs on the main thread. Tested with intents that the view sends from `onChange` and `onGeometryChange`. A click on a button was not tested. |
+| Window size | `fittingSize` before the first layout is too small (44 pt). The view reports its size with `onGeometryChange`, and Rust sets the panel frame. The first report can arrive before Rust keeps the panel, so Rust keeps the last size and applies it. |
+| Active controls | A borderless `NSPanel` cannot become key by default, and then SwiftUI draws the buttons as inactive. A subclass with `canBecomeKeyWindow = true` (as `focus.rs`) fixes it. |
+| Glass | `glassEffect` in the panel shows the desktop behind it (screenshot of the screen region). A screenshot of the window only (`screencapture -l`) shows no backdrop. |
+| Not tested | A click on the status item, the Control Center extension (WidgetKit) in a bundle with a Rust main, and an app bundle build. |

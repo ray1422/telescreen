@@ -92,7 +92,7 @@ The sequence can change after the spikes.
 | --- | --- | --- |
 | a | Spec section 4.7, ADR 0012, ADR 0013, the glossary | done (2026-11-06) |
 | b | Mockups: the menu, the main window, the settings, the KDE applet, the control request flow, the icon | done (2026-11-07) |
-| c | Spikes (ADR 0012, open points): the Wayland shortcut inhibit from a cxx-qt window on niri and KWin; `NSHostingView` and the C ABI with the Rust main loop | not started |
+| c | Spikes (ADR 0012, open points): the Wayland shortcut inhibit from a cxx-qt window on niri and KWin; `NSHostingView` and the C ABI with the Rust main loop | done on KWin and macOS (2026-11-07, spikes 6 and 7); niri and a supervised key test not run |
 | d | Core: "Switch display only", the attach, and the control request on the wire (ACT-1 to ACT-5), with acceptance tests | not started |
 | e | View models: the menu and the main window, stable row ids, a serializable form, and the push renderer contract | not started |
 | f | macOS UI: Rust main loop, SwiftUI menu, status item, Control Center extension, main window, settings, lifecycle (UI-10, UI-13 to UI-16) | not started |
@@ -100,6 +100,13 @@ The sequence can change after the spikes.
 | h | Native portal windows; remove egui and winit | not started |
 
 ### M20 implementation notes
+
+- From spikes 6 and 7 (2026-11-07):
+  - A view model push is a full snapshot. SwiftUI skips old snapshots in a burst.
+  - Rust sets the frame of each window. The SwiftUI view reports its size with `onGeometryChange`.
+  - Menu panels need a subclass with `canBecomeKeyWindow = true`, else SwiftUI draws inactive controls.
+  - Linux: drop all Wayland objects of Telescreen before `QGuiApplication`. Dispatch the private event queue from a Qt timer or a socket notifier.
+  - Linux: the `wl_surface` comes from a private Qt API. Get it again for each inhibit request.
 
 - Corners (user, 2026-11-06): use continuous (G2) corners on all surfaces that Telescreen draws, on both platforms. The HTML mockups use circular corners; do not copy that.
   - macOS: SwiftUI gives G2 corners with `RoundedRectangle(cornerRadius:style: .continuous)`.
