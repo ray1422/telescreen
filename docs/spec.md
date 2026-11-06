@@ -180,23 +180,36 @@ Main window, settings, and lifecycle:
 
 ### 4.8 Pairing (a v0.6XX.0 version, number not decided)
 
-A side discussion with the user (2026-11-07) gave this design. It replaces the typed fingerprint of ADR 0004 for normal use. `telescreen trust` stays as the fallback. The implementation is not scheduled.
+ADR 0014. A side discussion with the user (2026-11-07) gave this design. It replaces the typed fingerprint of ADR 0004 for normal use. `telescreen trust` stays as the fallback. Do not put pairing in v0.600.0 without a question to the user. The implementation is not scheduled.
 
-- **PAIR-1** Pairing has a GUI and a CLI (user). Both use the same flow. `telescreen pair` does not need a running app. On B, the user can use the CLI, also over SSH (user).
-- **PAIR-2** The user does not type (user). The steps:
-  - On A: the user starts pairing (one click).
-  - On B: the user selects A from a list (one click). B shows a 6-digit confirmation code.
-  - On A: Telescreen shows 3 codes. The user selects the code that B shows (one click). A has no plain "Accept" button (user: A must confirm).
-- **PAIR-3** Discovery: when pairing starts, A announces with mDNS for 2 minutes and opens a temporary port. The announcement is not trusted: it only finds the peer. The host name and the "pairing" state are not private data (user).
-- **PAIR-4** Protocol: the peers exchange random values with a commitment. The 6-digit code (SAS) comes from these values and is bound to the fingerprints of both peers. A second connection during pairing ends the pairing.
+- **PAIR-1** Pairing has a GUI and a CLI (user). Both use the same flow. On B, the user can use the CLI, for example over SSH from A, so that the display does not need to show B before Telescreen runs (user).
+- **PAIR-2** Each side needs one human action, and the user does not type (user). A must confirm (user). The steps:
+  - On A: the user selects "Pair a computer…" (one click).
+  - On B: the user selects A from the list (one click). B shows a 6-digit code.
+  - On A: Telescreen shows 3 codes and no "Accept" button. The user selects the code that B shows (one click). Reason: if the user did not start pairing on B, B shows no code, so the user cannot accept a request blindly. A PIN alone is not sufficient: a person who sees the PIN can send a request first (user).
+- **PAIR-3** Discovery (Claude decides, 2026-11-07, unless the statement names the user):
+  - Pairing mode on A lasts 2 minutes. A opens a temporary port, not the main endpoint. It registers an mDNS service with a random instance name, as NET-14.
+  - The record is not trusted. It only lets B find A.
+  - A shows no pairing request unless the user started pairing mode on A.
+  - The host name in the record and the fact that the computer is pairing are not private data (user).
+- **PAIR-4** Protocol: numeric comparison with a commitment, with no PIN (Claude decides, 2026-11-07):
+  - The connection uses the long-term keys of both peers.
+  - A sends C = H(fpA, fpB, nA). B sends nB. Then A sends nA.
+  - Both compute SAS = H(fpA, fpB, nA, nB), truncated to 6 digits. The SAS binds the fingerprints that the connection uses and that go into the trust list.
+  - An attacker in the middle has 1 chance in 10^6 for each attempt, and the user sees a failed attempt.
 - **PAIR-5** Rules (Claude decides, 2026-11-07):
-  - The id of the peer must be in the local config.
-  - Pairing does not replace a fingerprint that the trust list already has for that id.
-  - Each peer writes the trust list only after both peers confirmed.
-- **PAIR-6** Open:
+  - A handles one request at a time. If a second connection arrives in the pairing time, A stops all of them and shows "Another computer also tried to pair".
+  - B shows a warning if more than one computer is pairing.
+  - The computer id of the peer comes from the authenticated channel. It must be in the local config.
+  - If the trust list already has a fingerprint for that id, pairing refuses and tells the user to remove the old fingerprint first. It does not replace it.
+  - Each peer writes the trust list only after the local confirmation and the confirmation of the peer. If the connection drops after one peer wrote, the result is harmless, because mutual TLS needs both entries (NET-3). Telescreen shows "Pairing not complete".
+  - The messages have a size limit. The temporary port closes when pairing ends.
+- **PAIR-6** CLI (Claude decides, 2026-11-07): `telescreen pair` runs the same flow as the GUI. It reads the local identity and writes the trust list, so the app does not need to run. If the app runs, the command tells it to read the trust list again.
+- **PAIR-7** This is not trust on first use, because the user compares the code. `telescreen trust` stays as the manual fallback (ADR 0004).
+- **PAIR-8** Open:
   - The version number.
-  - When mDNS does not work: can the user give the address of A to B (for example `--host`)?
-  - An optional PIN.
+  - When mDNS does not work: can B give the address of A (for example `--host`)?
+  - A PIN as an option.
 
 ## 5. Input
 
