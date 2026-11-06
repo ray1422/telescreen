@@ -178,6 +178,26 @@ Main window, settings, and lifecycle:
 
   The status item and the tray use a template image. The Control Center button uses a custom SF Symbol. In the Controlling and Controlled states, its button is on, with the red of the app icon.
 
+### 4.8 Pairing (a v0.6XX.0 version, number not decided)
+
+A side discussion with the user (2026-11-07) gave this design. It replaces the typed fingerprint of ADR 0004 for normal use. `telescreen trust` stays as the fallback. The implementation is not scheduled.
+
+- **PAIR-1** Pairing has a GUI and a CLI (user). Both use the same flow. `telescreen pair` does not need a running app. On B, the user can use the CLI, also over SSH (user).
+- **PAIR-2** The user does not type (user). The steps:
+  - On A: the user starts pairing (one click).
+  - On B: the user selects A from a list (one click). B shows a 6-digit confirmation code.
+  - On A: Telescreen shows 3 codes. The user selects the code that B shows (one click). A has no plain "Accept" button (user: A must confirm).
+- **PAIR-3** Discovery: when pairing starts, A announces with mDNS for 2 minutes and opens a temporary port. The announcement is not trusted: it only finds the peer. The host name and the "pairing" state are not private data (user).
+- **PAIR-4** Protocol: the peers exchange random values with a commitment. The 6-digit code (SAS) comes from these values and is bound to the fingerprints of both peers. A second connection during pairing ends the pairing.
+- **PAIR-5** Rules (Claude decides, 2026-11-07):
+  - The id of the peer must be in the local config.
+  - Pairing does not replace a fingerprint that the trust list already has for that id.
+  - Each peer writes the trust list only after both peers confirmed.
+- **PAIR-6** Open:
+  - The version number.
+  - When mDNS does not work: can the user give the address of A to B (for example `--host`)?
+  - An optional PIN.
+
 ## 5. Input
 
 - **IN-1** Capture, suppress, forward, and inject are four separate capabilities. Detect and report each one. Window key events and global hotkey registration are not input capture.
