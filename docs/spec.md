@@ -154,6 +154,7 @@ Menu and entry points:
 Main window, settings, and lifecycle:
 
 - **UI-13** The main window opens when the user starts Telescreen, and when the user starts it again while it runs. It shows the content of the menu, the computers, pairing and trust, the device states with "It is back" (VER-6), and the notices. It has the start window of UI-8 when no computer is selected.
+  - The main window can trust a peer (user, 2026-11-07). The user enters the fingerprint that the other peer shows in its main window, and presses "Trust". This has the same effect as `telescreen trust <computer-id> <fingerprint>` (ADR 0004). Telescreen does not take the fingerprint from a connection: the user enters it, so this is not trust on first use (Claude decides, 2026-11-07).
 - **UI-14** Settings:
   - macOS: the status item on or off (UI-10), how to add the Control Center button, and the Dock icon: "Only while a window is open" (default) or "Always" (user, 2026-11-06).
   - Both platforms: start at login, off by default (user, 2026-11-06). Reason: Telescreen listens on a network port.
@@ -342,7 +343,6 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Drivers for the output format of one tool (for example `betterDisplay` or `ddcutil`, with `expect`): a later version, after their output is measured on the hardware (user, 2026-10-27). The other driver decisions are in `docs/config.md`.
 - UI redesign (section 4.7, ADR 0012):
   - The spikes of ADR 0012: the Wayland shortcut inhibit from a cxx-qt window, and the macOS data flow with `NSHostingView` and the C ABI.
-  - Can the main window trust a fingerprint? ADR 0004 has only the command `telescreen trust`, and UI-13 only shows pairing and trust.
 - Login screen control (a memo, not planned; user, 2026-11-06). Example: the Linux computer shows SDDM, and no user session runs. A system service that starts before the login can inject keys through uinput, because uinput is in the kernel and the greeter reads it through libinput. Limits: the service is not a client of the greeter compositor, so it does not know the output geometry, and the absolute pointer position is approximate; no clipboard; no `prompt` verifier. Open: the handover between the system service and the app of the user session (port, identity, trust keys), and the security of remote keys at a password field. A decision needs its own ADR.
 
 Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:
