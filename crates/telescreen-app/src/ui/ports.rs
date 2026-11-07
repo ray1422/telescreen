@@ -138,6 +138,9 @@ impl VerifierPort for ThreadVerifiers {
                     Driver::Prompt => {
                         VerifierEvent::Failed(DriverError::Unsupported("prompt".into()).to_string())
                     }
+                    Driver::Display { .. } => VerifierEvent::Failed(
+                        DriverError::Unsupported("display".into()).to_string(),
+                    ),
                     Driver::Extension { name, .. } => {
                         VerifierEvent::Failed(DriverError::Unsupported(name.clone()).to_string())
                     }

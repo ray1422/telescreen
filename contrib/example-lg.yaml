@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=../schema/config.schema.json
 # A Mac and a Linux computer that share one LG display. Change the IDs, the host
 # names, the metadata values, and the input values for your setup.
-# Find the metadata values with `display-helper show` (contrib/README.md).
+# Find the metadata values with `telescreen displays`.
 version: 1
 computers:
   mac:
@@ -12,11 +12,11 @@ computers:
       LG:
         id: shared-lg
         portal-match:
-          driver: command
-          command: telescreen-display-helper match vendor=7789 model=30457
+          driver: display              # built in: compares the display metadata
+          match: {vendor: 7789, model: 30457}
         input-target:
-          driver: command
-          command: telescreen-display-helper target vendor=7789 model=30457
+          driver: display
+          match: {vendor: 7789, model: 30457}
         verify:
           driver: prompt               # the prompt after a switch to the Mac
         handoff:
@@ -33,11 +33,11 @@ computers:
       LG:
         id: shared-lg
         portal-match:
-          driver: command
-          command: telescreen-display-helper match name=HDMI-A-2
+          driver: display
+          match: {name: HDMI-A-2}
         input-target:
-          driver: command
-          command: telescreen-display-helper target name=HDMI-A-2
+          driver: display
+          match: {name: HDMI-A-2}
         verify:
           driver: prompt               # the prompt after a switch to Linux
         handoff:

@@ -206,6 +206,10 @@ impl Verifications {
             Driver::Extension { name, .. } => Started::Events(vec![VerifierEvent::Failed(
                 format!("the driver {name} is not available"),
             )]),
+            // The schema rejects it in `verify`.
+            Driver::Display { .. } => Started::Events(vec![VerifierEvent::Failed(
+                "the display driver is not a verifier".into(),
+            )]),
         }
     }
 

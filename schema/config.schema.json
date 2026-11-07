@@ -53,7 +53,7 @@
           "minLength": 1
         },
         "portal-match": {
-          "$ref": "#/$defs/condition"
+          "$ref": "#/$defs/match"
         },
         "input-target": {
           "$ref": "#/$defs/resolution"
@@ -317,8 +317,43 @@
       ],
       "additionalProperties": false
     },
+    "display": {
+      "description": "The built-in display matcher: the metadata of a display has each value.",
+      "type": "object",
+      "properties": {
+        "driver": {
+          "const": "display"
+        },
+        "match": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": ["string", "number", "boolean"]
+          }
+        }
+      },
+      "required": [
+        "driver",
+        "match"
+      ],
+      "additionalProperties": false
+    },
+    "match": {
+      "description": "portal-match.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/run"
+        },
+        {
+          "$ref": "#/$defs/display"
+        },
+        {
+          "$ref": "#/$defs/extension"
+        }
+      ]
+    },
     "condition": {
-      "description": "portal-match and handoff steps.",
+      "description": "handoff steps.",
       "oneOf": [
         {
           "$ref": "#/$defs/run"
@@ -333,6 +368,9 @@
       "oneOf": [
         {
           "$ref": "#/$defs/command-run"
+        },
+        {
+          "$ref": "#/$defs/display"
         },
         {
           "$ref": "#/$defs/extension"

@@ -33,7 +33,7 @@ There is one exception to "no execution for another computer" (ADR 0010): the so
 
 ## Operations and Drivers
 
-An operation is a mapping with a `driver`. The driver defines how Telescreen reads the result of a program. It does not define which program runs: the user writes the whole command, also the program (user, 2026-10-27).
+An operation is a mapping with a `driver`. The driver defines how Telescreen reads the result of a program. It does not define which program runs: the user writes the whole command, also the program (user, 2026-10-27). The built-in drivers `prompt` and `display` run no program.
 
 ```yaml
 portal-match:
@@ -46,7 +46,8 @@ verify:
 
 Fields:
 
-- `driver`: required. A built-in driver (`exec`, `command`, `prompt`) or a namespaced extension driver.
+- `driver`: required. A built-in driver (`exec`, `command`, `prompt`, `display`) or a namespaced extension driver.
+- `match`: required for `display`, and only for `display`. See "The `display` Driver".
 - `command`: required for `exec` and `command`. A string or a list, as in Docker Compose. Telescreen splits a string into arguments by POSIX shell rules (quotes and backslashes), but no shell runs it: there is no variable expansion, no glob, no `~` expansion, no pipe, and no `&&`. A list is used as it is. For shell features, write the shell explicitly, for example `[/bin/sh, -c, "a | b"]`. Thus the config is trusted executable configuration.
 - `cwd`: optional absolute directory. The default is the directory that contains the config file.
 - `env`: optional string map. It is a layer on top of the environment of the app.
@@ -59,6 +60,7 @@ Built-in drivers:
 | `exec` | `portal-match`, handoff steps, `verify` | Only the exit code. 0 is success or true. A non-zero exit is failure or false: `portal-match` does not match, a step fails, `verify` is not ok. stdin is empty, and stdout is not read. A program that cannot start is an error |
 | `command` | all | Protocol 2 (below): JSON on stdin and stdout. Each non-zero exit is an error |
 | `prompt` | `verify` only | The built-in verifier (spec VER-5). It has no other field |
+| `display` | `portal-match`, `input-target` | The built-in display matcher (below). It runs no program |
 
 Drivers for the output format of one tool (for example `betterDisplay` or `ddcutil`, with `expect`) come in a later version (user, 2026-10-27).
 
@@ -136,6 +138,25 @@ Each line is one UTF-8 JSON object and ends with `\n`. The verifier talks with t
 The window opens at the first `show` or `want`. With no `show`, it shows only how to acknowledge (Claude decides, 2026-10-27). The core sends one `ack` for each `want`, after the user acknowledges. `show` and `want` need an `input-target` of the device on the destination, because the window shows on that display. Without it, they are errors. Each other line, a missing result, a non-zero exit, and a timeout are errors. An error, `{"ok":false}`, and a timeout all make the device state unknown (spec VER-6). The protocol has no other user input (spec VER-7).
 
 The built-in `prompt` verifier does the same as this verifier: `{"show":"<hint>"}`, `{"want":"ack"}`, then `{"ok":true}` after the acknowledgement, or `{"ok":false}` after 60 seconds.
+
+### The `display` Driver
+
+The `display` driver compares the metadata of the displays (user, 2026-11-07). Telescreen reads this metadata itself, so the driver needs no helper program and does not depend on the install location. Only the handoff steps need an external tool, for example to switch the video input.
+
+```yaml
+portal-match:
+  driver: display
+  match: {vendor: 7789, model: 30457}
+input-target:
+  driver: display
+  match: {name: HDMI-A-2}
+```
+
+- `match`: a map with one key or more. Each value is a string, a number, or a boolean. A display matches when its metadata has each key with an equal value of the same JSON type: `7789` and `"7789"` are different.
+- `portal-match`: true if the display of the portal matches.
+- `input-target`: the token of the one display that matches. No match, or more than one match, is an error (AC-9).
+- No other field is permitted: the driver runs no program, so it has no `command`, `cwd`, `env`, or `timeout-ms`.
+- The metadata keys come from the platform. macOS: `vendor`, `model`, `serial` (numbers), `builtin` (a boolean), `rotation`, and `name`. Linux (Wayland): `name` (the output name, for example `HDMI-A-2`), `description`, `make`, and `model` (strings). `telescreen displays` prints the displays with their metadata.
 
 ## Runtime Resolution and Handoff
 
