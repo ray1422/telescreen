@@ -45,6 +45,7 @@ fn menu() -> MenuScreen {
                 device: DeviceId::from("shared-lg"),
                 alias: "Desktop".into(),
                 label: "Desktop".into(),
+                state: VideoInput::Confirmed,
                 candidates: vec![MenuCandidate {
                     target: ComputerId::from("pc1"),
                     label: "Linux".into(),
@@ -102,6 +103,7 @@ fn ui18_the_menu_json_shape() {
                     "device": "shared-lg",
                     "alias": "Desktop",
                     "label": "Desktop",
+                    "state": "confirmed",
                     "candidates": [{
                         "target": "pc1",
                         "label": "Linux",

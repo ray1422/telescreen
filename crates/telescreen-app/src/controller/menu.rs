@@ -240,6 +240,11 @@ impl Controller {
                         device: device.id.clone(),
                         alias: alias.clone(),
                         label: device.label.clone().unwrap_or_else(|| alias.clone()),
+                        state: self
+                            .device_states
+                            .get(&device.id)
+                            .copied()
+                            .unwrap_or(VideoInput::Unchanged),
                         candidates: routes::candidates(&self.config, device)
                             .iter()
                             .map(|route| {

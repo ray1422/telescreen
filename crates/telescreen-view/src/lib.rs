@@ -387,6 +387,9 @@ pub struct MenuDevice {
     pub device: DeviceId,
     pub alias: String,
     pub label: String,
+    /// The state of the device on this computer (VER-6). `Confirmed`: the
+    /// display shows this computer.
+    pub state: VideoInput,
     /// Empty: the menu shows "No handoff routes in the config".
     pub candidates: Vec<MenuCandidate>,
 }

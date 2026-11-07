@@ -1,5 +1,6 @@
 // The menu (spec UI-9). It draws the MenuScreen of the core and sends intents.
-// It makes no decision (ADR 0012).
+// It makes no decision (ADR 0012). The layout follows the canvas mockups
+// "macOS · menu, no session", "controlling a target", and "controlled by Linux".
 
 import SwiftUI
 
@@ -11,7 +12,9 @@ struct MenuView: View {
 
     var body: some View {
         MenuContent(screen: model.screen)
-            .padding(12)
+            .padding(.top, 14)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
             .frame(width: 330)
             .background {
                 // UI-16: a fill that Telescreen draws becomes opaque.
@@ -27,178 +30,346 @@ struct MenuView: View {
     }
 }
 
-/// The content of the menu. The main window shows it too (UI-13).
+/// The content of the menu panel.
 struct MenuContent: View {
     let screen: MenuScreen
-    var showsFooter = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: screen.sessions.isEmpty ? 2 : 4) {
             HStack {
-                Text("Telescreen").font(.headline)
+                Text("Telescreen").font(.system(size: 15, weight: .bold))
                 Spacer()
-                Text(screen.computer).font(.caption).foregroundStyle(.secondary)
+                Text(screen.computer).font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 4)
+            .padding(.top, 2)
+            .padding(.horizontal, 6)
+            .padding(.bottom, 8)
 
-            ForEach(screen.sessions) { session in
-                SessionCard(session: session)
-            }
-
-            ForEach(screen.displays) { display in
-                DisplaySection(display: display, requests: screen.controlRequests)
-            }
-
-            // A peer that can control this computer but is not a candidate of a
-            // shown device has its own row.
-            let shown = Set(screen.displays.flatMap { display in
-                display.devices.flatMap { device in
-                    device.candidates.map { $0.target + "/" + device.device }
+            if screen.sessions.isEmpty {
+                MenuDivider().padding(.bottom, 2)
+            } else {
+                ForEach(screen.sessions) { session in
+                    SessionCard(session: session, screen: screen)
                 }
-            })
-            let others = screen.controlRequests.filter { !shown.contains($0.id) }
+                // The clipboard switch shows only with a session (mockups).
+                if let clipboard = screen.clipboard {
+                    HStack {
+                        Text("Sync text clipboard").font(.system(size: 13))
+                        Spacer()
+                        ClipboardSwitch(on: clipboard)
+                    }
+                    .padding(.top, 10)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+                }
+                MenuDivider()
+            }
+
+            ForEach(Array(screen.displays.enumerated()), id: \.element.id) { index, display in
+                DisplaySection(display: display, screen: screen, first: index == 0)
+            }
+
+            let others = otherControlRequests(screen)
             if !others.isEmpty {
-                Divider().padding(.vertical, 2)
+                MenuDivider()
                 ForEach(others) { row in
-                    ControlRequestButton(row: row, withDevice: true)
+                    ControlRequestButton(row: row)
                 }
             }
 
-            Divider().padding(.vertical, 2)
-            if let clipboard = screen.clipboard {
-                Toggle(isOn: Binding(
-                    get: { clipboard },
-                    set: { sendIntent(["kind": "set_clipboard", "on": $0]) }
-                )) {
-                    Text("Sync text clipboard")
-                }
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-            }
-            if showsFooter {
-                MenuRow(title: "Telescreen Settings…") { sendUi("open_settings") }
-                MenuRow(title: "Quit Telescreen") { sendUi("quit") }
-            }
+            MenuDivider()
+            MenuRow(title: "Telescreen Settings…") { sendUi("open_settings") }
+            MenuRow(title: "Quit Telescreen") { sendUi("quit") }
         }
     }
+}
+
+/// A peer that can control this computer but is not a candidate of a shown
+/// device has its own row.
+@MainActor func otherControlRequests(_ screen: MenuScreen) -> [ControlRequestRow] {
+    let shown = Set(screen.displays.flatMap { display in
+        display.devices.flatMap { device in
+            device.candidates.map { $0.target + "/" + device.device }
+        }
+    })
+    return screen.controlRequests.filter { !shown.contains($0.id) }
+}
+
+struct MenuDivider: View {
+    var body: some View {
+        Rectangle().fill(.primary.opacity(0.12)).frame(height: 1)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
+    }
+}
+
+struct ClipboardSwitch: View {
+    let on: Bool
+
+    var body: some View {
+        Toggle("Sync text clipboard", isOn: Binding(
+            get: { on },
+            set: { sendIntent(["kind": "set_clipboard", "on": $0]) }
+        ))
+        .labelsHidden()
+        .toggleStyle(.switch)
+        .controlSize(.small)
+    }
+}
+
+final class Hover: ObservableObject {
+    @Published var on = false
 }
 
 private struct MenuRow: View {
     let title: String
     let action: () -> Void
+    // The SwiftUI macros (`@State`) are not available to this swiftc build.
+    @StateObject private var hover = Hover()
 
     var body: some View {
         Button(action: action) {
-            Text(title).frame(maxWidth: .infinity, alignment: .leading)
+            Text(title).font(.system(size: 14))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .contentShape(Rectangle())
+        .background {
+            if hover.on {
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.primary.opacity(0.10))
+            }
+        }
+        .onHover { hover.on = $0 }
     }
 }
 
-private func phaseText(_ phase: Tagged?) -> String {
+func phaseText(_ phase: Tagged?) -> String {
     switch phase?.kind {
-    case "requesting": return "Requesting"
-    case "handing_off": return "Switching the display"
-    case "verifying": return "Verifying"
-    case "waiting_for_ack": return "Press \(phase?.key ?? "Return") here to confirm"
-    case "forwarding": return "Forwarding"
-    case "ended": return "Ended: \(phase?.reason ?? "")"
+    case "requesting": return "requesting"
+    case "handing_off": return "switching the display"
+    case "verifying": return "verifying"
+    case "waiting_for_ack": return "press \(phase?.key ?? "Return") in the portal"
+    case "forwarding": return "forwarding"
+    case "ended": return "ended: \(phase?.reason ?? "")"
     default: return ""
     }
 }
 
-private func videoInputText(_ value: String?) -> String {
+/// The chip of a video input state, or nil for "not switched".
+private func videoInputChip(_ value: String?) -> (String, Color?)? {
     switch value {
-    case "confirmed": return "Display confirmed"
-    case "unverified": return "Switched, not verified"
-    case "unknown": return "Display state unknown"
-    default: return "Not switched"
+    case "confirmed": return ("Display confirmed", .green)
+    case "unverified": return ("Switched, not verified", nil)
+    case "unknown": return ("Display state unknown", .orange)
+    default: return nil
     }
 }
 
-private struct SessionCard: View {
-    let session: MenuSession
+/// The label of a device id from the displays of the menu.
+func deviceLabel(_ id: String, in screen: MenuScreen) -> String {
+    for display in screen.displays {
+        if let device = display.devices.first(where: { $0.device == id }) {
+            return device.label
+        }
+    }
+    return id
+}
+
+private func deviceState(_ id: String, in screen: MenuScreen) -> String? {
+    for display in screen.displays {
+        if let device = display.devices.first(where: { $0.device == id }) {
+            return device.state
+        }
+    }
+    return nil
+}
+
+private struct Chip: View {
+    let text: String
+    let tint: Color?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if session.role.kind == "source" {
-                Text("Controlling \(session.peerLabel)").font(.subheadline.weight(.semibold))
-                Text("\(phaseText(session.role.phase)) · \(videoInputText(session.role.videoInput))")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Hand back") { sendIntent(["kind": "source_hand_back"]) }
-                        .buttonStyle(.glassProminent)
-                    Button("End session") { sendIntent(["kind": "end_session"]) }
-                        .buttonStyle(.glass)
+        Text(text).font(.system(size: 11))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .foregroundStyle(tint ?? .primary.opacity(0.85))
+            .background((tint ?? .primary).opacity(tint == nil ? 0.12 : 0.22), in: Capsule())
+    }
+}
+
+/// A button of a session card: equal height, 10 pt corners (mockups).
+private struct CardButtonStyle: ButtonStyle {
+    var fill: Color?
+    var text: Color = .white
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: fill == nil ? .regular : .semibold))
+            .foregroundStyle(fill == nil ? .primary : text)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                fill ?? .primary.opacity(0.14),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .opacity(configuration.isPressed ? 0.75 : isEnabled ? 1 : 0.45)
+            .contentShape(Rectangle())
+    }
+}
+
+struct SessionCard: View {
+    let session: MenuSession
+    let screen: MenuScreen
+
+    private var source: Bool { session.role.kind == "source" }
+    private var tint: Color { source ? .accentColor : .orange }
+    /// The dark text on orange of the mockup.
+    private let onOrange = Color(red: 0x2a / 255, green: 0x1a / 255, blue: 0)
+
+    private var subtitle: String {
+        let device = deviceLabel(session.device, in: screen)
+        let state = source ? phaseText(session.role.phase) : (session.role.state ?? "").lowercased()
+        return state.isEmpty ? device : "\(device) · \(state)"
+    }
+
+    private var forwarding: Bool {
+        source ? session.role.phase?.kind == "forwarding"
+            : session.role.state?.lowercased() == "forwarding"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Circle().fill(tint).frame(width: 36, height: 36)
+                    .overlay {
+                        Image(systemName: source ? "display" : "display.and.arrow.down")
+                            .font(.system(size: 17))
+                            .foregroundStyle(source ? .white : onOrange)
+                    }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(source ? "Controlling \(session.peerLabel)"
+                                : "Controlled by \(session.peerLabel)")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
                 }
+                Spacer(minLength: 0)
+            }
+            let video = videoInputChip(
+                source ? session.role.videoInput : deviceState(session.device, in: screen))
+            if video != nil || forwarding {
+                HStack(spacing: 6) {
+                    if let (text, color) = video { Chip(text: text, tint: color) }
+                    if forwarding {
+                        Chip(text: source ? "Keys go to \(session.peerLabel)"
+                                          : "Input from \(session.peerLabel)", tint: nil)
+                    }
+                }
+            }
+            if source {
+                HStack(spacing: 8) {
+                    Button("Hand back") { sendIntent(["kind": "source_hand_back"]) }
+                        .buttonStyle(CardButtonStyle(fill: .accentColor))
+                    Button("End session") { sendIntent(["kind": "end_session"]) }
+                        .buttonStyle(CardButtonStyle())
+                }
+                Text("Hand back shortcut ⌃⌥⌘⎋ · works when no window here is visible")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
             } else {
                 let id = session.id.session ?? 0
-                Text("Controlled by \(session.peerLabel)").font(.subheadline.weight(.semibold))
-                Text(session.role.state ?? "").font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Hand back") { sendIntent(["kind": "hand_back", "session": id]) }
-                        .buttonStyle(.glassProminent)
-                        .disabled(session.role.handBack != nil)
-                        .help(session.role.handBack ?? "")
+                Button("Hand back to \(session.peerLabel)") {
+                    sendIntent(["kind": "hand_back", "session": id])
+                }
+                .buttonStyle(CardButtonStyle(fill: .orange, text: onOrange))
+                .disabled(session.role.handBack != nil)
+                .help(session.role.handBack ?? "")
+                HStack(spacing: 8) {
                     Button("Control from here") {
                         sendIntent(["kind": "control_from_here", "session": id])
                     }
-                    .buttonStyle(.glass)
+                    .buttonStyle(CardButtonStyle())
                     Button("Disconnect") { sendIntent(["kind": "stop_session", "session": id]) }
-                        .buttonStyle(.glass)
+                        .buttonStyle(CardButtonStyle())
                 }
                 if let cause = session.role.handBack {
-                    Text(cause).font(.caption).foregroundStyle(.secondary)
+                    Text(cause).font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            Color.accentColor.opacity(0.18),
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-        )
+        .background(tint.opacity(source ? 0.22 : 0.18),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(tint.opacity(0.45), lineWidth: 1)
+        }
     }
+}
+
+/// The text after the display name: "in this session", or "shows this Mac".
+func displayStateText(_ display: MenuDisplay, screen: MenuScreen) -> String? {
+    let ids = Set(display.devices.map(\.device))
+    if screen.sessions.contains(where: { ids.contains($0.device) }) {
+        return "in this session"
+    }
+    if display.devices.contains(where: { $0.state == "confirmed" }) {
+        return "shows this Mac"
+    }
+    return nil
 }
 
 private struct DisplaySection: View {
     let display: MenuDisplay
-    let requests: [ControlRequestRow]
+    let screen: MenuScreen
+    let first: Bool
+
+    private var title: String {
+        guard let state = displayStateText(display, screen: screen) else { return display.name }
+        return "\(display.name) · \(state)"
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text).font(.system(size: 13)).foregroundStyle(.tertiary)
+            .padding(.top, 4)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(display.name).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        let candidates = display.devices.flatMap { device in
+            device.candidates.map { (device, $0) }
+        }
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                .padding(.top, first ? 6 : 10)
                 .padding(.horizontal, 8)
-                .padding(.top, 6)
+                .padding(.bottom, candidates.isEmpty ? 2 : 4)
             switch display.matching.kind {
             case "evaluating":
-                Text("Checking the display…").font(.callout).foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
+                note("Checking the display…")
             case "failed":
-                Text(display.matching.error ?? "portal-match failed").font(.callout)
-                    .foregroundStyle(.secondary).padding(.horizontal, 8)
+                note(display.matching.error ?? "portal-match failed")
             default:
                 if display.devices.isEmpty {
-                    Text("No handoff routes in the config").font(.callout)
-                        .foregroundStyle(.secondary).padding(.horizontal, 8)
+                    note("No handoff routes in the config")
                 }
                 ForEach(display.devices) { device in
                     if device.candidates.isEmpty {
-                        Text("No handoff routes in the config").font(.callout)
-                            .foregroundStyle(.secondary).padding(.horizontal, 8)
+                        note(display.devices.count > 1
+                             ? "\(device.label): No handoff routes in the config"
+                             : "No handoff routes in the config")
                     }
                     ForEach(device.candidates) { candidate in
-                        CandidateCard(
+                        CandidateRow(
                             display: display, device: device, candidate: candidate,
-                            request: requests.first {
+                            request: screen.controlRequests.first {
                                 $0.peer == candidate.target && $0.device == device.device
-                            })
+                            },
+                            style: .menu)
                     }
                 }
             }
@@ -206,26 +377,20 @@ private struct DisplaySection: View {
     }
 }
 
-private final class Hover: ObservableObject {
-    @Published var on = false
-}
-
-private struct CandidateCard: View {
+/// The actions of a candidate (ACT-1) and "Let <peer> control this display".
+@MainActor struct CandidateActions {
     let display: MenuDisplay
     let device: MenuDevice
     let candidate: MenuCandidate
-    /// "Let <peer> control this display" in the "⋯" menu of that peer (UI-18).
     let request: ControlRequestRow?
-    // The SwiftUI macros (`@State`) are not available to this swiftc build.
-    @StateObject private var hover = Hover()
 
-    private struct Action {
+    struct Action {
         let title: String
         let kind: String
         let unavailable: String?
     }
 
-    private var actions: [Action] {
+    var actions: [Action] {
         [
             Action(title: "Switch & control", kind: "switch_and_control",
                    unavailable: candidate.switchAndControl),
@@ -236,9 +401,11 @@ private struct CandidateCard: View {
     }
 
     /// The first available action (UI-18).
-    private var primary: Action? { actions.first { $0.unavailable == nil } }
+    var primary: Action? { actions.first { $0.unavailable == nil } }
 
-    private var subtitle: String {
+    var online: Bool { candidate.status == "online" }
+
+    var subtitle: String {
         let status = candidate.status.capitalized
         if let request, request.waiting { return "Waiting for \(request.peerLabel)…" }
         if let primary { return "\(status) · \(primary.title)" }
@@ -246,17 +413,17 @@ private struct CandidateCard: View {
     }
 
     /// The menu has more than one available item: the row shows "⋯".
-    private var hasMore: Bool {
+    var hasMore: Bool {
         let available = actions.filter { $0.unavailable == nil }.count
         return available + (request.map { $0.waiting ? 0 : 1 } ?? 0) > 1
     }
 
-    private func run(_ action: Action) {
+    func run(_ action: Action) {
         sendIntent(["kind": action.kind, "display": display.token, "device": device.device,
                     "target": candidate.target])
     }
 
-    @ViewBuilder private var menuItems: some View {
+    @ViewBuilder var menuItems: some View {
         ForEach(actions, id: \.kind) { action in
             Button {
                 run(action)
@@ -278,68 +445,115 @@ private struct CandidateCard: View {
             .disabled(request.waiting)
         }
     }
+}
+
+/// One candidate row: a click runs the first available action, and "⋯" holds
+/// all actions (UI-18). The menu and the main window have different sizes.
+struct CandidateRow: View {
+    enum Style { case menu, window }
+
+    let display: MenuDisplay
+    let device: MenuDevice
+    let candidate: MenuCandidate
+    let request: ControlRequestRow?
+    let style: Style
+    @StateObject private var hover = Hover()
+
+    private var model: CandidateActions {
+        CandidateActions(display: display, device: device, candidate: candidate, request: request)
+    }
 
     var body: some View {
-        HStack(spacing: 4) {
+        let model = self.model
+        HStack(spacing: style == .menu ? 4 : 0) {
             Button {
-                if let primary { run(primary) }
+                if let primary = model.primary { model.run(primary) }
             } label: {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(candidate.label)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    if style == .menu {
+                        Circle()
+                            .fill(model.online ? Color.accentColor : .primary.opacity(0.14))
+                            .frame(width: 30, height: 30)
+                            .overlay {
+                                Image(systemName: "display").font(.system(size: 14))
+                                    .foregroundStyle(model.online ? Color.white : Color.secondary)
+                            }
+                    }
+                    VStack(alignment: .leading, spacing: style == .menu ? 0 : 2) {
+                        Text(candidate.label)
+                            .font(.system(size: style == .menu ? 14 : 13))
+                            .foregroundStyle(model.online ? .primary : .secondary)
+                        Text(model.subtitle).font(.system(size: 12))
+                            .foregroundStyle(model.online ? .secondary : .tertiary)
+                    }
+                    Spacer(minLength: 0)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, style == .menu ? 6 : 0)
+                .padding(.leading, style == .menu ? 8 : 14)
+                .padding(.trailing, model.hasMore ? 0 : (style == .menu ? 8 : 14))
+                .frame(minHeight: style == .menu ? nil : 48)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(primary == nil)
-            if hasMore {
+            .disabled(model.primary == nil)
+            if model.hasMore {
+                let size: CGFloat = style == .menu ? 32 : 44
                 Menu {
-                    menuItems
+                    model.menuItems
                 } label: {
                     Image(systemName: "ellipsis")
-                        .frame(width: 44, height: 44)
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: size, height: size)
+                        .background {
+                            if hover.on && style == .menu {
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(.primary.opacity(0.18))
+                            }
+                        }
                         .contentShape(Rectangle())
                 }
                 .menuStyle(.button)
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
-                .opacity(hover.on ? 1 : 0.5)
+                .padding(.trailing, style == .menu ? 6 : 2)
                 .accessibilityLabel("More actions for \(candidate.label)")
             }
         }
-        .padding(.leading, 8)
         .background {
             if hover.on {
-                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.primary.opacity(0.08))
+                if style == .menu {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(.primary.opacity(0.10))
+                } else {
+                    Rectangle().fill(.primary.opacity(0.05))
+                }
             }
         }
         .onHover { hover.on = $0 }
-        .contextMenu { if hasMore { menuItems } }
+        .contextMenu { if model.hasMore { model.menuItems } }
     }
 }
 
-private struct ControlRequestButton: View {
+struct ControlRequestButton: View {
     let row: ControlRequestRow
-    /// A row outside a candidate card names the device.
-    let withDevice: Bool
 
     private var title: String {
         if row.waiting { return "Waiting for \(row.peerLabel)…" }
-        let target = withDevice ? row.deviceLabel : "this display"
-        return "Let \(row.peerLabel) control \(target)"
+        return "Let \(row.peerLabel) control \(row.deviceLabel)"
     }
 
     var body: some View {
         Button {
             sendIntent(["kind": "let_control", "peer": row.peer, "device": row.device])
         } label: {
-            Text(title).frame(maxWidth: .infinity, alignment: .leading)
+            Text(title).font(.system(size: 14))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(row.waiting)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
     }
 }

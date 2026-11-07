@@ -50,6 +50,7 @@ struct MenuDevice: Decodable, Equatable, Identifiable {
     let device: String
     let alias: String
     let label: String
+    let state: String
     let candidates: [MenuCandidate]
     var id: String { device }
 }

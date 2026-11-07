@@ -16,7 +16,7 @@ use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen, NSWi
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSImage, NSPanel, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength, NSView, NSWindowCollectionBehavior, NSWindowDelegate,
-    NSWindowStyleMask,
+    NSWindowStyleMask, NSWindowTitleVisibility,
 };
 use objc2_foundation::{NSNotification, NSNumber, NSPoint, NSRect, NSSize, NSString};
 use telescreen_view::{Glyph, Intent, MainScreen, MenuScreen};
@@ -435,14 +435,20 @@ impl MacUi {
         let style = NSWindowStyleMask::Titled
             | NSWindowStyleMask::Closable
             | NSWindowStyleMask::Miniaturizable
-            | NSWindowStyleMask::Resizable;
-        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(900.0, 600.0));
+            | NSWindowStyleMask::Resizable
+            // The header layer goes under the title bar (mockup Version 75).
+            | NSWindowStyleMask::FullSizeContentView;
+        // The size of the mockup "macOS · main window".
+        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1000.0, 680.0));
         // SAFETY: the NSWindow designated initializer, on the main thread.
         let main: Retained<NSWindow> = unsafe {
             msg_send![NSWindow::alloc(mtm), initWithContentRect: rect, styleMask: style,
                 backing: NSBackingStoreType::Buffered, defer: false]
         };
         main.setTitle(&NSString::from_str("Telescreen"));
+        // The content shows the name; the title bar has only the window buttons.
+        main.setTitleVisibility(NSWindowTitleVisibility::Hidden);
+        main.setTitlebarAppearsTransparent(true);
         // SAFETY: the window lives in STATE and is never released by AppKit.
         unsafe { main.setReleasedWhenClosed(false) };
         main.setContentView(Some(&main_view));

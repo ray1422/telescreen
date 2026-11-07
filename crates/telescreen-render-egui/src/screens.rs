@@ -357,12 +357,14 @@ mod tests {
                                 device: "no-route".into(),
                                 alias: "Other".into(),
                                 label: "Other".into(),
+                                state: VideoInput::Unchanged,
                                 candidates: Vec::new(),
                             },
                             MenuDevice {
                                 device: "shared".into(),
                                 alias: "Monitor".into(),
                                 label: "Monitor".into(),
+                                state: VideoInput::Confirmed,
                                 candidates: vec![MenuCandidate {
                                     target: "pc1".into(),
                                     label: "Target peer".into(),
