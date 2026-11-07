@@ -16,6 +16,7 @@ pub mod pointer;
 pub mod pointer_stats;
 pub mod portal_capture;
 pub mod routes;
+pub mod scroll_smooth;
 pub mod session;
 pub mod verification;
 pub mod verifier;

@@ -79,6 +79,11 @@ pub trait Injector {
     fn tick(&mut self, _now: Instant) -> Result<(), PlatformError> {
         Ok(())
     }
+    /// The next time that [`Injector::tick`] has work, if one (IN-19). The main
+    /// loop then calls `tick` at this time, also if it is sooner than its own timer.
+    fn next_tick(&self) -> Option<Instant> {
+        None
+    }
     /// The session of the injector ended or was lost (IN-18).
     fn end_session(&mut self) {}
 }

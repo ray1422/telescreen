@@ -622,6 +622,15 @@ impl Controller {
 
     // ----- Timers -----
 
+    /// The next time that the injector has work, if it is sooner than the timer
+    /// of the main loop (IN-19).
+    pub fn next_tick(&self) -> Option<Instant> {
+        self.ports
+            .injector
+            .as_ref()
+            .and_then(|injector| injector.next_tick())
+    }
+
     /// The main loop calls this often. It runs the timers and sends the heartbeat
     /// to each connected peer once a second, from this thread, so that a hung app
     /// stops its heartbeat and the other peer ends the sessions (ADR 0007, AC-18).

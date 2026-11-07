@@ -1337,7 +1337,12 @@ impl ApplicationHandler<UserEvent> for App {
             self.controller.displays_changed();
             self.sync(event_loop);
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(now + TICK));
+        // IN-19: while a scroll waits, the injector needs its steps.
+        let wake = self
+            .controller
+            .next_tick()
+            .map_or(now + TICK, |at| at.min(now + TICK));
+        event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
     }
 
     fn exiting(&mut self, _: &ActiveEventLoop) {
