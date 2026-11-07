@@ -11,7 +11,7 @@ use telescreen_core::driver::{DeviceRef, OperationKind, Outcome, PortalInfo, Req
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken};
 use telescreen_core::platform::{Capability, DisplayInfo};
 use telescreen_core::session::VideoInput;
-use telescreen_core::session::source::{HandoffResult, SourceSession};
+use telescreen_core::session::source::{HandoffResult, SourcePhase, SourceSession};
 use telescreen_core::wire::{ControlRefuseReason, EndReason, Message};
 use telescreen_transport::NetCommand;
 use telescreen_view::{DeviceChoice, Matching};
@@ -58,12 +58,37 @@ impl Controller {
         }
     }
 
-    /// ACT-5. The flag goes off first: `close_portal` ends the session, and the
-    /// end calls this function again.
-    pub(super) fn close_ephemeral_portal(&mut self) {
-        if let Some(portal) = self.portal.as_mut().filter(|p| p.ephemeral) {
-            portal.ephemeral = false;
+    /// ACT-5: the portal exists only with its session. Closes the portal of a
+    /// session that ended or did not start. An end that the user did not make
+    /// on this computer gets a notice, because the portal and its status line
+    /// go away (FLOW-16).
+    pub(super) fn close_session_portal(&mut self) {
+        let Some(portal) = self.portal.as_ref() else {
+            return;
+        };
+        if portal.session.as_ref().is_some_and(|s| !s.is_finished()) {
+            // The end runs `run_source_actions`, which calls this function again.
             self.close_portal(EndReason::SourceClosed);
+            return;
+        }
+        if let Some(session) = &portal.session
+            && let SourcePhase::Ended(reason) = session.phase()
+            && !matches!(reason, EndReason::SourceClosed | EndReason::HandBack)
+        {
+            let mut text = format!(
+                "The session with {} ended: {}.",
+                self.label_of(session.target()),
+                super::end_text(reason)
+            );
+            if session.video_input() == VideoInput::Unknown {
+                text.push_str(" The display state is unknown.");
+            }
+            self.notice(text);
+        }
+        self.stop_search();
+        self.portal_window_request = None;
+        if self.portal.take().is_some() {
+            self.ports.capture.disarm();
         }
     }
 
@@ -86,7 +111,6 @@ impl Controller {
         let Some(portal) = self.portal.as_mut() else {
             return;
         };
-        portal.ephemeral = true;
         portal.pending_start = Some(PendingStart {
             target,
             device: Some(device),
@@ -122,7 +146,7 @@ impl Controller {
                     self.notice(format!(
                         "Cannot start: the display {display} does not match the device {device}."
                     ));
-                    self.close_ephemeral_portal();
+                    self.close_session_portal();
                     return;
                 };
                 let label = local.label.clone().unwrap_or_else(|| alias.clone());
@@ -152,7 +176,7 @@ impl Controller {
             self.start_handoff(pending.target);
         }
         if self.portal.as_ref().is_some_and(|p| p.session.is_none()) {
-            self.close_ephemeral_portal();
+            self.close_session_portal();
         }
     }
 
@@ -199,7 +223,7 @@ impl Controller {
             if let Some(portal) = self.portal.as_mut() {
                 portal.pending_start = None;
             }
-            self.close_ephemeral_portal();
+            self.close_session_portal();
         }
     }
 

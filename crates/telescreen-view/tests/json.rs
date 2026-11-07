@@ -134,15 +134,9 @@ fn ui18_each_intent_round_trips_as_json() {
     let intents = [
         Intent::DeviceIsBack { device: dev() },
         Intent::SetClipboard { on: true },
-        Intent::OpenPortal { display: lg() },
-        Intent::ClosePortal,
         Intent::Refresh,
         Intent::AllowDiscovery,
         Intent::StopDiscovery,
-        Intent::SelectDevice {
-            alias: "Desktop".into(),
-        },
-        Intent::StartHandoff { target: pc1() },
         Intent::EndSession,
         Intent::HandBack {
             session: SessionId(1),

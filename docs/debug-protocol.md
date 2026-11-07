@@ -31,7 +31,7 @@ An invalid request gets `{"ok":false,"error":<text>}`.
 
 A window is `{"role":"control"|"portal"|"prompt","monitor":<display token or null>,"fullscreen":<bool>,"focused":<bool>,"position":[x,y] or null,"size":[w,h]}`. Position and size are logical pixels. Wayland does not report the position.
 
-An intent is one of: `{"OpenPortal":{"display":<display token>}}`, `"ClosePortal"`, `"Refresh"`, `"AllowDiscovery"`, `"StopDiscovery"`, `"EndSession"`, `{"StartHandoff":{"target":<computer id>}}`, `{"SelectDevice":{"alias":<device alias>}}`, `{"HandBack":{"session":<id>}}`, `{"StopSession":{"session":<id>}}` ("Disconnect"), `{"ControlFromHere":{"session":<id>}}`, `{"SetClipboard":{"on":<bool>}}`, `{"DeviceIsBack":{"device":<device id>}}`.
+An intent is the JSON form of the native UI (UI-18), for example `{"kind":"switch_and_control","display":<display token>,"device":<device id>,"target":<computer id>}`, or one of: `"Refresh"`, `"AllowDiscovery"`, `"StopDiscovery"`, `"EndSession"`, `{"HandBack":{"session":<id>}}`, `{"StopSession":{"session":<id>}}` ("Disconnect"), `{"ControlFromHere":{"session":<id>}}`, `{"SetClipboard":{"on":<bool>}}`, `{"DeviceIsBack":{"device":<device id>}}`.
 
 Example with `socat`:
 
@@ -42,7 +42,7 @@ echo '{"cmd":"state"}' | socat - UNIX-CONNECT:/tmp/telescreen.sock
 ## Limits
 
 - The protocol does not inject input and does not replace the input capture. The hardware tests of the capture (AC-14 to AC-17) still need the user.
-- `StartHandoff` runs the handoff steps of the config. With the real config, it switches the shared display. For a test without a switch, use a config whose steps only print `{"ok":true}`.
+- `switch_and_control` and `switch_display_only` run the handoff steps of the config. With the real config, it switches the shared display. For a test without a switch, use a config whose steps only print `{"ok":true}`.
 - `ack` on the source can start forwarding. Then the source arms the input capture and suppresses the local input.
 - With a clipboard switch that is on, a session changes the clipboard of the other computer (CLIP-2). Send `SetClipboard` with `on` false on both computers before a test that must not change the clipboard.
 - `hold_keyboard` takes the keyboard focus from all applications of this computer until `release_keyboard`, the session end, or the app end. Use it only on a computer where nobody types. The `focused` facts of the windows show the effect.

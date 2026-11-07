@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use telescreen_app::debug::{self, Request, StateReport, WindowFacts, WindowRole, parse_request};
-use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_view::{ControlScreen, Intent};
 
 fn parse(line: &str) -> Request {
@@ -70,23 +70,14 @@ fn ui7_hold_keyboard_names_a_display() {
 #[test]
 fn intents() {
     let cases = [
-        (
-            json!({"OpenPortal": {"display": "cg-2"}}),
-            Intent::OpenPortal {
-                display: DisplayToken::from("cg-2"),
-            },
-        ),
-        (json!("ClosePortal"), Intent::ClosePortal),
         (json!("EndSession"), Intent::EndSession),
         (
-            json!({"StartHandoff": {"target": "linux"}}),
-            Intent::StartHandoff {
+            json!({"kind": "switch_and_control", "display": "cg-2", "device": "lg", "target": "linux"}),
+            Intent::SwitchAndControl {
+                display: DisplayToken::from("cg-2"),
+                device: DeviceId::from("lg"),
                 target: ComputerId::from("linux"),
             },
-        ),
-        (
-            json!({"SelectDevice": {"alias": "LG"}}),
-            Intent::SelectDevice { alias: "LG".into() },
         ),
         (
             json!({"SetClipboard": {"on": false}}),
@@ -119,7 +110,8 @@ fn bad_requests_are_errors() {
         r#"{"cmd":"nope"}"#,
         r#"{"cmd":"intent"}"#,
         r#"{"cmd":"intent","intent":"Nope"}"#,
-        r#"{"cmd":"intent","intent":{"StartHandoff":{}}}"#,
+        r#"{"cmd":"intent","intent":{"DeviceIsBack":{}}}"#,
+        r#"{"cmd":"intent","intent":{"OpenPortal":{"display":"cg-2"}}}"#,
         r#"{"cmd":"intent","intent":{"Disconnect":{"session":"x"}}}"#,
         r#"{"cmd":"intent","intent":{"Disconnect":{"session":-1}}}"#,
         r#"["state"]"#,
@@ -134,6 +126,7 @@ fn report() -> StateReport {
             computer: "MacBook".into(),
             fingerprint: "sha256:00".into(),
             displays: vec![],
+            session: None,
             devices: vec![],
             incoming: vec![],
             notices: vec!["a notice".into()],

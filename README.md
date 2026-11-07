@@ -51,7 +51,7 @@ On Linux, the build needs the Wayland and xkbcommon development files. On macOS,
 3. On each computer, trust each other computer: `telescreen trust <computer-id> <fingerprint>`.
 4. On each computer, start Telescreen from the launcher, or run `telescreen`. At the first start, select this computer in the window. To select again, run `telescreen forget-computer`. For a different file or computer for one run: `telescreen run --config <file> --computer <id>`.
    On macOS, allow the Local Network request. If the peer stays "offline" with "no answer from", turn on Telescreen in System Settings, Privacy & Security, Local Network.
-5. On the source, in the control window, select "Open portal" on the shared display. Select the target. When the target shows the prompt, press Return in the portal (or click it).
+5. On the source, in the menu or the control window, find the shared display and select "Switch & control" for the target. The portal opens on that display. When the target shows the prompt, press Return in the portal (or click it).
 
 To go back to the source, use one of these:
 

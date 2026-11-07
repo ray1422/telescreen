@@ -87,7 +87,7 @@ Each step is one commit or more. Claude writes the tests first; Codex implements
 
 ### M20 steps
 
-Order (user, 2026-11-07): the bug fixes come first. Do M21, then step h (more than one portal), then the rest of step f1, f2, g, and i.
+Order (user, 2026-11-07): the bug fixes come first. Do M21, then ACT-5 (the portal opens when a session starts and closes when it ends; done 2026-11-07: the UI has no "Open portal", and the portal shows one status line), then the update of the macOS UI to the current mockups, then step h (more than one portal), then the rest of step f1, f2, g, and i.
 
 The sequence can change after the spikes.
 

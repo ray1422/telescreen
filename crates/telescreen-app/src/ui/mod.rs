@@ -401,8 +401,6 @@ impl Surface {
 struct PortalSurface {
     surface: Surface,
     token: DisplayToken,
-    /// True after the controller got `open_portal`.
-    opened: bool,
 }
 
 struct PromptSurface {
@@ -438,21 +436,6 @@ struct App {
 }
 
 impl App {
-    /// Opens the portal on the selected display. A different portal closes first
-    /// (FLOW-2).
-    fn open_portal_window(&mut self, event_loop: &ActiveEventLoop, token: DisplayToken) {
-        self.close_portal_window();
-        let monitor = event_loop
-            .available_monitors()
-            .find(|monitor| platform::monitor_token(monitor).as_ref() == Some(&token));
-        let Some(monitor) = monitor else {
-            self.controller
-                .add_notice(format!("Cannot find the display {token}."));
-            return;
-        };
-        self.create_portal_window(event_loop, monitor, token, false);
-    }
-
     /// Creates a portal at its logical display bounds (FLOW-2).
     /// Enters fullscreen after creating the window.
     fn create_portal_window(
@@ -460,7 +443,6 @@ impl App {
         event_loop: &ActiveEventLoop,
         monitor: MonitorHandle,
         token: DisplayToken,
-        opened: bool,
     ) {
         // FLOW-26: the title names this portal, so that Accessibility can find it.
         static NEXT_PORTAL: AtomicU64 = AtomicU64::new(1);
@@ -496,23 +478,17 @@ impl App {
                     self.controller.add_notice(error);
                 }
                 self.hooks.portal_created(&surface.window);
-                self.portal = Some(PortalSurface {
-                    surface,
-                    token,
-                    opened,
-                });
+                self.portal = Some(PortalSurface { surface, token });
             }
             Err(e) => {
                 self.controller
                     .add_notice(format!("Cannot open the portal: {e}"));
-                if opened {
-                    self.controller.close_portal(EndReason::SourceClosed);
-                }
+                self.controller.close_portal(EndReason::SourceClosed);
             }
         }
     }
 
-    /// Makes the window for a portal opened by the controller (FLOW-17).
+    /// Makes the window for a portal opened by the controller (ACT-5, FLOW-17).
     fn take_portal_window_request(&mut self, event_loop: &ActiveEventLoop) {
         let Some(token) = self.controller.take_portal_window_request() else {
             return;
@@ -529,22 +505,7 @@ impl App {
             self.controller.close_portal(EndReason::PortalGone);
             return;
         };
-        self.create_portal_window(event_loop, monitor, token, true);
-    }
-
-    /// Calls `open_portal` when the window is on its display (FLOW-2).
-    fn start_portal(&mut self) {
-        let Some(portal) = self.portal.as_mut() else {
-            return;
-        };
-        if portal.opened {
-            return;
-        }
-        let Some(display) = self.controller.display(&portal.token) else {
-            return;
-        };
-        portal.opened = true;
-        self.controller.open_portal(display);
+        self.create_portal_window(event_loop, monitor, token);
     }
 
     /// FLOW-4, AC-8: the portal window is on a different monitor now. Evaluate
@@ -562,9 +523,6 @@ impl App {
         };
         eprintln!("telescreen: portal window moved to {token}");
         portal.token = token.clone();
-        if !portal.opened {
-            return;
-        }
         match self.controller.display(&token) {
             Some(display) => {
                 self.controller.portal_display_changed(display);
@@ -582,11 +540,7 @@ impl App {
 
     fn handle_intents(&mut self, event_loop: &ActiveEventLoop, intents: Vec<Intent>) {
         for intent in intents {
-            match intent {
-                Intent::OpenPortal { display } => self.open_portal_window(event_loop, display),
-                Intent::ClosePortal => self.close_portal_window(),
-                other => self.controller.on_intent(other),
-            }
+            self.controller.on_intent(intent);
             self.take_portal_window_request(event_loop);
         }
     }
@@ -620,7 +574,7 @@ impl App {
         for request in self.hooks.take_prompt_requests() {
             self.prompt_request(event_loop, request);
         }
-        if self.portal.as_ref().is_some_and(|p| p.opened) && !self.controller.has_portal() {
+        if self.portal.is_some() && !self.controller.has_portal() {
             // The controller closed the portal (FLOW-19).
             self.portal = None;
             self.hooks.portal_closed();
@@ -850,9 +804,6 @@ impl App {
                 self.controller.set_portal_focus(*focused);
                 self.hooks
                     .portal_focus(&window, *focused, self.controller.guarded());
-                if *focused {
-                    self.start_portal();
-                }
                 false
             }
             WindowEvent::Occluded(occluded) => {
@@ -875,7 +826,6 @@ impl App {
                     self.controller.portal_left_fullscreen();
                 }
                 self.portal_monitor_changed(&window);
-                self.start_portal();
                 false
             }
             WindowEvent::CloseRequested => {
@@ -1166,7 +1116,6 @@ impl ApplicationHandler<UserEvent> for App {
         if now.duration_since(self.last_display_check) >= DISPLAY_CHECK {
             self.last_display_check = now;
             self.controller.displays_changed();
-            self.start_portal();
             self.sync(event_loop);
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(now + TICK));

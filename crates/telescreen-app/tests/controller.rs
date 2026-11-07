@@ -604,6 +604,16 @@ impl World {
         Some(self.mac.controller.portal_screen()?.session?.phase)
     }
 
+    /// ACT-5: the portal closed with its session, and a notice has the reason.
+    fn assert_ended(&self, reason: &str) {
+        assert!(!self.mac.controller.has_portal(), "ACT-5");
+        assert!(
+            has_notice(&self.mac, &format!("ended: {reason}")),
+            "{:?}",
+            self.mac.controller.control_screen().notices
+        );
+    }
+
     /// Completes the portal match and delivers no network command.
     fn pump_until_dial(&mut self) {
         let job = self.mac.log.borrow_mut().jobs.pop_front();
@@ -1028,25 +1038,19 @@ fn flow22_a_click_in_the_portal_asks_for_the_native_focus() {
 }
 
 #[test]
-fn flow22_a_portal_that_keeps_the_focus_forwards_keys_in_the_next_session() {
+fn flow22_act5_the_next_session_has_a_new_portal() {
     let mut w = World::new();
     w.advance_to_forwarding();
-    // The portal keeps the native focus after the session ends, so the window
-    // layer reports no new focus event.
     w.mac.controller.on_captured(CapturedEvent::SafetyExit);
     w.pump();
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
     w.mac.log.borrow_mut().capture.clear();
-    w.mac.controller.start_handoff(ComputerId::from("pc1"));
-    w.pump();
+    w.advance_to_confirmation();
+    // The new portal window gets the native focus (FLOW-22).
+    w.mac.controller.set_portal_focus(true);
     w.advance_to_forwarding_from_confirmation();
     let capture = w.mac.log.borrow().capture.clone();
     assert!(capture.contains(&"focus true".to_string()), "{capture:?}");
-
-    // A click asks for the focus. The OS has it, so the capture gets it again.
-    w.mac.log.borrow_mut().capture.clear();
-    w.mac.controller.on_captured(CapturedEvent::FocusWanted);
-    assert!(!w.mac.controller.take_portal_focus_request());
-    assert_eq!(w.mac.log.borrow().capture, ["focus true"]);
 }
 
 #[test]
@@ -1239,21 +1243,15 @@ fn flow16_in8_the_safety_exit_ends_both_sides() {
         .on_captured(CapturedEvent::Input(key(29, true)));
     w.mac.controller.on_captured(CapturedEvent::SafetyExit);
     w.pump();
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "safety exit".into()
-        })
-    );
+    w.assert_ended("safety exit");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(29, false)));
     assert!(
         w.pc1.controller.control_screen().incoming.is_empty(),
         "the lease is released"
     );
-    // A new session can start: the lease is free.
-    w.mac.controller.start_handoff(ComputerId::from("pc1"));
-    w.pump();
+    // A new session can start in a new portal: the lease is free.
+    w.advance_to_confirmation();
     assert!(matches!(
         w.phase(),
         Some(SessionPhase::WaitingForAck { .. })
@@ -1269,8 +1267,8 @@ fn flow11_ac7_timeout_removes_prompt() {
         .tick(w.now + std::time::Duration::from_secs(61));
     w.pump();
     assert!(!w.pc1.log.borrow().prompt_visible);
-    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
-    assert_eq!(session.video_input, VideoInput::Unknown);
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert!(has_notice(&w.mac, "The display state is unknown."));
 }
 
 #[test]
@@ -1323,12 +1321,7 @@ fn flow12_ac10_failed_handoff_does_not_reach_the_prompt() {
         w.pc1.controller.control_screen().incoming.is_empty(),
         "the target released the lease"
     );
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "the handoff failed".into()
-        })
-    );
+    w.assert_ended("the handoff failed");
 }
 
 #[test]
@@ -1343,12 +1336,7 @@ fn ac23_stop_this_session() {
     w.pc1.controller.on_intent(Intent::StopSession { session });
     w.pump();
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "the target stopped the session".into()
-        })
-    );
+    w.assert_ended("the target stopped the session");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert!(
         w.pc1.controller.portal_screen().is_none(),
@@ -1482,12 +1470,7 @@ fn ac18_target_exit_ends_the_session_and_closes() {
     w.pc1.controller.shutdown();
     w.pump();
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "disconnected on the target".into()
-        })
-    );
+    w.assert_ended("disconnected on the target");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert_eq!(w.pc1.log.borrow().closed, vec![ComputerId::from("mac")]);
     assert_eq!(w.pc1.log.borrow().net_shutdowns, 1);
@@ -1517,12 +1500,7 @@ fn ac18_peer_lost_releases_both_sides() {
     );
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(30, false)));
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "connection lost".into()
-        })
-    );
+    w.assert_ended("connection lost");
 }
 
 #[test]
@@ -1570,22 +1548,9 @@ fn flow4_ac8_portal_moves_to_other_display() {
         .controller
         .portal_display_changed(display("builtin", -1500.0, 1500.0));
     w.pump();
-    let screen = w.mac.controller.portal_screen().unwrap();
-    assert_eq!(
-        screen.matching,
-        Matching::NoMatch,
-        "portal-match ran again on the new display"
-    );
-    assert!(
-        screen.candidates.is_empty(),
-        "the old device binding does not apply"
-    );
-    assert_eq!(
-        screen.session.unwrap().phase,
-        SessionPhase::Ended {
-            reason: "the portal display is gone".into()
-        }
-    );
+    // The old device binding does not apply on the new display, so the
+    // session ends, and the portal closes with it (ACT-5).
+    w.assert_ended("the portal display is gone");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert!(w.pc1.controller.control_screen().incoming.is_empty());
 }
@@ -2004,9 +1969,8 @@ fn flow11_ac10_a_failed_verification_ends_the_session() {
         .controller
         .on_verifier_event(VerifierId(1), VerifierEvent::Failed("timeout".into()));
     w.pump();
-    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
-    assert!(matches!(session.phase, SessionPhase::Ended { .. }));
-    assert_eq!(session.video_input, VideoInput::Unknown);
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert!(has_notice(&w.mac, "The display state is unknown."));
     assert!(!w.mac.controller.guarded(), "the guard ends (FLOW-21)");
     assert!(w.pc1.controller.control_screen().incoming.is_empty());
 }
@@ -2164,7 +2128,7 @@ fn hb1_hb2_ac36_the_target_hands_back() {
         ]
     );
     assert!(w.pc1.controller.control_screen().incoming.is_empty());
-    assert!(matches!(w.phase(), Some(SessionPhase::Ended { .. })));
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     // VER-6: the device left pc1, so pc1 shows no state.
     assert_eq!(pc1_state(&w), VideoInput::Unchanged);
@@ -3262,12 +3226,36 @@ fn act5_a_refused_session_closes_the_portal() {
 }
 
 #[test]
-fn act5_the_portal_of_open_portal_stays_after_the_session() {
-    // The current flow stays until the redesign replaces it (spec 4.7).
+fn act5_every_portal_closes_with_its_session() {
     let mut w = World::new();
     w.advance_to_forwarding();
     act(&mut w, Intent::EndSession);
-    assert!(w.mac.controller.has_portal());
+    assert!(!w.mac.controller.has_portal());
+    assert!(
+        w.mac.controller.control_screen().notices.is_empty(),
+        "no notice for an end on this computer"
+    );
+}
+
+#[test]
+fn act5_flow17_the_portal_of_control_from_here_closes_after_a_hand_back() {
+    // Hardware test 2026-11-07: the portal stayed after "Hand back".
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let session = w.pc1.controller.control_screen().incoming[0].session;
+    w.pc1
+        .controller
+        .on_intent(Intent::ControlFromHere { session });
+    w.pump();
+    assert!(w.pc1.controller.portal_screen().is_some());
+    assert!(w.pc1.controller.acknowledge());
+    w.pc1.controller.on_captured(CapturedEvent::PointerEntered {
+        at: Point { x: 10.0, y: 10.0 },
+    });
+    w.pump();
+    w.pc1.controller.on_intent(Intent::SourceHandBack);
+    w.pump();
+    assert!(!w.pc1.controller.has_portal(), "ACT-5");
 }
 
 #[test]

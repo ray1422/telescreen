@@ -15,12 +15,15 @@ use telescreen_core::session::VideoInput;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PromptId(pub u64);
 
-/// The control window: this computer, its displays, devices, and incoming sessions.
+/// The control window: this computer, its displays, devices, and sessions.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ControlScreen {
     pub computer: String,
     pub fingerprint: String,
-    pub displays: Vec<DisplayRow>,
+    /// The displays with the actions of each candidate (ACT-1, ACT-5).
+    pub displays: Vec<MenuDisplay>,
+    /// The session of the portal on this source.
+    pub session: Option<SessionRow>,
     pub devices: Vec<DeviceRow>,
     pub incoming: Vec<IncomingRow>,
     /// The text clipboard switch, or `None` without a backend (CLIP-1, CLIP-8).
@@ -36,14 +39,6 @@ pub struct ControlScreen {
 pub struct DiscoveryRow {
     /// The seconds until the end, or `None` if this computer is not discoverable.
     pub remaining_seconds: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct DisplayRow {
-    pub token: DisplayToken,
-    pub name: String,
-    /// True if a portal is open on this display.
-    pub has_portal: bool,
 }
 
 /// A local device and its state on this destination (VER-6).
@@ -223,45 +218,24 @@ pub enum SetupIntent {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Intent {
     /// The user says an unknown device is back on this computer (VER-6).
-    DeviceIsBack {
-        device: DeviceId,
-    },
+    DeviceIsBack { device: DeviceId },
     /// Changes the text clipboard switch for this run (CLIP-1).
-    SetClipboard {
-        on: bool,
-    },
-    /// Open the portal on this display (FLOW-2).
-    OpenPortal {
-        display: DisplayToken,
-    },
-    ClosePortal,
+    SetClipboard { on: bool },
     /// Dial each offline candidate of the portal again (NET-10), and search (NET-15).
     Refresh,
     /// Make this computer discoverable for 10 minutes (NET-14).
     AllowDiscovery,
     /// Stop "Allow discovery" before the end (NET-14).
     StopDiscovery,
-    SelectDevice {
-        alias: String,
-    },
-    StartHandoff {
-        target: ComputerId,
-    },
     /// End the session of the portal (on the source).
     EndSession,
     /// End the incoming session and hand its device back to the source (HB-2).
-    HandBack {
-        session: SessionId,
-    },
+    HandBack { session: SessionId },
     /// End the incoming session on the target (FLOW-17).
-    StopSession {
-        session: SessionId,
-    },
+    StopSession { session: SessionId },
     /// End the incoming session on the target (FLOW-17).
     /// Start a session in the other direction.
-    ControlFromHere {
-        session: SessionId,
-    },
+    ControlFromHere { session: SessionId },
     /// "Switch & control": open a portal on the display, then hand off (ACT-1, ACT-5).
     SwitchAndControl {
         display: DisplayToken,
@@ -281,10 +255,7 @@ pub enum Intent {
         target: ComputerId,
     },
     /// "Let <peer> control this display": send a control request (ACT-4).
-    LetControl {
-        peer: ComputerId,
-        device: DeviceId,
-    },
+    LetControl { peer: ComputerId, device: DeviceId },
     /// "Hand back" in the session part of the menu, on the source (UI-9, HB-3).
     SourceHandBack,
 }

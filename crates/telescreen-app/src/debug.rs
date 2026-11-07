@@ -147,7 +147,6 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
     }
     if let Some(name) = value.as_str() {
         return match name {
-            "ClosePortal" => Ok(Intent::ClosePortal),
             "Refresh" => Ok(Intent::Refresh),
             "AllowDiscovery" => Ok(Intent::AllowDiscovery),
             "StopDiscovery" => Ok(Intent::StopDiscovery),
@@ -164,9 +163,6 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
         .next()
         .ok_or_else(|| DebugError::Request("missing intent variant".into()))?;
     match name.as_str() {
-        "OpenPortal" => Ok(Intent::OpenPortal {
-            display: DisplayToken::from(string_field(arguments, "display")?),
-        }),
         "DeviceIsBack" => Ok(Intent::DeviceIsBack {
             device: DeviceId::from(string_field(arguments, "device")?),
         }),
@@ -175,12 +171,6 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
                 .get("on")
                 .and_then(Value::as_bool)
                 .ok_or_else(|| DebugError::Request("on must be a boolean".into()))?,
-        }),
-        "StartHandoff" => Ok(Intent::StartHandoff {
-            target: ComputerId::from(string_field(arguments, "target")?),
-        }),
-        "SelectDevice" => Ok(Intent::SelectDevice {
-            alias: string_field(arguments, "alias")?.to_owned(),
         }),
         "HandBack" | "StopSession" | "ControlFromHere" => {
             let session = arguments

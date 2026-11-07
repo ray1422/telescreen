@@ -29,9 +29,8 @@ use telescreen_core::verifier::{PromptVerifier, VerifierEvent};
 use telescreen_core::wire::{EndReason, HandBackOutcome, Message, RefuseReason};
 use telescreen_transport::{DialTarget, NetCommand, NetEvent};
 use telescreen_view::{
-    CandidateRow, ControlScreen, DeviceChoice, DeviceRow, DiscoveryRow, DisplayRow, IncomingRow,
-    Intent, Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase,
-    SessionRow,
+    CandidateRow, ControlScreen, DeviceChoice, DeviceRow, DiscoveryRow, IncomingRow, Intent,
+    Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase, SessionRow,
 };
 
 use crate::pointer_mailbox::ReceivedPointer;
@@ -238,9 +237,6 @@ struct Portal {
     device: Option<String>,
     /// The session to start after `portal-match` (FLOW-17, ACT-1, ACT-4).
     pending_start: Option<PendingStart>,
-    /// The portal closes when its session ends (ACT-5). The portal of
-    /// `open_portal` stays until the redesign replaces it.
-    ephemeral: bool,
     session: Option<SourceSession>,
     pointer: Point,
     notice: Option<String>,
@@ -551,7 +547,6 @@ impl Controller {
             match_error: None,
             device: None,
             pending_start: None,
-            ephemeral: false,
             session: None,
             pointer: Point::default(),
             notice: None,
@@ -1060,7 +1055,7 @@ impl Controller {
         if finished {
             self.set_guard(false);
             self.ports.capture.disarm();
-            self.close_ephemeral_portal();
+            self.close_session_portal();
         }
         self.update_clipboard();
     }
@@ -1647,14 +1642,12 @@ impl Controller {
         {
             portal.notice = Some(refuse_text(*reason));
             // ACT-5: the portal closes with its session, so keep the reason.
-            if portal.ephemeral {
-                let text = format!(
-                    "{} refused the session: {}",
-                    self.label_of(peer),
-                    refuse_text(*reason)
-                );
-                self.notice(text);
-            }
+            let text = format!(
+                "{} refused the session: {}",
+                self.label_of(peer),
+                refuse_text(*reason)
+            );
+            self.notice(text);
         }
         self.run_source_actions(actions);
     }
@@ -2629,10 +2622,6 @@ impl Controller {
                 self.clipboard.set_enabled(on);
                 self.update_clipboard();
             }
-            Intent::OpenPortal { .. } | Intent::ClosePortal => {
-                // The window layer opens and closes the portal window, then calls
-                // `open_portal` or `close_portal`.
-            }
             Intent::Refresh => {
                 self.dial_candidates();
                 // UI-18: the menu evaluates again only after its first evaluation.
@@ -2657,17 +2646,6 @@ impl Controller {
                 }
             }
             Intent::StopDiscovery => self.stop_discovery(),
-            Intent::SelectDevice { alias } => {
-                if let Some(portal) = self.portal.as_mut()
-                    && let Matching::Ambiguous(choices) = &portal.matching
-                    && let Some(choice) = choices.iter().find(|c| c.alias == alias).cloned()
-                {
-                    portal.device = Some(alias);
-                    portal.matching = Matching::Matched(choice);
-                    self.dial_candidates();
-                }
-            }
-            Intent::StartHandoff { target } => self.start_handoff(target),
             Intent::EndSession => self.end_portal_session(EndReason::SourceClosed),
             Intent::HandBack { session } => {
                 if self
@@ -2898,17 +2876,7 @@ impl Controller {
     }
 
     pub fn control_screen(&self) -> ControlScreen {
-        let portal_token = self.portal.as_ref().map(|p| p.display.token.clone());
-        let displays = self
-            .display_cache
-            .iter()
-            .cloned()
-            .map(|d| DisplayRow {
-                has_portal: Some(&d.token) == portal_token.as_ref(),
-                name: display_name(&d),
-                token: d.token,
-            })
-            .collect();
+        let session = self.portal_screen().and_then(|p| p.session);
         let devices = self
             .local_devices()
             .into_iter()
@@ -2935,7 +2903,8 @@ impl Controller {
         ControlScreen {
             computer: self.label_of(&self.local),
             fingerprint: self.fingerprint.clone(),
-            displays,
+            displays: self.menu_screen().displays,
+            session,
             devices,
             incoming,
             clipboard: self
