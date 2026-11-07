@@ -29,10 +29,12 @@ ROOT = Path(__file__).resolve().parent.parent
 NAME = "telescreen.display"
 OUTPUT = ROOT / "crates" / "telescreen-ui-macos" / "control" / "Assets.xcassets" / f"{NAME}.symbolset"
 
-# The guides of the SF Symbols template (Regular-M only). The glyph is 16
-# units high; it goes 1.25 cap heights high, centered on the cap height.
-BASELINE = 1126.0
-CAPLINE = 1055.54
+# The guides of the SF Symbols template. actool needs the baseline and the
+# capline of each scale (S, M, L), also when only Regular-M has a drawing.
+# The glyph is 16 units high; it goes 1.25 cap heights high, centered on the
+# cap height of M.
+GUIDES = {"S": (696.0, 625.54), "M": (1126.0, 1055.54), "L": (1556.0, 1485.54)}
+BASELINE, CAPLINE = GUIDES["M"]
 SCALE = 1.25 * (BASELINE - CAPLINE) / 16
 LEFT = 1391.3
 
@@ -73,6 +75,11 @@ def path(shape) -> str:
 
 def svg(d: str) -> str:
     right = LEFT + 18 * SCALE
+    guides = "".join(
+        f'  <path id="Baseline-{k}" d="M289.88 {b:g} L3010.12 {b:g}"/>\n'
+        f'  <path id="Capline-{k}" d="M289.88 {c:g} L3010.12 {c:g}"/>\n'
+        for k, (b, c) in GUIDES.items()
+    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
 <!-- Made by tools/make_symbol.py. Do not edit. -->
@@ -81,9 +88,7 @@ def svg(d: str) -> str:
   <text id="template-version" x="0" y="0">Template v.2.0</text>
  </g>
  <g id="Guides">
-  <path id="Baseline-M" d="M289.88 {BASELINE:g} L3010.12 {BASELINE:g}"/>
-  <path id="Capline-M" d="M289.88 {CAPLINE:g} L3010.12 {CAPLINE:g}"/>
-  <path id="left-margin-Regular-M" d="M{LEFT:g} 1030 L{LEFT:g} 1150"/>
+{guides}  <path id="left-margin-Regular-M" d="M{LEFT:g} 1030 L{LEFT:g} 1150"/>
   <path id="right-margin-Regular-M" d="M{right:.2f} 1030 L{right:.2f} 1150"/>
  </g>
  <g id="Symbols">

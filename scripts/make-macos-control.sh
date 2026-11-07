@@ -143,12 +143,18 @@ if [ -n "$processor" ]; then
     echo "appintentsmetadataprocessor wrote no $generated" >&2
     exit 1
   fi
-  # The fallback must describe the same actions as the generated file.
+  # The fallback must describe the same actions as the generated file. The
+  # availability annotations depend on the SDK: an SDK that does not know the
+  # deployment target writes no entry for it. Thus the comparison skips them.
   fallback="$control/fallback/Metadata.appintents/extract.actionsdata"
   if ! python3 -I -c '
 import json, sys
-a, b = (json.load(open(p))["actions"] for p in sys.argv[1:3])
-sys.exit(0 if a == b else 1)
+def actions(path):
+    out = json.load(open(path))["actions"]
+    for action in out.values():
+        action.pop("availabilityAnnotations", None)
+    return out
+sys.exit(0 if actions(sys.argv[1]) == actions(sys.argv[2]) else 1)
 ' "$generated" "$fallback"; then
     echo "warning: $fallback differs from the generated App Intents metadata; update it" >&2
     if [ -n "${GITHUB_ACTIONS:-}" ]; then

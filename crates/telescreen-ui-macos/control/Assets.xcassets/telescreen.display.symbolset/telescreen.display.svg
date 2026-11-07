@@ -6,8 +6,12 @@
   <text id="template-version" x="0" y="0">Template v.2.0</text>
  </g>
  <g id="Guides">
+  <path id="Baseline-S" d="M289.88 696 L3010.12 696"/>
+  <path id="Capline-S" d="M289.88 625.54 L3010.12 625.54"/>
   <path id="Baseline-M" d="M289.88 1126 L3010.12 1126"/>
   <path id="Capline-M" d="M289.88 1055.54 L3010.12 1055.54"/>
+  <path id="Baseline-L" d="M289.88 1556 L3010.12 1556"/>
+  <path id="Capline-L" d="M289.88 1485.54 L3010.12 1485.54"/>
   <path id="left-margin-Regular-M" d="M1391.3 1030 L1391.3 1150"/>
   <path id="right-margin-Regular-M" d="M1490.38 1030 L1490.38 1150"/>
  </g>
