@@ -44,8 +44,14 @@ PlasmoidItem {
         })
     }
 
+    // UI-9: an action that only changes what the menu shows keeps the menu
+    // open, so that the user sees the result. The macOS menu has the same list.
+    readonly property var staysOpen: ["refresh", "set_clipboard", "allow_discovery", "stop_discovery", "device_is_back"]
+
     function send(intent) {
         call("Send", [JSON.stringify(intent)])
+        if (!staysOpen.includes(intent.kind))
+            expanded = false
     }
 
     function sessionText() {

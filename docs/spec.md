@@ -173,6 +173,7 @@ Menu and entry points:
     - The applet metadata has `X-Plasma-DBusActivationService: dev.telescreen.Telescreen`. Thus the tray shows the applet only while Telescreen runs.
     - The tray icon is the UI-17 glyph as a mask icon: the tray draws it in its text color (`assets/linux/glyph-<state>.svg`).
     - Each candidate shows its name and status, then one button for each available action, as in the KDE applet mockup (user, 2026-11-07: "Linux 照這設計我覺得沒問題"). The first button is the primary action of UI-18 and has the accent color. An unavailable action has no button: the popup is narrow, and "Control only" is unavailable in most states. If "Switch & control" is unavailable for an online candidate, the status line shows its reason (Claude decides, 2026-11-07). The main window shows each unavailable action with its reason in the overflow menu.
+    - The applet closes its popup after an intent, except for the intents of UI-9 that keep the menu open: `Refresh`, `SetClipboard`, `AllowDiscovery`, `StopDiscovery`, and `DeviceIsBack`. The macOS menu uses the same list.
     - "Open Telescreen", "Configure Telescreen…", and "Quit Telescreen" are in the context menu of the applet. The tray draws the popup header (the title and the pin button).
   - With no applet: a StatusNotifierItem with a D-Bus menu that has the same items.
   - With no tray host: the command `telescreen show menu` opens the menu (user, 2026-11-07). The user binds it to a key in the desktop or compositor. `show` is the prefix of each command that opens a part of the UI.
