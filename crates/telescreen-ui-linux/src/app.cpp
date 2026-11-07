@@ -3,6 +3,7 @@
 
 #include "app.h"
 
+#include <QtCore/QUrl>
 #include <QtGui/QIcon>
 #include <QtQml/QQmlApplicationEngine>
 #include <QtQuickControls2/QQuickStyle>
@@ -26,7 +27,10 @@ std::int32_t ts_ui_run()
     QApplication::setQuitOnLastWindowClosed(false);
 
     QQmlApplicationEngine engine;
-    engine.loadFromModule("dev.telescreen.ui", "App");
+    // Qt 6.4 (Ubuntu 24.04, the release build) has no loadFromModule, and its
+    // default import path does not have the resource root of the QML modules.
+    engine.addImportPath(QStringLiteral("qrc:/qt/qml"));
+    engine.load(QUrl(QStringLiteral("qrc:/qt/qml/dev/telescreen/ui/qml/App.qml")));
     if (engine.rootObjects().isEmpty()) {
         return 1;
     }
