@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests may panic on a failed setup.
 
 use serde_json::json;
-use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, PortalId, SessionId};
 use telescreen_core::session::VideoInput;
 use telescreen_view::*;
 
@@ -13,7 +13,9 @@ fn menu() -> MenuScreen {
         glyph: Glyph::Controlling,
         sessions: vec![
             MenuSession {
-                id: MenuSessionId::Portal,
+                id: MenuSessionId::Portal {
+                    portal: PortalId(3),
+                },
                 peer: ComputerId::from("pc1"),
                 peer_label: "Linux".into(),
                 device: DeviceId::from("shared-lg"),
@@ -78,7 +80,7 @@ fn ui18_the_menu_json_shape() {
             "glyph": "controlling",
             "sessions": [
                 {
-                    "id": {"kind": "portal"},
+                    "id": {"kind": "portal", "portal": 3},
                     "peer": "pc1",
                     "peer_label": "Linux",
                     "device": "shared-lg",
@@ -141,7 +143,10 @@ fn ui18_each_intent_round_trips_as_json() {
         Intent::Refresh { display: lg() },
         Intent::AllowDiscovery,
         Intent::StopDiscovery,
-        Intent::EndSession,
+        Intent::EndSession { portal: None },
+        Intent::EndSession {
+            portal: Some(PortalId(3)),
+        },
         Intent::HandBack {
             session: SessionId(1),
         },
@@ -170,7 +175,10 @@ fn ui18_each_intent_round_trips_as_json() {
             peer: pc1(),
             device: dev(),
         },
-        Intent::SourceHandBack,
+        Intent::SourceHandBack { portal: None },
+        Intent::SourceHandBack {
+            portal: Some(PortalId(3)),
+        },
     ];
     for intent in intents {
         let text = serde_json::to_string(&intent).unwrap();
@@ -249,4 +257,18 @@ fn ui18_the_main_window_json_shape() {
     assert_eq!(value["menu"]["glyph"], "idle");
     let back: MainScreen = serde_json::from_value(value).unwrap();
     assert_eq!(back, main);
+}
+
+#[test]
+fn flow25_the_source_intents_name_their_portal() {
+    let named: Intent =
+        serde_json::from_value(json!({"kind": "end_session", "portal": 3})).unwrap();
+    assert_eq!(
+        named,
+        Intent::EndSession {
+            portal: Some(PortalId(3))
+        }
+    );
+    let unnamed: Intent = serde_json::from_value(json!({"kind": "source_hand_back"})).unwrap();
+    assert_eq!(unnamed, Intent::SourceHandBack { portal: None });
 }

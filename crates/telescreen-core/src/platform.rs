@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::clipboard::ClipboardChange;
-use crate::ids::DisplayToken;
+use crate::ids::{DisplayToken, PortalId};
 use crate::input::InputEvent;
 use crate::pointer::{Normalized, Point, Rect};
 
@@ -94,36 +94,42 @@ pub trait FocusHolder {
 }
 
 /// An event from the input capture of the source. The capture callback makes it
-/// and pushes it to a bounded queue (IN-2).
+/// and pushes it to a bounded queue (IN-2). An event of one portal names the
+/// portal (FLOW-25).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CapturedEvent {
     /// A key, button, or scroll event that the capture suppressed (its route is
-    /// `Forward`, see [`crate::key_route`]).
-    Input(InputEvent),
+    /// `Forward(portal)`, see [`crate::key_route`]).
+    Input { portal: PortalId, event: InputEvent },
     /// While forwarding: the latest cursor position in the portal, in local
     /// desktop logical coordinates. The capture merges motions, so that a fast
     /// motion does not fill the queue.
-    PointerMoved { at: Point },
+    PointerMoved { portal: PortalId, at: Point },
     /// The cursor came into the portal, at this position (FLOW-14).
     /// The session stays in forwarding.
-    PointerEntered { at: Point },
+    PointerEntered { portal: PortalId, at: Point },
     /// The cursor left the portal (FLOW-14).
     /// The session stays in forwarding.
-    PointerLeft,
-    /// A button went to the target while the portal has no keyboard focus. The
-    /// window layer asks the OS for the native focus (FLOW-22).
-    FocusWanted,
+    PointerLeft { portal: PortalId },
+    /// A button went to the target of the portal while the portal has no
+    /// keyboard focus. The window layer asks the OS for the native focus of the
+    /// portal window (FLOW-22).
+    FocusWanted { portal: PortalId },
     /// The portal got the keyboard focus (FLOW-22).
-    KeyboardEntered,
+    KeyboardEntered { portal: PortalId },
     /// The portal lost the keyboard focus (FLOW-22).
-    KeyboardLeft,
-    /// The capture can no longer see forwarded up events (IN-13).
+    KeyboardLeft { portal: PortalId },
+    /// The capture can no longer see forwarded up events (IN-13). It applies to
+    /// all portals.
     InputLost,
-    /// The hand back shortcut (IN-7). It starts a hand back and is never forwarded.
-    HandBackShortcut,
-    /// The safety exit (IN-8). The capture already stopped suppression.
+    /// The hand back shortcut (IN-7) in the portal with the keyboard focus. It
+    /// starts a hand back of that portal and is never forwarded.
+    HandBackShortcut { portal: PortalId },
+    /// The safety exit (IN-8). The capture already stopped suppression for all
+    /// portals.
     SafetyExit,
-    /// The queue was full and an event was lost (IN-3).
+    /// The queue was full and an event was lost (IN-3). The queue is shared, so
+    /// it applies to all portals.
     Overflow,
 }
 
@@ -149,34 +155,43 @@ pub struct InputCapabilities {
 /// The cursor is always free: the capture never freezes, locks, or hides it, and
 /// it never suppresses pointer motion (FLOW-20).
 pub trait InputCapture {
-    /// Watches the cursor with no suppression, for the portal area `portal`.
-    /// Reports `PointerEntered` and `PointerLeft` at each crossing of the portal
-    /// edge, and `PointerEntered` at once if the cursor is in the portal now. A
-    /// second call replaces the portal area (AC-8).
-    fn arm(&mut self, portal: Rect) -> Result<(), PlatformError>;
-    /// Starts forwarding (FLOW-13).
+    /// Watches the cursor with no suppression, for the area `area` of the portal
+    /// `portal`. Reports `PointerEntered` and `PointerLeft` at each crossing of
+    /// the portal edge, and `PointerEntered` at once if the cursor is in the
+    /// portal now. A second call for the same portal replaces its area (AC-8).
+    /// A call for a different portal adds that portal; the areas of two portals
+    /// do not overlap, because each portal is on a different display (FLOW-25).
+    /// A capture that supports fewer portals returns an error for one more.
+    fn arm(&mut self, portal: PortalId, area: Rect) -> Result<(), PlatformError>;
+    /// Starts forwarding for the portal (FLOW-13).
     /// Keys follow the keyboard focus (FLOW-22).
     /// Pointer input follows the cursor in the portal (FLOW-20).
-    /// The capture uses [`crate::key_route::InputRouter`] for paired events (IN-3).
-    /// It reports keyboard focus changes before the input that caused them (FLOW-23).
+    /// The capture uses one [`crate::key_route::InputRouter`] for all portals
+    /// (IN-3). It reports keyboard focus changes before the input that caused
+    /// them (FLOW-23).
     /// Forwarding continues across each leave and entry until `disarm`.
-    fn forward(&mut self) -> Result<(), PlatformError>;
-    /// The app calls this when the portal's native keyboard focus changes (FLOW-22).
-    /// The capture reports `KeyboardEntered` or `KeyboardLeft` if it changed.
-    fn set_portal_focus(&mut self, _focused: bool) {}
+    fn forward(&mut self, portal: PortalId) -> Result<(), PlatformError>;
+    /// The app calls this when the native keyboard focus of the portal window
+    /// changes (FLOW-22). The capture reports `KeyboardEntered` or
+    /// `KeyboardLeft` for each portal whose keyboard focus changed.
+    fn set_portal_focus(&mut self, _portal: PortalId, _focused: bool) {}
     /// The window layer reports whether the portal is on screen (FLOW-26). While
-    /// it is not, the portal area does not count as the portal.
-    fn set_portal_visible(&mut self, _visible: bool) {}
-    /// FLOW-21: while the source waits for the confirmation, keeps the portal fixed
-    /// and focused. With `on`, the capture suppresses the gestures and shortcuts that
-    /// switch Spaces or applications, and the clicks out of the portal. It lets the
-    /// confirmation key and the clicks in the portal through, and it reports nothing.
-    /// `guard(false)`, `forward`, and `disarm` end it. It needs `arm` first.
-    fn guard(&mut self, _on: bool) -> Result<(), PlatformError> {
+    /// it is not, the area of that portal does not count as the portal.
+    fn set_portal_visible(&mut self, _portal: PortalId, _visible: bool) {}
+    /// FLOW-21: while the source waits for the confirmation in this portal,
+    /// keeps the portal fixed and focused. With `on`, the capture suppresses the
+    /// gestures and shortcuts that switch Spaces or applications, and the clicks
+    /// out of all portals. It lets the confirmation key and the clicks in this
+    /// portal through, and it reports nothing for this portal. A click in a
+    /// different portal that forwards goes to that portal (FLOW-25).
+    /// `guard(portal, false)`, `forward(portal)`, and `disarm(portal)` end it.
+    /// It needs `arm` of the portal first.
+    fn guard(&mut self, _portal: PortalId, _on: bool) -> Result<(), PlatformError> {
         Ok(())
     }
-    /// Stops all capture. Local input comes back.
-    fn disarm(&mut self);
+    /// Stops the capture of one portal and forgets its routes. Local input comes
+    /// back in its area. The other portals keep their capture.
+    fn disarm(&mut self, portal: PortalId);
     /// The main loop calls this on each turn. A capture with a watchdog stops
     /// suppression when the heartbeat stops (IN-9).
     fn heartbeat(&mut self) {}

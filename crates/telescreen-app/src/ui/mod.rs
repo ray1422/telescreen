@@ -16,7 +16,7 @@ use linux as platform;
 #[cfg(target_os = "macos")]
 use mac as platform;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -26,7 +26,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telescreen_core::config::Config;
 use telescreen_core::driver::{self, SearchPath};
-use telescreen_core::ids::{ComputerId, DisplayToken};
+use telescreen_core::ids::{ComputerId, DisplayToken, PortalId};
 use telescreen_core::verifier::VerifierEvent;
 use telescreen_core::wire::{EndReason, Message};
 use telescreen_render_egui::{SharedGpu, WindowRenderer};
@@ -308,12 +308,12 @@ fn start_app(
         _debug_server: None,
         hooks: parts.hooks,
         control: None,
-        portal: None,
+        portals: BTreeMap::new(),
         prompts: HashMap::new(),
         last_display_check: Instant::now(),
         swallow_release: false,
         drawn_control: None,
-        drawn_portal: None,
+        drawn_portals: HashMap::new(),
         #[cfg(target_os = "macos")]
         native: None,
         #[cfg(target_os = "macos")]
@@ -400,6 +400,8 @@ impl Surface {
 
 struct PortalSurface {
     surface: Surface,
+    /// The portal of the controller that this window shows.
+    portal: PortalId,
     token: DisplayToken,
 }
 
@@ -416,13 +418,14 @@ struct App {
     _debug_server: Option<crate::debug::Server>,
     hooks: platform::Hooks,
     control: Option<Surface>,
-    portal: Option<PortalSurface>,
+    /// One window for each portal of the controller (FLOW-25).
+    portals: BTreeMap<PortalId, PortalSurface>,
     prompts: HashMap<PromptId, PromptSurface>,
     last_display_check: Instant,
     /// The release of an acknowledgement click must not go to the UI (FLOW-9).
     swallow_release: bool,
     drawn_control: Option<telescreen_view::ControlScreen>,
-    drawn_portal: Option<telescreen_view::PortalScreen>,
+    drawn_portals: HashMap<PortalId, telescreen_view::PortalScreen>,
     /// The native menu (ADR 0012, UI-9). The egui control window stays until
     /// the main window replaces it.
     #[cfg(target_os = "macos")]
@@ -442,6 +445,7 @@ impl App {
         &mut self,
         event_loop: &ActiveEventLoop,
         monitor: MonitorHandle,
+        portal: PortalId,
         token: DisplayToken,
     ) {
         // FLOW-26: the title names this portal, so that Accessibility can find it.
@@ -451,7 +455,9 @@ impl App {
         // fullscreen there.
         #[cfg(target_os = "macos")]
         if let Some(native) = &self.native {
-            native.set_portal_displays(&cg_ids(&token));
+            let mut ids = self.portal_display_ids();
+            ids.extend(cg_ids(&token));
+            native.set_portal_displays(&ids);
         }
         let mut attributes = platform::window_attributes(Window::default_attributes())
             .with_title(format!("Telescreen portal {id}"));
@@ -477,24 +483,32 @@ impl App {
                 if let Some(error) = error {
                     self.controller.add_notice(error);
                 }
-                self.hooks.portal_created(&surface.window);
-                self.portal = Some(PortalSurface { surface, token });
+                self.hooks.portal_created(portal, &surface.window);
+                self.portals.insert(
+                    portal,
+                    PortalSurface {
+                        surface,
+                        portal,
+                        token,
+                    },
+                );
             }
             Err(e) => {
                 self.controller
                     .add_notice(format!("Cannot open the portal: {e}"));
-                self.controller.close_portal(EndReason::SourceClosed);
+                self.controller
+                    .close_portal_in(portal, EndReason::SourceClosed);
             }
         }
     }
 
     /// Makes the window for a portal opened by the controller (ACT-5, FLOW-17).
     fn take_portal_window_request(&mut self, event_loop: &ActiveEventLoop) {
-        let Some(token) = self.controller.take_portal_window_request() else {
+        let Some((portal, token)) = self.controller.next_portal_window_request() else {
             return;
         };
-        if self.portal.take().is_some() {
-            self.hooks.portal_closed();
+        if self.portals.remove(&portal).is_some() {
+            self.hooks.portal_closed(portal);
         }
         let monitor = event_loop
             .available_monitors()
@@ -502,20 +516,21 @@ impl App {
         let Some(monitor) = monitor else {
             self.controller
                 .add_notice(format!("Cannot find the portal display {token}."));
-            self.controller.close_portal(EndReason::PortalGone);
+            self.controller
+                .close_portal_in(portal, EndReason::PortalGone);
             return;
         };
-        self.create_portal_window(event_loop, monitor, token);
+        self.create_portal_window(event_loop, monitor, portal, token);
     }
 
     /// FLOW-4, AC-8: the portal window is on a different monitor now. Evaluate
     /// `portal-match` again; the old binding and coordinates do not apply.
-    fn portal_monitor_changed(&mut self, window: &Window) {
+    fn portal_monitor_changed(&mut self, id: PortalId, window: &Window) {
         let token = window
             .current_monitor()
             .as_ref()
             .and_then(platform::monitor_token);
-        let Some(portal) = self.portal.as_mut() else {
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         let Some(token) = token.filter(|t| *t != portal.token) else {
@@ -523,19 +538,36 @@ impl App {
         };
         eprintln!("telescreen: portal window moved to {token}");
         portal.token = token.clone();
+        let id = portal.portal;
         match self.controller.display(&token) {
             Some(display) => {
-                self.controller.portal_display_changed(display);
+                self.controller.portal_display_changed_in(id, display);
             }
-            None => self.controller.close_portal(EndReason::PortalGone),
+            None => self.controller.close_portal_in(id, EndReason::PortalGone),
         }
     }
 
-    fn close_portal_window(&mut self) {
-        if self.portal.take().is_some() {
-            self.hooks.portal_closed();
-            self.controller.close_portal(EndReason::SourceClosed);
+    fn close_portal_window(&mut self, portal: PortalId) {
+        if self.portals.remove(&portal).is_some() {
+            self.hooks.portal_closed(portal);
+            self.controller
+                .close_portal_in(portal, EndReason::SourceClosed);
         }
+    }
+
+    fn close_portal_windows(&mut self) {
+        for portal in self.portals.keys().copied().collect::<Vec<_>>() {
+            self.close_portal_window(portal);
+        }
+    }
+
+    /// The CoreGraphics ids of the displays with a portal (UI-13).
+    #[cfg(target_os = "macos")]
+    fn portal_display_ids(&self) -> Vec<u32> {
+        self.portals
+            .values()
+            .flat_map(|portal| cg_ids(&portal.token))
+            .collect()
     }
 
     fn handle_intents(&mut self, event_loop: &ActiveEventLoop, intents: Vec<Intent>) {
@@ -550,34 +582,43 @@ impl App {
         for event in self.hooks.drain_captured() {
             self.controller.on_captured(event);
         }
-        if self.controller.take_portal_focus_request()
-            && let Some(portal) = &self.portal
-        {
-            self.hooks.focus_portal(&portal.surface.window);
+        for portal in self.controller.take_portal_focus_requests() {
+            if let Some(portal) = self.portals.get(&portal) {
+                self.hooks.focus_portal(&portal.surface.window);
+            }
         }
         #[cfg(target_os = "macos")]
         if let Some(native) = &self.native {
             // UI-13: the main window does not take the Space of a portal display.
-            let ids = self
-                .portal
-                .as_ref()
-                .map(|portal| cg_ids(&portal.token))
-                .unwrap_or_default();
-            native.set_portal_displays(&ids);
+            native.set_portal_displays(&self.portal_display_ids());
         }
-        if let Some(portal) = &self.portal {
-            let hidden = self.controller.portal_hidden();
-            let forwarding = self.controller.forwarding();
+        let windows: Vec<_> = self
+            .portals
+            .values()
+            .map(|p| (p.portal, &*p.surface.window))
+            .collect();
+        self.hooks.reclaim_focus(&windows);
+        for portal in self.portals.values() {
+            let hidden = self.controller.portal_hidden_in(portal.portal);
+            let forwarding = self.controller.forwarding_in(portal.portal);
             self.hooks
-                .portal_hidden(&portal.surface.window, hidden, forwarding);
+                .portal_hidden(portal.portal, &portal.surface.window, hidden, forwarding);
         }
         for request in self.hooks.take_prompt_requests() {
             self.prompt_request(event_loop, request);
         }
-        if self.portal.is_some() && !self.controller.has_portal() {
+        let open = self.controller.portal_ids();
+        let closed: Vec<_> = self
+            .portals
+            .keys()
+            .filter(|id| !open.contains(id))
+            .copied()
+            .collect();
+        for portal in closed {
             // The controller closed the portal (FLOW-19).
-            self.portal = None;
-            self.hooks.portal_closed();
+            self.portals.remove(&portal);
+            self.drawn_portals.remove(&portal);
+            self.hooks.portal_closed(portal);
         }
         // Draw again only when a view model changed.
         if let Some(control) = &self.control
@@ -585,10 +626,12 @@ impl App {
         {
             control.window.request_redraw();
         }
-        if let Some(portal) = &self.portal
-            && self.drawn_portal != self.controller.portal_screen()
-        {
-            portal.surface.window.request_redraw();
+        for portal in self.portals.values() {
+            if self.drawn_portals.get(&portal.portal)
+                != self.controller.portal_screen_of(portal.portal).as_ref()
+            {
+                portal.surface.window.request_redraw();
+            }
         }
         // UI-18: push the menu only when it changed.
         #[cfg(target_os = "macos")]
@@ -655,7 +698,7 @@ impl App {
             UiEvent::Quit => {
                 // UI-15: the same as a quit of the app.
                 self.controller.shutdown();
-                self.close_portal_window();
+                self.close_portal_windows();
                 event_loop.exit();
             }
             UiEvent::OpenSettings => {
@@ -720,12 +763,19 @@ impl App {
                 intents = renderer.draw_control(&screen);
             }
             self.drawn_control = Some(screen);
-        } else if let Some(portal) = self.portal.as_mut().filter(|p| p.surface.window.id() == id) {
-            let screen = self.controller.portal_screen();
+        } else if let Some(portal) = self
+            .portals
+            .values_mut()
+            .find(|p| p.surface.window.id() == id)
+        {
+            let screen = self.controller.portal_screen_of(portal.portal);
             if let (Some(renderer), Some(screen)) = (&mut portal.surface.renderer, &screen) {
                 intents = renderer.draw_portal(screen);
             }
-            self.drawn_portal = screen;
+            match screen {
+                Some(screen) => self.drawn_portals.insert(portal.portal, screen),
+                None => self.drawn_portals.remove(&portal.portal),
+            };
         } else if let Some(prompt) = self
             .prompts
             .values_mut()
@@ -744,9 +794,13 @@ impl App {
     fn acknowledgement_event(
         &mut self,
         event: &WindowEvent,
-        is_portal: bool,
+        portal: Option<PortalId>,
         is_prompt: bool,
     ) -> bool {
+        // FLOW-8: the acknowledgement of the portal window of the event.
+        let acknowledge = |controller: &mut Controller| {
+            portal.is_some_and(|portal| controller.acknowledge_in(portal))
+        };
         match event {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
@@ -756,15 +810,15 @@ impl App {
                         PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
                     ) =>
             {
-                (is_portal && self.controller.acknowledge())
+                acknowledge(&mut self.controller)
                     || (self.controller.awaiting_local_ack() && self.controller.acknowledge_local())
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if is_portal || is_prompt => {
-                let accepted = (is_portal && self.controller.acknowledge())
+            } if portal.is_some() || is_prompt => {
+                let accepted = acknowledge(&mut self.controller)
                     || (self.controller.awaiting_local_ack()
                         && self.controller.acknowledge_local());
                 self.swallow_release = accepted;
@@ -783,53 +837,53 @@ impl App {
     }
 
     /// Portal window events before the renderer sees them. Returns true if used.
-    fn portal_event(&mut self, event: &WindowEvent) -> bool {
+    fn portal_event(&mut self, portal: PortalId, event: &WindowEvent) -> bool {
         if self
             .hooks
-            .portal_window_event(event, self.controller.forwarding())
+            .portal_window_event(portal, event, self.controller.forwarding_in(portal))
         {
             return true;
         }
-        let window = match &self.portal {
-            Some(portal) => portal.surface.window.clone(),
-            None => return false,
+        let Some(window) = self.portals.get(&portal).map(|p| p.surface.window.clone()) else {
+            return false;
         };
         match event {
             WindowEvent::Focused(focused) => {
                 #[cfg(target_os = "macos")]
                 eprintln!(
-                    "telescreen: {}: portal focused: {focused}",
-                    telescreen_platform_macos::clock()
+                    "telescreen: {}: {portal} focused: {focused} (key window: {:?})",
+                    telescreen_platform_macos::clock(),
+                    telescreen_platform_macos::window::key_window_title()
                 );
-                self.controller.set_portal_focus(*focused);
-                self.hooks
-                    .portal_focus(&window, *focused, self.controller.guarded());
+                self.controller.set_portal_focus_in(portal, *focused);
+                let guarded = self.controller.guarded_in(portal);
+                self.hooks.portal_focus(portal, &window, *focused, guarded);
                 false
             }
             WindowEvent::Occluded(occluded) => {
                 #[cfg(target_os = "macos")]
                 eprintln!(
-                    "telescreen: {}: portal occluded: {occluded}",
+                    "telescreen: {}: {portal} occluded: {occluded}",
                     telescreen_platform_macos::clock()
                 );
                 if self.hooks.reports_portal_visibility() {
-                    self.controller.set_portal_visible(!occluded);
+                    self.controller.set_portal_visible_in(portal, !occluded);
                 }
-                if *occluded && self.controller.guarded() {
+                if *occluded && self.controller.guarded_in(portal) {
                     // FLOW-21: keep the portal in place during verification.
-                    self.hooks.portal_focus(&window, false, true);
+                    self.hooks.portal_focus(portal, &window, false, true);
                 }
                 false
             }
             WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
-                if self.controller.forwarding() && window.fullscreen().is_none() {
-                    self.controller.portal_left_fullscreen();
+                if self.controller.forwarding_in(portal) && window.fullscreen().is_none() {
+                    self.controller.portal_left_fullscreen_in(portal);
                 }
-                self.portal_monitor_changed(&window);
+                self.portal_monitor_changed(portal, &window);
                 false
             }
             WindowEvent::CloseRequested => {
-                self.close_portal_window();
+                self.close_portal_window(portal);
                 true
             }
             _ => false,
@@ -852,7 +906,7 @@ impl App {
                 if let Some(control) = &self.control {
                     windows.push(window_facts(WindowRole::Control, &control.window));
                 }
-                if let Some(portal) = &self.portal {
+                for portal in self.portals.values() {
                     windows.push(window_facts(WindowRole::Portal, &portal.surface.window));
                 }
                 for prompt in self.prompts.values() {
@@ -904,7 +958,7 @@ impl App {
             },
             Request::Quit => {
                 self.controller.shutdown();
-                self.close_portal_window();
+                self.close_portal_windows();
                 event_loop.exit();
                 debug::ok_response()
             }
@@ -1072,24 +1126,26 @@ impl ApplicationHandler<UserEvent> for App {
             self.draw(event_loop, id);
             return;
         }
-        let is_portal = self
-            .portal
-            .as_ref()
-            .is_some_and(|p| p.surface.window.id() == id);
+        let portal = self
+            .portals
+            .values()
+            .find(|p| p.surface.window.id() == id)
+            .map(|p| p.portal);
+        let is_portal = portal.is_some();
         let is_control = self.control.as_ref().is_some_and(|c| c.window.id() == id);
         let is_prompt = self.prompts.values().any(|p| p.surface.window.id() == id);
         let used = (is_portal || is_control || is_prompt)
-            && self.acknowledgement_event(&event, is_portal, is_prompt)
-            || (is_portal && self.portal_event(&event));
+            && self.acknowledgement_event(&event, portal, is_prompt)
+            || portal.is_some_and(|portal| self.portal_event(portal, &event));
         if is_control && matches!(event, WindowEvent::CloseRequested) {
             self.controller.shutdown();
-            self.close_portal_window();
+            self.close_portal_windows();
             event_loop.exit();
             return;
         }
         if !used {
-            let surface = if is_portal {
-                self.portal.as_mut().map(|p| &mut p.surface)
+            let surface = if let Some(portal) = portal {
+                self.portals.get_mut(&portal).map(|p| &mut p.surface)
             } else if is_control {
                 self.control.as_mut()
             } else {
@@ -1113,6 +1169,12 @@ impl ApplicationHandler<UserEvent> for App {
         if discovery_active {
             self.sync(event_loop);
         }
+        let windows: Vec<_> = self
+            .portals
+            .values()
+            .map(|p| (p.portal, &*p.surface.window))
+            .collect();
+        self.hooks.reclaim_focus(&windows);
         if now.duration_since(self.last_display_check) >= DISPLAY_CHECK {
             self.last_display_check = now;
             self.controller.displays_changed();

@@ -149,7 +149,7 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
         return match name {
             "AllowDiscovery" => Ok(Intent::AllowDiscovery),
             "StopDiscovery" => Ok(Intent::StopDiscovery),
-            "EndSession" => Ok(Intent::EndSession),
+            "EndSession" => Ok(Intent::EndSession { portal: None }),
             _ => Err(DebugError::Request(format!("unknown intent: {name}"))),
         };
     }

@@ -21,6 +21,13 @@ pub struct DeviceId(pub String);
 #[serde(transparent)]
 pub struct SessionId(pub u64);
 
+/// A portal window of the source (FLOW-2, FLOW-25). The app gives each portal a
+/// new id, and never gives the same id again while it runs. The id is not a
+/// display: a portal can move to a different display (FLOW-19).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PortalId(pub u64);
+
 /// An opaque display token from the current OS display enumeration of one computer.
 /// It is not valid on a different computer or after a restart (`docs/config.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -36,7 +43,7 @@ macro_rules! display_as_inner {
         }
     )*};
 }
-display_as_inner!(ComputerId, DeviceId, SessionId, DisplayToken);
+display_as_inner!(ComputerId, DeviceId, SessionId, PortalId, DisplayToken);
 
 impl From<&str> for ComputerId {
     fn from(value: &str) -> Self {

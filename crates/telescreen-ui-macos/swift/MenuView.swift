@@ -293,9 +293,12 @@ struct SessionCard: View {
             }
             if source {
                 HStack(spacing: 8) {
-                    Button("Hand back") { sendIntent(["kind": "source_hand_back"]) }
-                        .buttonStyle(CardButtonStyle(fill: .accentColor))
-                    Button("End session") { sendIntent(["kind": "end_session"]) }
+                    let portal = session.id.portal ?? 0
+                    Button("Hand back") {
+                        sendIntent(["kind": "source_hand_back", "portal": portal])
+                    }
+                    .buttonStyle(CardButtonStyle(fill: .accentColor))
+                    Button("End session") { sendIntent(["kind": "end_session", "portal": portal]) }
                         .buttonStyle(CardButtonStyle())
                 }
                 Text("Hand back shortcut ⌃⌥⌘⎋ · works when no window here is visible")

@@ -6,7 +6,7 @@
 //! `telescreen-render-egui` (`docs/plan.md`, "View boundary").
 
 use serde::{Deserialize, Serialize};
-use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, PortalId, SessionId};
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::pointer::Normalized;
 use telescreen_core::session::VideoInput;
@@ -228,8 +228,12 @@ pub enum Intent {
     AllowDiscovery,
     /// Stop "Allow discovery" before the end (NET-14).
     StopDiscovery,
-    /// End the session of the portal (on the source).
-    EndSession,
+    /// End the session of the portal (on the source). `None`: the portal with
+    /// the native focus, else the newest portal (FLOW-25).
+    EndSession {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        portal: Option<PortalId>,
+    },
     /// End the incoming session and hand its device back to the source (HB-2).
     HandBack { session: SessionId },
     /// End the incoming session on the target (FLOW-17).
@@ -258,7 +262,11 @@ pub enum Intent {
     /// "Let <peer> control this display": send a control request (ACT-4).
     LetControl { peer: ComputerId, device: DeviceId },
     /// "Hand back" in the session part of the menu, on the source (UI-9, HB-3).
-    SourceHandBack,
+    /// `None`: as for `EndSession`.
+    SourceHandBack {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        portal: Option<PortalId>,
+    },
 }
 
 impl VideoInputText for VideoInput {
@@ -330,8 +338,8 @@ pub enum Glyph {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MenuSessionId {
-    /// The session of the portal on this source.
-    Portal,
+    /// The session of a portal on this source (FLOW-25).
+    Portal { portal: PortalId },
     /// A session where this peer is the target.
     Incoming { session: SessionId },
 }

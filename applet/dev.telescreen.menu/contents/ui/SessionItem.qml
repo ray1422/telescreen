@@ -68,13 +68,13 @@ Item {
                 Layout.fillWidth: true
                 text: i18nc("@action:button", "Hand back")
                 enabled: root.source || root.session.role.hand_back === null
-                onClicked: root.intent(root.source ? { kind: "source_hand_back" }
+                onClicked: root.intent(root.source ? { kind: "source_hand_back", portal: root.session.id.portal }
                                                    : { kind: "hand_back", session: root.session.id.session })
             }
             PlasmaComponents3.Button {
                 Layout.fillWidth: true
                 text: root.source ? i18nc("@action:button", "End session") : i18nc("@action:button", "Stop")
-                onClicked: root.intent(root.source ? { kind: "end_session" }
+                onClicked: root.intent(root.source ? { kind: "end_session", portal: root.session.id.portal }
                                                    : { kind: "stop_session", session: root.session.id.session })
             }
         }

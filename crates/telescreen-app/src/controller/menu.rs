@@ -165,11 +165,8 @@ impl Controller {
                     .map(|(_, device)| device),
             );
         }
-        if self
-            .portal
-            .as_ref()
-            .is_some_and(|p| &p.display.token == token)
-            && let Some(device) = self.portal_device()
+        if let Some(id) = self.portal_on(token)
+            && let Some(device) = self.portal_device(id)
         {
             devices.push(device);
         }
@@ -212,10 +209,10 @@ impl Controller {
 
     fn glyph(&self) -> Glyph {
         let source = self
-            .portal
-            .as_ref()
-            .and_then(|p| p.session.as_ref())
-            .is_some_and(|s| !s.is_finished());
+            .portals
+            .values()
+            .filter_map(|p| p.session.as_ref())
+            .any(|s| !s.is_finished());
         if source {
             Glyph::Controlling
         } else if self.incoming.values().any(|t| !t.is_finished()) {
@@ -227,14 +224,15 @@ impl Controller {
 
     fn menu_sessions(&self) -> Vec<MenuSession> {
         let mut rows = Vec::new();
-        if let Some(session) = self
-            .portal
-            .as_ref()
-            .and_then(|p| p.session.as_ref())
-            .filter(|s| !s.is_finished())
-        {
+        // One row for each portal with a session (FLOW-25).
+        for (portal, session) in self.portals.iter().filter_map(|(id, p)| {
+            p.session
+                .as_ref()
+                .filter(|s| !s.is_finished())
+                .map(|s| (*id, s))
+        }) {
             rows.push(MenuSession {
-                id: MenuSessionId::Portal,
+                id: MenuSessionId::Portal { portal },
                 peer: session.target().clone(),
                 peer_label: self.label_of(session.target()),
                 device: session.device().clone(),

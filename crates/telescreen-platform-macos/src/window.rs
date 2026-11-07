@@ -152,6 +152,15 @@ pub fn is_frontmost() -> bool {
 /// call does not wait. AppKit windows change only on the main thread: an
 /// in-process `AXMain` request on a different thread stopped the app.
 pub fn make_frontmost(window: Option<&impl HasWindowHandle>) {
+    // One request at a time: the Accessibility request waits for the main
+    // thread, so a request for each focus event made thousands of threads, and
+    // the focus changed in a loop (hardware test, 2026-11-07). The caller made
+    // the window the key window already; a later call does it again.
+    static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+    if IN_FLIGHT.swap(true, SeqCst) {
+        eprintln!("telescreen: frontmost: a request is running; skip this one");
+        return;
+    }
     let window = window
         .and_then(ns_window)
         .map(|w| MainWindow(Retained::into_raw(w)));
@@ -173,6 +182,7 @@ pub fn make_frontmost(window: Option<&impl HasWindowHandle>) {
             if error != 0 {
                 eprintln!("telescreen: Accessibility: frontmost failed ({error})");
             }
+            IN_FLIGHT.store(false, SeqCst);
             if let Some(MainWindow(window)) = window {
                 // SAFETY: the main queue runs `focus_on_main` once, which takes
                 // the reference of `into_raw`.
@@ -186,8 +196,16 @@ pub fn make_frontmost(window: Option<&impl HasWindowHandle>) {
             }
         });
     if let Err(e) = spawned {
+        IN_FLIGHT.store(false, SeqCst);
         eprintln!("telescreen: frontmost: {e}");
     }
+}
+
+/// The title of the key window of this app, for the focus log.
+pub fn key_window_title() -> Option<String> {
+    let mtm = MainThreadMarker::new()?;
+    let window = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow()?;
+    Some(window.title().to_string())
 }
 
 /// A retained window that only the main thread uses.

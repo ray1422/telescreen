@@ -61,12 +61,12 @@ ColumnLayout {
             QQC2.Button {
                 text: qsTr("Hand Back")
                 enabled: root.source || root.session.role.hand_back === null
-                onClicked: root.intent(root.source ? { kind: "source_hand_back" }
+                onClicked: root.intent(root.source ? { kind: "source_hand_back", portal: root.session.id.portal }
                                                    : { kind: "hand_back", session: root.session.id.session })
             }
             QQC2.Button {
                 text: root.source ? qsTr("End Session") : qsTr("Stop")
-                onClicked: root.intent(root.source ? { kind: "end_session" }
+                onClicked: root.intent(root.source ? { kind: "end_session", portal: root.session.id.portal }
                                                    : { kind: "stop_session", session: root.session.id.session })
             }
         }

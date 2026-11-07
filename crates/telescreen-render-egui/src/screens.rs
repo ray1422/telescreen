@@ -71,10 +71,10 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
                 ui.label(phase_text(&session.phase));
                 if !matches!(session.phase, SessionPhase::Ended { .. }) {
                     if ui.button("Hand back").clicked() {
-                        intents.push(Intent::SourceHandBack);
+                        intents.push(Intent::SourceHandBack { portal: None });
                     }
                     if ui.button("End session").clicked() {
-                        intents.push(Intent::EndSession);
+                        intents.push(Intent::EndSession { portal: None });
                     }
                 }
             });

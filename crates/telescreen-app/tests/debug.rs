@@ -70,7 +70,7 @@ fn ui7_hold_keyboard_names_a_display() {
 #[test]
 fn intents() {
     let cases = [
-        (json!("EndSession"), Intent::EndSession),
+        (json!("EndSession"), Intent::EndSession { portal: None }),
         (
             json!({"kind": "switch_and_control", "display": "cg-2", "device": "lg", "target": "linux"}),
             Intent::SwitchAndControl {

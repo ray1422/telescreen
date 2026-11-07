@@ -4,14 +4,14 @@
 //!
 //! All methods run on one thread (the UI thread). Ports must not block.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::time::Instant;
 
 use telescreen_core::clipboard::{ClipboardChange, ClipboardSync, Outgoing};
 use telescreen_core::config::{Config, Device, Driver, Operation};
 use telescreen_core::driver::{self, DeviceRef, OperationKind, Outcome, PortalInfo, Request};
-use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, PortalId, SessionId};
 use telescreen_core::input::InputEvent;
 use telescreen_core::platform::{
     Capability, CapturedEvent, Clipboard, Discovery, DisplayInfo, Displays, FocusHolder, Injector,
@@ -181,7 +181,9 @@ pub struct Labels {
 
 enum Pending {
     PortalMatch {
-        portal: u64,
+        portal: PortalId,
+        /// The match generation of the portal (FLOW-4).
+        generation: u64,
         alias: String,
     },
     InputTarget {
@@ -190,6 +192,7 @@ enum Pending {
         device: DeviceId,
     },
     Handoff {
+        portal: PortalId,
         session: Option<SessionId>,
     },
     HandBack {
@@ -220,7 +223,9 @@ enum Pending {
 }
 
 struct Portal {
-    id: u64,
+    /// The generation of `portal-match`: a result of an older evaluation does
+    /// not apply (FLOW-4).
+    generation: u64,
     display: DisplayInfo,
     bounds: Rect,
     focused: bool,
@@ -254,9 +259,13 @@ pub struct Controller {
     clipboard_open: bool,
     clipboard_open_failed: bool,
     clipboard_session: Option<SessionId>,
-    portal: Option<Portal>,
-    portal_window_request: Option<DisplayToken>,
+    /// At most one portal on each display (FLOW-2, FLOW-25).
+    portals: BTreeMap<PortalId, Portal>,
+    /// The portal windows that the window layer must show (FLOW-17, ACT-5).
+    portal_window_requests: VecDeque<(PortalId, DisplayToken)>,
+    /// The next portal id. An id is never used two times.
     next_portal: u64,
+    next_match: u64,
     connected: BTreeSet<ComputerId>,
     /// The peers with a dial that did not report a result (NET-10).
     dialing: BTreeSet<ComputerId>,
@@ -361,9 +370,10 @@ impl Controller {
             clipboard_open: false,
             clipboard_open_failed: false,
             clipboard_session: None,
-            portal: None,
-            portal_window_request: None,
+            portals: BTreeMap::new(),
+            portal_window_requests: VecDeque::new(),
             next_portal: 1,
+            next_match: 1,
             connected: BTreeSet::new(),
             dialing: BTreeSet::new(),
             found: HashMap::new(),
@@ -431,7 +441,7 @@ impl Controller {
             return;
         }
         self.is_shutdown = true;
-        self.close_portal(EndReason::SourceClosed);
+        self.close_all_portals(EndReason::SourceClosed);
         self.stop_discovery();
         let sessions: Vec<_> = self.incoming.keys().copied().collect();
         for session in sessions {
@@ -522,83 +532,159 @@ impl Controller {
 
     // ----- Portal and source side -----
 
+    /// The ids of the portals that exist now (FLOW-25).
+    pub fn portal_ids(&self) -> Vec<PortalId> {
+        self.portals.keys().copied().collect()
+    }
+
+    /// The portal on the display, if any. Each display has at most one portal
+    /// (FLOW-2).
+    pub fn portal_on(&self, display: &DisplayToken) -> Option<PortalId> {
+        self.portals
+            .iter()
+            .find(|(_, portal)| &portal.display.token == display)
+            .map(|(id, _)| *id)
+    }
+
+    /// The portal of the methods that do not name a portal: the portal with the
+    /// native focus, else the newest portal.
+    fn main_portal(&self) -> Option<PortalId> {
+        self.portals
+            .iter()
+            .find(|(_, portal)| portal.focused)
+            .or_else(|| self.portals.iter().next_back())
+            .map(|(id, _)| *id)
+    }
+
+    fn source_session(&self, portal: PortalId) -> Option<&SourceSession> {
+        self.portals.get(&portal)?.session.as_ref()
+    }
+
+    fn source_session_mut(&mut self, portal: PortalId) -> Option<&mut SourceSession> {
+        self.portals.get_mut(&portal)?.session.as_mut()
+    }
+
+    /// The portals with a session to this target.
+    fn portals_to(&self, peer: &ComputerId) -> Vec<PortalId> {
+        self.portals
+            .iter()
+            .filter(|(_, p)| p.session.as_ref().is_some_and(|s| s.target() == peer))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
     /// The user opened a portal on a display. Starts `portal-match` (FLOW-2).
-    pub fn open_portal(&mut self, display: DisplayInfo) {
-        self.close_portal(EndReason::SourceClosed);
+    /// A portal on the same display closes with its session. The portals on
+    /// other displays stay (FLOW-25).
+    pub fn open_portal(&mut self, display: DisplayInfo) -> Option<PortalId> {
+        if let Some(old) = self.portal_on(&display.token) {
+            self.close_portal_in(old, EndReason::SourceClosed);
+        }
         let Some(bounds) = display.bounds else {
             self.notice(
                 "The portal display has no coordinates. Forwarding is not possible.".into(),
             );
-            return;
+            return None;
         };
-        let id = self.next_portal;
+        let id = PortalId(self.next_portal);
         self.next_portal += 1;
-        self.portal = Some(Portal {
+        // The new portal window takes the native focus.
+        for portal in self.portals.values_mut() {
+            portal.focused = false;
+        }
+        self.portals.insert(
             id,
-            display,
-            bounds,
-            focused: true,
-            focus_wanted: false,
-            visible: true,
-            guarded: false,
-            matching: Matching::Evaluating,
-            match_pending: 0,
-            matched: Vec::new(),
-            match_error: None,
-            device: None,
-            pending_start: None,
-            session: None,
-            pointer: Point::default(),
-            notice: None,
-        });
-        self.evaluate_portal_match();
+            Portal {
+                generation: 0,
+                display,
+                bounds,
+                focused: true,
+                focus_wanted: false,
+                visible: true,
+                guarded: false,
+                matching: Matching::Evaluating,
+                match_pending: 0,
+                matched: Vec::new(),
+                match_error: None,
+                device: None,
+                pending_start: None,
+                session: None,
+                pointer: Point::default(),
+                notice: None,
+            },
+        );
+        self.evaluate_portal_match(id);
+        Some(id)
     }
 
     /// True once when the window layer must give the portal window the native
     /// focus (FLOW-22). The capture gave it the keyboard for a click that the OS
     /// does not use to focus a window, for example a middle click on macOS.
     pub fn take_portal_focus_request(&mut self) -> bool {
-        self.portal
-            .as_mut()
-            .is_some_and(|portal| std::mem::take(&mut portal.focus_wanted))
+        !self.take_portal_focus_requests().is_empty()
     }
 
-    /// Takes the portal window request from FLOW-17.
-    /// Returns the display token once.
+    /// The portals whose window must get the native focus, once (FLOW-22).
+    pub fn take_portal_focus_requests(&mut self) -> Vec<PortalId> {
+        self.portals
+            .iter_mut()
+            .filter_map(|(id, portal)| std::mem::take(&mut portal.focus_wanted).then_some(*id))
+            .collect()
+    }
+
+    /// Takes the next portal window request from FLOW-17 and ACT-5: the window
+    /// layer shows the portal on that display.
     pub fn take_portal_window_request(&mut self) -> Option<DisplayToken> {
-        self.portal_window_request.take()
+        self.next_portal_window_request().map(|(_, token)| token)
+    }
+
+    /// Takes the next portal window request, with its portal.
+    pub fn next_portal_window_request(&mut self) -> Option<(PortalId, DisplayToken)> {
+        while let Some((id, token)) = self.portal_window_requests.pop_front() {
+            if self.portals.contains_key(&id) {
+                return Some((id, token));
+            }
+        }
+        None
     }
 
     /// The portal moved to a different display, or the display topology changed
     /// (FLOW-4). The old device binding does not apply.
     pub fn portal_display_changed(&mut self, display: DisplayInfo) {
-        self.end_portal_session(EndReason::PortalGone);
-        let Some(portal) = self.portal.as_mut() else {
+        if let Some(portal) = self.main_portal() {
+            self.portal_display_changed_in(portal, display);
+        }
+    }
+
+    /// As `portal_display_changed`, for one portal.
+    pub fn portal_display_changed_in(&mut self, id: PortalId, display: DisplayInfo) {
+        self.end_portal_session(id, EndReason::PortalGone);
+        let Some(bounds) = display.bounds else {
+            self.close_portal_in(id, EndReason::PortalGone);
             return;
         };
-        let Some(bounds) = display.bounds else {
-            self.close_portal(EndReason::PortalGone);
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         portal.display = display;
         portal.bounds = bounds;
         portal.device = None;
         portal.pending_start = None;
-        self.evaluate_portal_match();
+        self.evaluate_portal_match(id);
     }
 
-    fn evaluate_portal_match(&mut self) {
+    fn evaluate_portal_match(&mut self, id: PortalId) {
         let displays = self.displays();
         let devices = self.local_devices();
-        let Some(portal) = self.portal.as_mut() else {
+        let generation = self.next_match;
+        self.next_match += 1;
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
-        portal.id = self.next_portal;
-        self.next_portal += 1;
+        portal.generation = generation;
         portal.matching = Matching::Evaluating;
         portal.matched.clear();
         portal.match_error = None;
-        let portal_id = portal.id;
         let portal_info = portal_info(portal);
         let mut jobs = Vec::new();
         for (alias, device) in devices {
@@ -633,7 +719,8 @@ impl Controller {
         for (alias, job) in jobs {
             self.spawn(
                 Pending::PortalMatch {
-                    portal: portal_id,
+                    portal: id,
+                    generation,
                     alias,
                 },
                 job,
@@ -641,9 +728,9 @@ impl Controller {
         }
     }
 
-    fn finish_portal_match(&mut self) {
+    fn finish_portal_match(&mut self, id: PortalId) {
         let devices = self.local_devices();
-        let Some(portal) = self.portal.as_mut() else {
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         if portal.match_pending > 0 {
@@ -670,13 +757,20 @@ impl Controller {
                 many => Matching::Ambiguous(many.iter().map(choice).collect()),
             }
         };
-        self.dial_candidates();
-        self.start_pending_handoff();
+        self.dial_candidates(id);
+        self.start_pending_handoff_in(id);
     }
 
-    /// Starts the reverse handoff after portal matching finishes (FLOW-17).
+    /// Starts the pending session of each portal after its portal matching
+    /// finished (FLOW-17).
     fn start_pending_handoff(&mut self) {
-        let Some(portal) = self.portal.as_mut() else {
+        for id in self.portal_ids() {
+            self.start_pending_handoff_in(id);
+        }
+    }
+
+    fn start_pending_handoff_in(&mut self, id: PortalId) {
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         if matches!(portal.matching, Matching::Evaluating) {
@@ -685,11 +779,11 @@ impl Controller {
         let Some(pending) = portal.pending_start.take() else {
             return;
         };
-        self.start_pending(pending);
+        self.start_pending(id, pending);
     }
 
-    fn portal_device(&self) -> Option<Device> {
-        let alias = self.portal.as_ref()?.device.as_ref()?;
+    fn portal_device(&self, id: PortalId) -> Option<Device> {
+        let alias = self.portals.get(&id)?.device.as_ref()?;
         self.config
             .computer(&self.local)?
             .devices
@@ -697,8 +791,8 @@ impl Controller {
             .cloned()
     }
 
-    fn dial_candidates(&mut self) {
-        let Some(device) = self.portal_device() else {
+    fn dial_candidates(&mut self, id: PortalId) {
+        let Some(device) = self.portal_device(id) else {
             return;
         };
         let peers: Vec<_> = routes::candidates(&self.config, &device)
@@ -782,33 +876,65 @@ impl Controller {
         self.search_deadline.is_some() || self.discovery_deadline.is_some()
     }
 
+    /// Closes the portal of the methods that do not name a portal.
     pub fn close_portal(&mut self, reason: EndReason) {
-        self.stop_search();
-        self.portal_window_request = None;
-        self.end_portal_session(reason);
-        if self.portal.take().is_some() {
-            self.ports.capture.disarm();
+        if let Some(id) = self.main_portal() {
+            self.close_portal_in(id, reason);
         }
     }
 
-    fn end_portal_session(&mut self, reason: EndReason) {
-        let actions = match self.portal.as_mut().and_then(|p| p.session.as_mut()) {
+    /// Closes all portals, for example at exit.
+    fn close_all_portals(&mut self, reason: EndReason) {
+        for id in self.portal_ids() {
+            self.close_portal_in(id, reason);
+        }
+    }
+
+    /// Ends the session of the portal and closes the portal.
+    pub fn close_portal_in(&mut self, id: PortalId, reason: EndReason) {
+        self.end_portal_session(id, reason);
+        self.remove_portal(id);
+    }
+
+    /// Removes the portal and stops its capture.
+    fn remove_portal(&mut self, id: PortalId) {
+        self.portal_window_requests
+            .retain(|(request, _)| *request != id);
+        if self.portals.remove(&id).is_some() {
+            self.ports.capture.disarm(id);
+        }
+        if self.portals.is_empty() {
+            self.stop_search();
+        }
+    }
+
+    fn end_portal_session(&mut self, id: PortalId, reason: EndReason) {
+        let actions = match self.source_session_mut(id) {
             Some(session) => session.end(reason),
             None => return,
         };
-        self.run_source_actions(actions);
+        self.run_source_actions(id, actions);
     }
 
+    /// The native focus of the portal window of the methods that do not name a
+    /// portal.
     pub fn set_portal_focus(&mut self, focused: bool) {
-        if let Some(portal) = self.portal.as_mut() {
-            portal.focused = focused;
-            portal.focus_wanted &= !focused;
-            // FLOW-26: a hidden portal can keep the native focus, for example
-            // while Mission Control is open. Then the keys stay on the source.
-            self.ports
-                .capture
-                .set_portal_focus(focused && portal.visible);
+        if let Some(id) = self.main_portal() {
+            self.set_portal_focus_in(id, focused);
         }
+    }
+
+    /// The window layer reports the native focus of a portal window (FLOW-22).
+    pub fn set_portal_focus_in(&mut self, id: PortalId, focused: bool) {
+        let Some(portal) = self.portals.get_mut(&id) else {
+            return;
+        };
+        portal.focused = focused;
+        portal.focus_wanted &= !focused;
+        // FLOW-26: a hidden portal can keep the native focus, for example
+        // while Mission Control is open. Then the keys stay on the source.
+        let visible = portal.visible;
+        self.ports.capture.set_portal_focus(id, focused && visible);
     }
 
     /// Shows the warning of FLOW-26 for an incoming session, or a blank one.
@@ -840,13 +966,13 @@ impl Controller {
     /// state of the portal. The window layer reports only changes, so the portal
     /// can keep the focus, or stay off screen, from an earlier session (FLOW-22,
     /// FLOW-26).
-    fn sync_portal_state(&mut self) {
-        let Some(portal) = self.portal.as_mut() else {
+    fn sync_portal_state(&mut self, id: PortalId) {
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         let (focused, visible) = (portal.focused && portal.visible, portal.visible);
-        self.ports.capture.set_portal_focus(focused);
-        self.ports.capture.set_portal_visible(visible);
+        self.ports.capture.set_portal_focus(id, focused);
+        self.ports.capture.set_portal_visible(id, visible);
         let actions = portal
             .session
             .as_mut()
@@ -856,92 +982,121 @@ impl Controller {
                 actions
             })
             .unwrap_or_default();
-        self.run_source_actions(actions);
+        self.run_source_actions(id, actions);
+    }
+
+    /// As `set_portal_visible_in`, for the portal of the methods that do not
+    /// name a portal.
+    pub fn set_portal_visible(&mut self, visible: bool) {
+        if let Some(id) = self.main_portal() {
+            self.set_portal_visible_in(id, visible);
+        }
     }
 
     /// The window layer reports whether the portal is on screen (FLOW-26). While
     /// it is not, the capture forwards no pointer input, and the target shows a
     /// warning.
-    pub fn set_portal_visible(&mut self, visible: bool) {
-        let Some(portal) = self.portal.as_mut() else {
+    pub fn set_portal_visible_in(&mut self, id: PortalId, visible: bool) {
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         if portal.visible == visible {
             return;
         }
         portal.visible = visible;
-        self.ports.capture.set_portal_visible(visible);
-        self.ports
-            .capture
-            .set_portal_focus(portal.focused && visible);
-        let actions = portal
-            .session
-            .as_mut()
+        let focused = portal.focused;
+        self.ports.capture.set_portal_visible(id, visible);
+        self.ports.capture.set_portal_focus(id, focused && visible);
+        let actions = self
+            .source_session_mut(id)
             .map(|session| session.on_portal_visible(visible))
             .unwrap_or_default();
-        self.run_source_actions(actions);
+        self.run_source_actions(id, actions);
     }
 
-    /// The acknowledgement key or a click in the portal (FLOW-8). Returns true
-    /// when accepted: then the window layer must suppress the event (FLOW-9).
+    /// The acknowledgement key or a click in a portal (FLOW-8). With more than
+    /// one portal, it acts on the portal with the native focus, else on the
+    /// newest portal. Returns true when accepted: then the window layer must
+    /// suppress the event (FLOW-9).
     pub fn acknowledge(&mut self) -> bool {
-        let Some(portal) = self.portal.as_mut() else {
+        self.main_portal().is_some_and(|id| self.acknowledge_in(id))
+    }
+
+    /// The acknowledgement in one portal (FLOW-8).
+    pub fn acknowledge_in(&mut self, id: PortalId) -> bool {
+        let Some(portal) = self.portals.get_mut(&id) else {
             return false;
         };
         let focused = portal.focused;
         let Some(actions) = portal.session.as_mut().and_then(|s| s.acknowledge(focused)) else {
             return false;
         };
-        self.run_source_actions(actions);
+        self.run_source_actions(id, actions);
         true
     }
 
-    /// True while the destination verifier wants an acknowledgement.
+    /// True while the destination verifier of a portal wants an acknowledgement.
     pub fn awaiting_ack(&self) -> bool {
-        self.portal
-            .as_ref()
-            .and_then(|p| p.session.as_ref())
-            .is_some_and(SourceSession::ack_wanted)
+        self.portals
+            .values()
+            .filter_map(|p| p.session.as_ref())
+            .any(SourceSession::ack_wanted)
     }
 
     /// The portal left fullscreen: request a hand back as for the shortcut (UI-3).
     pub fn portal_left_fullscreen(&mut self) {
+        if let Some(id) = self.main_portal() {
+            self.portal_left_fullscreen_in(id);
+        }
+    }
+
+    /// As `portal_left_fullscreen`, for one portal.
+    pub fn portal_left_fullscreen_in(&mut self, id: PortalId) {
         let actions = self
-            .portal
-            .as_mut()
-            .and_then(|p| p.session.as_mut())
+            .source_session_mut(id)
             .map(SourceSession::request_hand_back)
             .unwrap_or_default();
-        self.run_source_actions(actions);
+        self.run_source_actions(id, actions);
     }
 
-    fn portal_phase(&self) -> Option<SourcePhase> {
-        Some(self.portal.as_ref()?.session.as_ref()?.phase())
+    fn portal_phase(&self, id: PortalId) -> Option<SourcePhase> {
+        Some(self.source_session(id)?.phase())
     }
 
+    /// Starts a handoff in the portal of the methods that do not name a portal.
     pub fn start_handoff(&mut self, target: ComputerId) {
-        if let Some(reason) = self.candidate_unavailable(&target) {
+        if let Some(id) = self.main_portal() {
+            self.start_handoff_in(id, target);
+        }
+    }
+
+    /// Starts a handoff of the device of the portal to the target (FLOW-6).
+    pub fn start_handoff_in(&mut self, id: PortalId, target: ComputerId) {
+        if !self.portals.contains_key(&id) {
+            return;
+        }
+        if let Some(reason) = self.candidate_unavailable(id, &target) {
             self.notice(format!(
                 "Cannot switch to {}: {reason}",
                 self.label_of(&target)
             ));
             return;
         }
-        let Some(device) = self.portal_device() else {
+        let Some(device) = self.portal_device(id) else {
             return;
         };
         // FLOW-6: stop each old input stream of this device first, in both roles.
         self.end_device_sessions(&device.id);
         let (session, actions) = SourceSession::start(target, device.id);
-        if let Some(portal) = self.portal.as_mut() {
+        if let Some(portal) = self.portals.get_mut(&id) {
             portal.session = Some(session);
             portal.notice = None;
         }
-        self.run_source_actions(actions);
+        self.run_source_actions(id, actions);
     }
 
-    fn candidate_unavailable(&self, target: &ComputerId) -> Option<String> {
-        let device = self.portal_device()?;
+    fn candidate_unavailable(&self, id: PortalId, target: &ComputerId) -> Option<String> {
+        let device = self.portal_device(id)?;
         self.route_unavailable(&device, target)
     }
 
@@ -974,20 +1129,26 @@ impl Controller {
         }
     }
 
-    /// Ends the unfinished session of the portal if it uses this device.
+    /// Ends the unfinished session of each portal that uses this device.
     fn end_portal_session_of(&mut self, device: &DeviceId) {
-        let active = self
-            .portal
-            .as_ref()
-            .and_then(|p| p.session.as_ref())
-            .is_some_and(|s| !s.is_finished() && s.device() == device);
-        if active {
-            self.end_portal_session(EndReason::NewHandoff);
+        let active: Vec<_> = self
+            .portals
+            .iter()
+            .filter(|(_, p)| {
+                p.session
+                    .as_ref()
+                    .is_some_and(|s| !s.is_finished() && s.device() == device)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in active {
+            self.end_portal_session(id, EndReason::NewHandoff);
         }
     }
 
-    /// Ends each unfinished session of this device: the session of the portal and
-    /// the sessions where this computer is the target. It releases the held state.
+    /// Ends each unfinished session of this device: the sessions of the portals
+    /// and the sessions where this computer is the target. It releases the held
+    /// state.
     fn end_device_sessions(&mut self, device: &DeviceId) {
         self.stop_hand_back_verification(device);
         self.pending_hand_backs.retain(|(_, id)| id != device);
@@ -1003,12 +1164,9 @@ impl Controller {
         }
     }
 
-    fn run_source_actions(&mut self, actions: Vec<SourceAction>) {
+    fn run_source_actions(&mut self, id: PortalId, actions: Vec<SourceAction>) {
         for action in actions {
-            let Some(portal) = self.portal.as_mut() else {
-                return;
-            };
-            let Some(session) = portal.session.as_ref() else {
+            let Some(session) = self.source_session(id) else {
                 return;
             };
             let target = session.target().clone();
@@ -1024,18 +1182,18 @@ impl Controller {
                         message,
                     });
                 }
-                SourceAction::RunHandoff => self.run_handoff(),
+                SourceAction::RunHandoff => self.run_handoff(id),
                 SourceAction::StartForwarding => {
-                    self.set_guard(false);
-                    match self.ports.capture.forward() {
+                    self.set_guard(id, false);
+                    match self.ports.capture.forward(id) {
                         Ok(()) => {
-                            self.send_pointer();
-                            self.sync_portal_state();
+                            self.send_pointer(id);
+                            self.sync_portal_state(id);
                         }
                         Err(e) => {
                             self.notice(format!("Input capture failed: {e}"));
-                            let actions = self.end_actions(EndReason::PermissionLost);
-                            self.run_source_actions(actions);
+                            let actions = self.end_actions(id, EndReason::PermissionLost);
+                            self.run_source_actions(id, actions);
                             return;
                         }
                     }
@@ -1045,43 +1203,39 @@ impl Controller {
             }
         }
         let finished = self
-            .portal
-            .as_ref()
-            .and_then(|p| p.session.as_ref())
+            .source_session(id)
             .is_some_and(SourceSession::is_finished);
         if finished {
-            self.set_guard(false);
-            self.ports.capture.disarm();
-            self.close_session_portal();
+            self.set_guard(id, false);
+            self.ports.capture.disarm(id);
+            self.close_session_portal(id);
         }
         self.update_clipboard();
     }
 
     /// Changes the portal guard during the handoff and verification (FLOW-21).
-    fn set_guard(&mut self, on: bool) {
-        let Some(portal) = self.portal.as_mut() else {
+    fn set_guard(&mut self, id: PortalId, on: bool) {
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         if portal.guarded == on {
             return;
         }
         portal.guarded = on;
-        if let Err(e) = self.ports.capture.guard(on) {
+        if let Err(e) = self.ports.capture.guard(id, on) {
             self.notice(format!("Portal guard failed: {e}"));
         }
     }
 
-    fn end_actions(&mut self, reason: EndReason) -> Vec<SourceAction> {
-        self.portal
-            .as_mut()
-            .and_then(|p| p.session.as_mut())
+    fn end_actions(&mut self, id: PortalId, reason: EndReason) -> Vec<SourceAction> {
+        self.source_session_mut(id)
             .map(|s| s.end(reason))
             .unwrap_or_default()
     }
 
-    fn run_handoff(&mut self) {
+    fn run_handoff(&mut self, id: PortalId) {
         let displays = self.displays();
-        let Some(portal) = self.portal.as_ref() else {
+        let Some(portal) = self.portals.get(&id) else {
             return;
         };
         let Some(session) = portal.session.as_ref() else {
@@ -1090,7 +1244,7 @@ impl Controller {
         let Some(alias) = portal.device.clone() else {
             return;
         };
-        let Some(device) = self.portal_device() else {
+        let Some(device) = self.portal_device(id) else {
             return;
         };
         let target = session.target().clone();
@@ -1112,15 +1266,16 @@ impl Controller {
         };
         let bounds = portal.bounds;
         let focused = portal.focused;
-        if let Err(e) = self.ports.capture.arm(bounds) {
+        if let Err(e) = self.ports.capture.arm(id, bounds) {
             self.notice(format!("Input capture failed: {e}"));
-            self.end_portal_session(EndReason::PermissionLost);
+            self.end_portal_session(id, EndReason::PermissionLost);
             return;
         }
-        self.ports.capture.set_portal_focus(focused);
-        self.set_guard(true);
+        self.ports.capture.set_portal_focus(id, focused);
+        self.set_guard(id, true);
         self.spawn(
             Pending::Handoff {
+                portal: id,
                 session: session_id,
             },
             Job::Handoff {
@@ -1130,8 +1285,8 @@ impl Controller {
         );
     }
 
-    fn send_pointer(&mut self) {
-        let Some(portal) = self.portal.as_mut() else {
+    fn send_pointer(&mut self, id: PortalId) {
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         let position = pointer::normalize(portal.bounds, portal.pointer);
@@ -1147,16 +1302,44 @@ impl Controller {
     }
 
     /// An event from the input capture (IN-2: it comes through a bounded queue).
+    /// An event of a portal goes to that portal; an event of a closed portal does
+    /// nothing. The events with no portal apply to all portals (FLOW-25).
     pub fn on_captured(&mut self, event: CapturedEvent) {
-        let Some(portal) = self.portal.as_mut() else {
+        let all: fn(&mut SourceSession) -> Vec<SourceAction> = match event {
+            CapturedEvent::InputLost => SourceSession::on_input_lost,
+            CapturedEvent::SafetyExit => |s| s.end(EndReason::SafetyExit),
+            CapturedEvent::Overflow => |s| s.end(EndReason::QueueOverflow),
+            other => return self.on_portal_captured(other),
+        };
+        for id in self.portal_ids() {
+            let actions = self.source_session_mut(id).map(all).unwrap_or_default();
+            self.run_source_actions(id, actions);
+        }
+    }
+
+    fn on_portal_captured(&mut self, event: CapturedEvent) {
+        let id = match event {
+            CapturedEvent::Input { portal, .. }
+            | CapturedEvent::PointerMoved { portal, .. }
+            | CapturedEvent::PointerEntered { portal, .. }
+            | CapturedEvent::PointerLeft { portal }
+            | CapturedEvent::FocusWanted { portal }
+            | CapturedEvent::KeyboardEntered { portal }
+            | CapturedEvent::KeyboardLeft { portal }
+            | CapturedEvent::HandBackShortcut { portal } => portal,
+            CapturedEvent::InputLost | CapturedEvent::SafetyExit | CapturedEvent::Overflow => {
+                return;
+            }
+        };
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         let Some(session) = portal.session.as_mut() else {
             return;
         };
         let actions = match event {
-            CapturedEvent::Input(input) => session.on_input(input),
-            CapturedEvent::PointerMoved { at } => {
+            CapturedEvent::Input { event, .. } => session.on_input(event),
+            CapturedEvent::PointerMoved { at, .. } => {
                 if !portal.visible {
                     // FLOW-26: the warning on the target shows the cursor.
                     let cursor = portal
@@ -1164,41 +1347,42 @@ impl Controller {
                         .contains(at)
                         .then(|| pointer::normalize(portal.bounds, at));
                     let actions = session.portal_cursor(cursor);
-                    self.run_source_actions(actions);
+                    self.run_source_actions(id, actions);
                     return;
                 }
                 portal.pointer = portal.bounds.clamp(at);
                 if session.phase() == SourcePhase::Forwarding {
-                    self.send_pointer();
+                    self.send_pointer(id);
                 }
                 return;
             }
-            CapturedEvent::PointerEntered { at } => {
+            CapturedEvent::PointerEntered { at, .. } => {
                 portal.pointer = portal.bounds.clamp(at);
                 session.forget_pointer();
-                self.send_pointer();
+                self.send_pointer(id);
                 return;
             }
-            CapturedEvent::PointerLeft => return,
-            CapturedEvent::FocusWanted => {
+            CapturedEvent::FocusWanted { .. } => {
                 if portal.focused {
                     // The OS reported the focus, but the capture lost it, for
                     // example at a disarm (FLOW-22).
-                    self.ports.capture.set_portal_focus(portal.visible);
+                    let visible = portal.visible;
+                    self.ports.capture.set_portal_focus(id, visible);
                 } else {
                     // FLOW-22: the window layer asks the OS for the native focus.
                     portal.focus_wanted = true;
                 }
                 return;
             }
-            CapturedEvent::KeyboardEntered => session.on_keyboard(true),
-            CapturedEvent::KeyboardLeft => session.on_keyboard(false),
-            CapturedEvent::InputLost => session.on_input_lost(),
-            CapturedEvent::HandBackShortcut => session.request_hand_back(),
-            CapturedEvent::SafetyExit => session.end(EndReason::SafetyExit),
-            CapturedEvent::Overflow => session.end(EndReason::QueueOverflow),
+            CapturedEvent::KeyboardEntered { .. } => session.on_keyboard(true),
+            CapturedEvent::KeyboardLeft { .. } => session.on_keyboard(false),
+            CapturedEvent::HandBackShortcut { .. } => session.request_hand_back(),
+            CapturedEvent::PointerLeft { .. }
+            | CapturedEvent::InputLost
+            | CapturedEvent::SafetyExit
+            | CapturedEvent::Overflow => return,
         };
-        self.run_source_actions(actions);
+        self.run_source_actions(id, actions);
     }
 
     // ----- Timers -----
@@ -1314,13 +1498,13 @@ impl Controller {
 
     /// Lists the sessions that can sync text (CLIP-2).
     fn clipboard_sessions(&self) -> Vec<(SessionId, ComputerId)> {
-        let mut sessions = Vec::new();
-        if let Some(source) = self.portal.as_ref().and_then(|p| p.session.as_ref())
-            && source.phase() == SourcePhase::Forwarding
-            && let Some(session) = source.session()
-        {
-            sessions.push((session, source.target().clone()));
-        }
+        let mut sessions: Vec<_> = self
+            .portals
+            .values()
+            .filter_map(|p| p.session.as_ref())
+            .filter(|source| source.phase() == SourcePhase::Forwarding)
+            .filter_map(|source| Some((source.session()?, source.target().clone())))
+            .collect();
         sessions.extend(
             self.incoming
                 .iter()
@@ -1466,10 +1650,12 @@ impl Controller {
 
     fn is_offline_candidate(&self, peer: &ComputerId) -> bool {
         !self.connected.contains(peer)
-            && self.portal_device().is_some_and(|device| {
-                routes::candidates(&self.config, &device)
-                    .iter()
-                    .any(|route| route.target == peer)
+            && self.portal_ids().into_iter().any(|id| {
+                self.portal_device(id).is_some_and(|device| {
+                    routes::candidates(&self.config, &device)
+                        .iter()
+                        .any(|route| route.target == peer)
+                })
             })
     }
 
@@ -1523,14 +1709,13 @@ impl Controller {
     }
 
     fn peer_lost(&mut self, peer: &ComputerId) {
-        let source_actions = self
-            .portal
-            .as_mut()
-            .and_then(|p| p.session.as_mut())
-            .filter(|s| s.target() == peer)
-            .map(SourceSession::on_peer_lost)
-            .unwrap_or_default();
-        self.run_source_actions(source_actions);
+        for id in self.portals_to(peer) {
+            let actions = self
+                .source_session_mut(id)
+                .map(SourceSession::on_peer_lost)
+                .unwrap_or_default();
+            self.run_source_actions(id, actions);
+        }
         let sessions: Vec<_> = self
             .incoming
             .iter()
@@ -1618,16 +1803,23 @@ impl Controller {
         }
     }
 
+    /// A message from a target goes to each portal with a session to it. Each
+    /// session takes only the messages of its device and session id (FLOW-25).
     fn source_message(&mut self, peer: &ComputerId, message: &Message, now: Instant) {
-        let Some(session) = self.portal.as_mut().and_then(|p| p.session.as_mut()) else {
+        for id in self.portals_to(peer) {
+            self.portal_message(id, peer, message, now);
+        }
+    }
+
+    fn portal_message(&mut self, id: PortalId, peer: &ComputerId, message: &Message, now: Instant) {
+        let Some(session) = self.source_session_mut(id) else {
             return;
         };
-        if session.target() != peer {
-            return;
-        }
+        let refused = matches!(message, Message::SessionRefused { device, .. }
+            if device == session.device() && session.phase() == SourcePhase::Requesting);
         let hand_back_device =
-            matches!(message, Message::End { session: id, reason: EndReason::HandBack }
-            if session.session() == Some(*id) && !session.is_finished())
+            matches!(message, Message::End { session: ended, reason: EndReason::HandBack }
+            if session.session() == Some(*ended) && !session.is_finished())
             .then(|| session.device().clone());
         let actions = session.on_message(message, now);
         if let Some(device) = hand_back_device {
@@ -1635,7 +1827,8 @@ impl Controller {
             self.pending_hand_backs.insert((peer.clone(), device));
         }
         if let Message::SessionRefused { reason, .. } = message
-            && let Some(portal) = self.portal.as_mut()
+            && refused
+            && let Some(portal) = self.portals.get_mut(&id)
         {
             portal.notice = Some(refuse_text(*reason));
             // ACT-5: the portal closes with its session, so keep the reason.
@@ -1646,7 +1839,7 @@ impl Controller {
             );
             self.notice(text);
         }
-        self.run_source_actions(actions);
+        self.run_source_actions(id, actions);
     }
 
     // ----- Target side -----
@@ -1690,10 +1883,10 @@ impl Controller {
         // FLOW-6: a new handoff of this device ends the session of the local
         // portal. A session of a different source keeps its lease (AC-20).
         let taken = self
-            .portal
-            .as_ref()
-            .and_then(|p| p.session.as_ref())
-            .is_some_and(|s| !s.is_finished() && s.device() == &device_id);
+            .portals
+            .values()
+            .filter_map(|p| p.session.as_ref())
+            .any(|s| !s.is_finished() && s.device() == &device_id);
         self.end_portal_session_of(&device_id);
         if taken {
             // FLOW-24: another computer shows on the display now.
@@ -1753,18 +1946,15 @@ impl Controller {
                 return self.refuse(peer, device, RefuseReason::NoInputTarget);
             }
         };
-        let on_portal = self
-            .portal
-            .as_ref()
-            .is_some_and(|p| p.display.token == token);
+        let on_portal = self.portal_on(&token);
         let (target, actions) = TargetSession::new(session, peer, device, token);
         self.incoming.insert(session, target);
         self.incoming_pointer_stats
             .insert(session, PointerStats::new(session));
         self.run_target_actions(session, actions);
         // FLOW-24: the display shows this computer as the target, not a second portal.
-        if on_portal {
-            self.close_portal(EndReason::SourceClosed);
+        if let Some(portal) = on_portal {
+            self.close_portal_in(portal, EndReason::SourceClosed);
         }
     }
 
@@ -2496,8 +2686,16 @@ impl Controller {
             return;
         };
         match pending {
-            Pending::PortalMatch { portal, alias } => {
-                let Some(p) = self.portal.as_mut().filter(|p| p.id == portal) else {
+            Pending::PortalMatch {
+                portal,
+                generation,
+                alias,
+            } => {
+                let Some(p) = self
+                    .portals
+                    .get_mut(&portal)
+                    .filter(|p| p.generation == generation)
+                else {
                     return;
                 };
                 p.match_pending = p.match_pending.saturating_sub(1);
@@ -2507,35 +2705,29 @@ impl Controller {
                     JobOutput::Operation(Err(e)) => p.match_error = Some(format!("{alias}: {e}")),
                     other => p.match_error = Some(format!("{alias}: unexpected {other:?}")),
                 }
-                self.finish_portal_match();
+                self.finish_portal_match(portal);
             }
             Pending::InputTarget {
                 session,
                 peer,
                 device,
             } => self.input_target_done(session, peer, device, output),
-            Pending::Handoff { session } => {
+            Pending::Handoff { portal, session } => {
                 let JobOutput::Handoff { result, error } = output else {
                     return;
                 };
                 if let Some(error) = error {
                     self.notice(format!("Handoff failed: {error}"));
                 }
-                let current = self
-                    .portal
-                    .as_ref()
-                    .and_then(|p| p.session.as_ref())
-                    .and_then(|s| s.session());
+                let current = self.source_session(portal).and_then(|s| s.session());
                 if current != session || session.is_none() {
                     return;
                 }
                 let actions = self
-                    .portal
-                    .as_mut()
-                    .and_then(|p| p.session.as_mut())
+                    .source_session_mut(portal)
                     .map(|s| s.on_handoff_finished(result))
                     .unwrap_or_default();
-                self.run_source_actions(actions);
+                self.run_source_actions(portal, actions);
             }
             Pending::HandBack { peer, device } => {
                 let (outcome, error) = match output {
@@ -2637,7 +2829,11 @@ impl Controller {
                 }
             }
             Intent::StopDiscovery => self.stop_discovery(),
-            Intent::EndSession => self.end_portal_session(EndReason::SourceClosed),
+            Intent::EndSession { portal } => {
+                if let Some(id) = portal.or_else(|| self.main_portal()) {
+                    self.end_portal_session(id, EndReason::SourceClosed);
+                }
+            }
             Intent::HandBack { session } => {
                 if self
                     .incoming
@@ -2667,7 +2863,11 @@ impl Controller {
                 target,
             } => self.switch_display_only(&display, device, target),
             Intent::LetControl { peer, device } => self.let_control(peer, device),
-            Intent::SourceHandBack => self.portal_left_fullscreen(),
+            Intent::SourceHandBack { portal } => {
+                if let Some(id) = portal.or_else(|| self.main_portal()) {
+                    self.portal_left_fullscreen_in(id);
+                }
+            }
         }
     }
 
@@ -2686,8 +2886,10 @@ impl Controller {
             self.notice("Cannot control from here: the input-target display is gone.".into());
             return;
         };
-        self.open_portal(display);
-        let Some(portal) = self.portal.as_mut() else {
+        let Some(id) = self.open_portal(display) else {
+            return;
+        };
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         portal.pending_start = Some(PendingStart {
@@ -2695,8 +2897,8 @@ impl Controller {
             device: None,
             attach: false,
         });
-        self.portal_window_request = Some(token);
-        self.start_pending_handoff();
+        self.portal_window_requests.push_back((id, token));
+        self.start_pending_handoff_in(id);
     }
 
     /// The window layer could not show a prompt that the presenter accepted.
@@ -2752,14 +2954,16 @@ impl Controller {
         if self.displays_differ(&displays) {
             self.evaluate_displays();
         }
-        let portal_token = self.portal.as_ref().map(|p| p.display.token.clone());
-        if let Some(token) = portal_token {
+        for id in self.portal_ids() {
+            let Some(token) = self.portals.get(&id).map(|p| p.display.token.clone()) else {
+                continue;
+            };
             match displays.iter().find(|d| d.token == token).cloned() {
-                None => self.close_portal(EndReason::PortalGone),
+                None => self.close_portal_in(id, EndReason::PortalGone),
                 Some(display) => {
-                    let changed = self.portal.as_ref().is_some_and(|p| p.display != display);
+                    let changed = self.portals.get(&id).is_some_and(|p| p.display != display);
                     if changed {
-                        self.portal_display_changed(display);
+                        self.portal_display_changed_in(id, display);
                     }
                 }
             }
@@ -2793,27 +2997,50 @@ impl Controller {
     }
 
     pub fn has_portal(&self) -> bool {
-        self.portal.is_some()
+        !self.portals.is_empty()
     }
 
-    /// True while input is forwarded (FLOW-13).
+    /// True while the portal of the methods that do not name a portal forwards
+    /// input (FLOW-13).
     pub fn forwarding(&self) -> bool {
-        self.portal_phase() == Some(SourcePhase::Forwarding)
+        self.main_portal().is_some_and(|id| self.forwarding_in(id))
+    }
+
+    /// True while the portal forwards input (FLOW-13).
+    pub fn forwarding_in(&self, id: PortalId) -> bool {
+        self.portal_phase(id) == Some(SourcePhase::Forwarding)
     }
 
     /// True while forwarding and the portal is not on screen (FLOW-26).
     pub fn portal_hidden(&self) -> bool {
-        self.forwarding() && self.portal.as_ref().is_some_and(|portal| !portal.visible)
+        self.main_portal()
+            .is_some_and(|id| self.portal_hidden_in(id))
+    }
+
+    /// As `portal_hidden`, for one portal.
+    pub fn portal_hidden_in(&self, id: PortalId) -> bool {
+        self.forwarding_in(id) && self.portals.get(&id).is_some_and(|portal| !portal.visible)
     }
 
     /// True while the portal keeps focus during handoff and verification (FLOW-21).
     pub fn guarded(&self) -> bool {
-        self.portal.as_ref().is_some_and(|portal| portal.guarded)
+        self.main_portal().is_some_and(|id| self.guarded_in(id))
     }
 
+    /// As `guarded`, for one portal.
+    pub fn guarded_in(&self, id: PortalId) -> bool {
+        self.portals.get(&id).is_some_and(|portal| portal.guarded)
+    }
+
+    /// The screen of the portal of the methods that do not name a portal.
     pub fn portal_screen(&self) -> Option<PortalScreen> {
-        let portal = self.portal.as_ref()?;
-        let device = self.portal_device();
+        self.portal_screen_of(self.main_portal()?)
+    }
+
+    /// The screen of one portal.
+    pub fn portal_screen_of(&self, id: PortalId) -> Option<PortalScreen> {
+        let portal = self.portals.get(&id)?;
+        let device = self.portal_device(id);
         let routes = device
             .as_ref()
             .map(|device| routes::candidates(&self.config, device))
@@ -2829,7 +3056,7 @@ impl Controller {
             .map(|route| CandidateRow {
                 target: route.target.clone(),
                 label: self.label_of(route.target),
-                unavailable: self.candidate_unavailable(route.target),
+                unavailable: self.candidate_unavailable(id, route.target),
             })
             .collect();
         let session = portal.session.as_ref().map(|s| SessionRow {
@@ -2916,7 +3143,7 @@ impl Controller {
 
 fn portal_info(portal: &Portal) -> PortalInfo {
     PortalInfo {
-        id: format!("portal-{}", portal.id),
+        id: format!("portal-{}", portal.generation),
         bounds: Some(portal.bounds),
         coordinate_space: "local-desktop-logical",
         display_token: Some(portal.display.token.clone()),
