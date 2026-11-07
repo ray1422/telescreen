@@ -14,7 +14,7 @@
 # The output is spikes/appimage/out/Telescreen-preview-x86_64.AppImage.
 set -eux
 
-QT_VERSION=${QT_VERSION:-6.8.3}
+QT_VERSION=${QT_VERSION:-6.12.0}
 KF_VERSION=${KF_VERSION:-6.20.0}
 ROOT=$(pwd)
 WORK=$ROOT/spikes/appimage/work

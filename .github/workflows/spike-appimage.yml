@@ -30,14 +30,14 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: spikes/appimage/work/kf6
-          key: kf6-6.20.0-qt6.8.3-alma9-${{ github.run_id }}
-          restore-keys: kf6-6.20.0-qt6.8.3-alma9-
+          key: kf6-6.20.0-qt6.12.0-alma9-${{ github.run_id }}
+          restore-keys: kf6-6.20.0-qt6.12.0-alma9-
       - run: sh spikes/appimage/build.sh
       - uses: actions/cache/save@v4
         if: always()
         with:
           path: spikes/appimage/work/kf6
-          key: kf6-6.20.0-qt6.8.3-alma9-${{ github.run_id }}
+          key: kf6-6.20.0-qt6.12.0-alma9-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         with:
           name: appimage
