@@ -42,6 +42,12 @@ pub enum Request {
     /// `{"cmd":"move_control","x":<x>,"y":<y>}`: moves the control window, in
     /// logical pixels. The portal opens on the display of this window.
     MoveControl { x: f64, y: f64 },
+    /// `{"cmd":"menu","show":<bool>}`: opens or closes the native menu (UI-9), and
+    /// returns the last view model and the panel frame. `show` is optional.
+    Menu { show: Option<bool> },
+    /// `{"cmd":"main_window","show":<bool>}`: opens or closes the native main
+    /// window (UI-13), and returns its state and the Dock icon state (UI-14).
+    MainWindow { show: Option<bool> },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,6 +105,12 @@ pub fn parse_request(line: &str) -> Result<Request, DebugError> {
         "choose_computer" => Ok(Request::ChooseComputer {
             computer: ComputerId::from(string_field(&value, "computer")?),
         }),
+        "menu" => Ok(Request::Menu {
+            show: value.get("show").and_then(Value::as_bool),
+        }),
+        "main_window" => Ok(Request::MainWindow {
+            show: value.get("show").and_then(Value::as_bool),
+        }),
         "move_control" => Ok(Request::MoveControl {
             x: number_field(&value, "x")?,
             y: number_field(&value, "y")?,
@@ -128,10 +140,13 @@ fn number_field(value: &Value, field: &str) -> Result<f64, DebugError> {
 }
 
 fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
+    // The JSON form of the native UI (UI-18).
+    if value.get("kind").is_some() {
+        return serde_json::from_value(value.clone())
+            .map_err(|error| DebugError::Request(error.to_string()));
+    }
     if let Some(name) = value.as_str() {
         return match name {
-            "ClosePortal" => Ok(Intent::ClosePortal),
-            "Refresh" => Ok(Intent::Refresh),
             "AllowDiscovery" => Ok(Intent::AllowDiscovery),
             "StopDiscovery" => Ok(Intent::StopDiscovery),
             "EndSession" => Ok(Intent::EndSession),
@@ -147,9 +162,6 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
         .next()
         .ok_or_else(|| DebugError::Request("missing intent variant".into()))?;
     match name.as_str() {
-        "OpenPortal" => Ok(Intent::OpenPortal {
-            display: DisplayToken::from(string_field(arguments, "display")?),
-        }),
         "DeviceIsBack" => Ok(Intent::DeviceIsBack {
             device: DeviceId::from(string_field(arguments, "device")?),
         }),
@@ -158,12 +170,6 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
                 .get("on")
                 .and_then(Value::as_bool)
                 .ok_or_else(|| DebugError::Request("on must be a boolean".into()))?,
-        }),
-        "StartHandoff" => Ok(Intent::StartHandoff {
-            target: ComputerId::from(string_field(arguments, "target")?),
-        }),
-        "SelectDevice" => Ok(Intent::SelectDevice {
-            alias: string_field(arguments, "alias")?.to_owned(),
         }),
         "HandBack" | "StopSession" | "ControlFromHere" => {
             let session = arguments
@@ -237,9 +243,13 @@ pub struct Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // Wake a blocking accept so it can observe the stop flag.
-        let _ = UnixStream::connect(&self.path);
-        if let Some(thread) = self.thread.take() {
+        // Wake a blocking accept so it can observe the stop flag. If the socket
+        // file is gone, nothing can wake it: do not wait for the thread, else the
+        // main thread hangs and the status item stops responding.
+        let woke = UnixStream::connect(&self.path).is_ok();
+        if let Some(thread) = self.thread.take()
+            && woke
+        {
             let _ = thread.join();
         }
         let _ = fs::remove_file(&self.path);

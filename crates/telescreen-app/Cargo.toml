@@ -35,6 +35,7 @@ winit.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 telescreen-platform-macos.workspace = true
+telescreen-ui-macos.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 telescreen-platform-linux.workspace = true

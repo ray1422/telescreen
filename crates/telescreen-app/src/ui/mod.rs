@@ -21,6 +21,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use telescreen_core::config::Config;
@@ -66,6 +67,9 @@ pub enum UserEvent {
     /// A request of the debug protocol and the channel for its response line.
     #[cfg(feature = "debug-protocol")]
     Debug(crate::debug::Request, crossbeam_channel::Sender<String>),
+    /// An event of the native UI (ADR 0012).
+    #[cfg(target_os = "macos")]
+    Ui(telescreen_ui_macos::UiEvent),
 }
 
 /// The command-line options for starting Telescreen.
@@ -115,7 +119,7 @@ pub fn launch(launch: Launch) -> Result<(), String> {
     };
     #[cfg(not(feature = "debug-protocol"))]
     let _ = launch.debug_socket;
-    let mut gpu = SharedGpu::default();
+    let mut gpu = SharedGpu::new(event_loop.owned_display_handle());
     let (config, local) = match startup {
         Startup::Run { config, computer } => (config, computer),
         _ => {
@@ -299,7 +303,7 @@ fn start_app(
     Ok(App {
         controller,
         pointer_mailbox,
-        gpu: std::mem::take(gpu),
+        gpu: std::mem::replace(gpu, SharedGpu::new(event_loop.owned_display_handle())),
         #[cfg(feature = "debug-protocol")]
         _debug_server: None,
         hooks: parts.hooks,
@@ -310,6 +314,14 @@ fn start_app(
         swallow_release: false,
         drawn_control: None,
         drawn_portal: None,
+        #[cfg(target_os = "macos")]
+        native: None,
+        #[cfg(target_os = "macos")]
+        menu: telescreen_view::Publisher::new(),
+        #[cfg(target_os = "macos")]
+        main: telescreen_view::Publisher::new(),
+        #[cfg(target_os = "macos")]
+        proxy: event_loop.create_proxy(),
     })
 }
 
@@ -389,8 +401,6 @@ impl Surface {
 struct PortalSurface {
     surface: Surface,
     token: DisplayToken,
-    /// True after the controller got `open_portal`.
-    opened: bool,
 }
 
 struct PromptSurface {
@@ -413,24 +423,19 @@ struct App {
     swallow_release: bool,
     drawn_control: Option<telescreen_view::ControlScreen>,
     drawn_portal: Option<telescreen_view::PortalScreen>,
+    /// The native menu (ADR 0012, UI-9). The egui control window stays until
+    /// the main window replaces it.
+    #[cfg(target_os = "macos")]
+    native: Option<telescreen_ui_macos::MacUi>,
+    #[cfg(target_os = "macos")]
+    menu: telescreen_view::Publisher<telescreen_view::MenuScreen>,
+    #[cfg(target_os = "macos")]
+    main: telescreen_view::Publisher<telescreen_view::MainScreen>,
+    #[cfg(target_os = "macos")]
+    proxy: EventLoopProxy<UserEvent>,
 }
 
 impl App {
-    /// Opens the portal on the selected display. A different portal closes first
-    /// (FLOW-2).
-    fn open_portal_window(&mut self, event_loop: &ActiveEventLoop, token: DisplayToken) {
-        self.close_portal_window();
-        let monitor = event_loop
-            .available_monitors()
-            .find(|monitor| platform::monitor_token(monitor).as_ref() == Some(&token));
-        let Some(monitor) = monitor else {
-            self.controller
-                .add_notice(format!("Cannot find the display {token}."));
-            return;
-        };
-        self.create_portal_window(event_loop, monitor, token, false);
-    }
-
     /// Creates a portal at its logical display bounds (FLOW-2).
     /// Enters fullscreen after creating the window.
     fn create_portal_window(
@@ -438,10 +443,18 @@ impl App {
         event_loop: &ActiveEventLoop,
         monitor: MonitorHandle,
         token: DisplayToken,
-        opened: bool,
     ) {
+        // FLOW-26: the title names this portal, so that Accessibility can find it.
+        static NEXT_PORTAL: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_PORTAL.fetch_add(1, Ordering::Relaxed);
+        // UI-13: the main window leaves the display before the portal enters
+        // fullscreen there.
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.set_portal_displays(&cg_ids(&token));
+        }
         let mut attributes = platform::window_attributes(Window::default_attributes())
-            .with_title("Telescreen portal");
+            .with_title(format!("Telescreen portal {id}"));
         // Make the window on the display first. The fullscreen request then uses
         // the display of the window.
         if let Some(bounds) = self.controller.display(&token).and_then(|d| d.bounds) {
@@ -465,23 +478,17 @@ impl App {
                     self.controller.add_notice(error);
                 }
                 self.hooks.portal_created(&surface.window);
-                self.portal = Some(PortalSurface {
-                    surface,
-                    token,
-                    opened,
-                });
+                self.portal = Some(PortalSurface { surface, token });
             }
             Err(e) => {
                 self.controller
                     .add_notice(format!("Cannot open the portal: {e}"));
-                if opened {
-                    self.controller.close_portal(EndReason::SourceClosed);
-                }
+                self.controller.close_portal(EndReason::SourceClosed);
             }
         }
     }
 
-    /// Makes the window for a portal opened by the controller (FLOW-17).
+    /// Makes the window for a portal opened by the controller (ACT-5, FLOW-17).
     fn take_portal_window_request(&mut self, event_loop: &ActiveEventLoop) {
         let Some(token) = self.controller.take_portal_window_request() else {
             return;
@@ -498,22 +505,7 @@ impl App {
             self.controller.close_portal(EndReason::PortalGone);
             return;
         };
-        self.create_portal_window(event_loop, monitor, token, true);
-    }
-
-    /// Calls `open_portal` when the window is on its display (FLOW-2).
-    fn start_portal(&mut self) {
-        let Some(portal) = self.portal.as_mut() else {
-            return;
-        };
-        if portal.opened {
-            return;
-        }
-        let Some(display) = self.controller.display(&portal.token) else {
-            return;
-        };
-        portal.opened = true;
-        self.controller.open_portal(display);
+        self.create_portal_window(event_loop, monitor, token);
     }
 
     /// FLOW-4, AC-8: the portal window is on a different monitor now. Evaluate
@@ -531,9 +523,6 @@ impl App {
         };
         eprintln!("telescreen: portal window moved to {token}");
         portal.token = token.clone();
-        if !portal.opened {
-            return;
-        }
         match self.controller.display(&token) {
             Some(display) => {
                 self.controller.portal_display_changed(display);
@@ -551,11 +540,7 @@ impl App {
 
     fn handle_intents(&mut self, event_loop: &ActiveEventLoop, intents: Vec<Intent>) {
         for intent in intents {
-            match intent {
-                Intent::OpenPortal { display } => self.open_portal_window(event_loop, display),
-                Intent::ClosePortal => self.close_portal_window(),
-                other => self.controller.on_intent(other),
-            }
+            self.controller.on_intent(intent);
             self.take_portal_window_request(event_loop);
         }
     }
@@ -565,10 +550,31 @@ impl App {
         for event in self.hooks.drain_captured() {
             self.controller.on_captured(event);
         }
+        if self.controller.take_portal_focus_request()
+            && let Some(portal) = &self.portal
+        {
+            self.hooks.focus_portal(&portal.surface.window);
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            // UI-13: the main window does not take the Space of a portal display.
+            let ids = self
+                .portal
+                .as_ref()
+                .map(|portal| cg_ids(&portal.token))
+                .unwrap_or_default();
+            native.set_portal_displays(&ids);
+        }
+        if let Some(portal) = &self.portal {
+            let hidden = self.controller.portal_hidden();
+            let forwarding = self.controller.forwarding();
+            self.hooks
+                .portal_hidden(&portal.surface.window, hidden, forwarding);
+        }
         for request in self.hooks.take_prompt_requests() {
             self.prompt_request(event_loop, request);
         }
-        if self.portal.as_ref().is_some_and(|p| p.opened) && !self.controller.has_portal() {
+        if self.portal.is_some() && !self.controller.has_portal() {
             // The controller closed the portal (FLOW-19).
             self.portal = None;
             self.hooks.portal_closed();
@@ -584,6 +590,78 @@ impl App {
         {
             portal.surface.window.request_redraw();
         }
+        // UI-18: push the menu only when it changed.
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            if let Some(menu) = self.menu.update(self.controller.menu_screen()) {
+                native.push_menu(menu);
+            }
+            if let Some(main) = self.main.update(self.controller.main_screen()) {
+                native.push_main(main);
+            }
+        }
+    }
+
+    /// The egui control window (until the native main window replaces it).
+    #[cfg(not(target_os = "macos"))]
+    fn open_control_window(&mut self, event_loop: &ActiveEventLoop) {
+        let attributes = platform::window_attributes(Window::default_attributes())
+            .with_title("Telescreen")
+            .with_inner_size(LogicalSize::new(560.0, 520.0));
+        match event_loop.create_window(attributes) {
+            Ok(window) => {
+                let (surface, error) = Surface::new(window, &mut self.gpu);
+                if let Some(error) = error {
+                    eprintln!("telescreen: {error}");
+                }
+                self.control = Some(surface);
+            }
+            Err(e) => {
+                eprintln!("telescreen: cannot open the window: {e}");
+                event_loop.exit();
+            }
+        }
+    }
+
+    /// The native UI and the first `portal-match` of each display (UI-18).
+    fn start_native_ui(&mut self) {
+        #[cfg(target_os = "macos")]
+        if self.native.is_none() {
+            let proxy = self.proxy.clone();
+            match telescreen_ui_macos::MacUi::new(move |event| {
+                let _ = proxy.send_event(UserEvent::Ui(event));
+            }) {
+                Ok(native) => self.native = Some(native),
+                Err(error) => eprintln!("telescreen: no native menu: {error}"),
+            }
+        }
+        let trusted = paths::trust_file().and_then(|path| {
+            telescreen_transport::TrustStore::load(&path).map_err(|e| e.to_string())
+        });
+        match trusted {
+            Ok(store) => self
+                .controller
+                .set_trusted(store.peers().map(|(id, _)| id.clone()).collect()),
+            Err(error) => eprintln!("telescreen: cannot load the trust list: {error}"),
+        }
+        self.controller.evaluate_displays();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn ui_event(&mut self, event_loop: &ActiveEventLoop, event: telescreen_ui_macos::UiEvent) {
+        use telescreen_ui_macos::UiEvent;
+        match event {
+            UiEvent::Intent(intent) => self.handle_intents(event_loop, vec![intent]),
+            UiEvent::Quit => {
+                // UI-15: the same as a quit of the app.
+                self.controller.shutdown();
+                self.close_portal_window();
+                event_loop.exit();
+            }
+            UiEvent::OpenSettings => {
+                eprintln!("telescreen: the settings window is not implemented yet");
+            }
+        }
     }
 
     fn prompt_request(&mut self, event_loop: &ActiveEventLoop, request: PromptRequest) {
@@ -596,7 +674,12 @@ impl App {
                 display,
                 screen,
             } => {
+                let local_ack = screen.source.is_none() && screen.ack_wanted;
                 if let Some(surface) = self.prompts.get_mut(&prompt) {
+                    if local_ack && !(surface.screen.source.is_none() && surface.screen.ack_wanted)
+                    {
+                        platform::prompt_input(&surface.surface.window, true);
+                    }
                     surface.screen = screen;
                     surface.surface.window.request_redraw();
                     return;
@@ -615,6 +698,7 @@ impl App {
                 match event_loop.create_window(attributes) {
                     Ok(window) => {
                         platform::prompt_created(&window);
+                        platform::prompt_input(&window, local_ack);
                         let (surface, error) = Surface::new(window, &mut self.gpu);
                         if let Some(error) = error {
                             self.controller.add_notice(error);
@@ -712,17 +796,29 @@ impl App {
         };
         match event {
             WindowEvent::Focused(focused) => {
+                #[cfg(target_os = "macos")]
+                eprintln!(
+                    "telescreen: {}: portal focused: {focused}",
+                    telescreen_platform_macos::clock()
+                );
                 self.controller.set_portal_focus(*focused);
                 self.hooks
                     .portal_focus(&window, *focused, self.controller.guarded());
-                if *focused {
-                    self.start_portal();
-                }
                 false
             }
-            WindowEvent::Occluded(true) if self.controller.guarded() => {
-                // FLOW-21: keep the portal in place during verification.
-                self.hooks.portal_focus(&window, false, true);
+            WindowEvent::Occluded(occluded) => {
+                #[cfg(target_os = "macos")]
+                eprintln!(
+                    "telescreen: {}: portal occluded: {occluded}",
+                    telescreen_platform_macos::clock()
+                );
+                if self.hooks.reports_portal_visibility() {
+                    self.controller.set_portal_visible(!occluded);
+                }
+                if *occluded && self.controller.guarded() {
+                    // FLOW-21: keep the portal in place during verification.
+                    self.hooks.portal_focus(&window, false, true);
+                }
                 false
             }
             WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
@@ -730,7 +826,6 @@ impl App {
                     self.controller.portal_left_fullscreen();
                 }
                 self.portal_monitor_changed(&window);
-                self.start_portal();
                 false
             }
             WindowEvent::CloseRequested => {
@@ -813,6 +908,43 @@ impl App {
                 event_loop.exit();
                 debug::ok_response()
             }
+            Request::Menu { show } => {
+                #[cfg(target_os = "macos")]
+                if let Some(native) = &self.native {
+                    match show {
+                        Some(true) => native.show_menu(),
+                        Some(false) => native.hide_menu(),
+                        None => {}
+                    }
+                    return serde_json::json!({
+                        "ok": true,
+                        "visible": native.menu_visible(),
+                        "frame": native.menu_frame(),
+                        "menu": self.controller.menu_screen(),
+                    })
+                    .to_string();
+                }
+                let _ = show;
+                serde_json::json!({"ok": true, "menu": self.controller.menu_screen()}).to_string()
+            }
+            Request::MainWindow { show } => {
+                #[cfg(target_os = "macos")]
+                if let Some(native) = &self.native {
+                    match show {
+                        Some(true) => native.show_main_window(),
+                        Some(false) => native.close_main_window(),
+                        None => {}
+                    }
+                    return serde_json::json!({
+                        "ok": true,
+                        "visible": native.main_window_visible(),
+                        "dock_icon": native.dock_icon_visible(),
+                    })
+                    .to_string();
+                }
+                let _ = show;
+                debug::error_response("no native main window")
+            }
         }
     }
 }
@@ -867,21 +999,20 @@ impl ApplicationHandler<UserEvent> for App {
         if self.control.is_some() {
             return;
         }
-        let attributes = platform::window_attributes(Window::default_attributes())
-            .with_title("Telescreen")
-            .with_inner_size(LogicalSize::new(560.0, 520.0));
-        match event_loop.create_window(attributes) {
-            Ok(window) => {
-                let (surface, error) = Surface::new(window, &mut self.gpu);
-                if let Some(error) = error {
-                    eprintln!("telescreen: {error}");
-                }
-                self.control = Some(surface);
+        // macOS: the native main window replaces the egui control window (UI-13).
+        #[cfg(target_os = "macos")]
+        if self.native.is_none() {
+            self.start_native_ui();
+            match &self.native {
+                Some(native) => native.show_main_window(),
+                None => event_loop.exit(),
             }
-            Err(e) => {
-                eprintln!("telescreen: cannot open the window: {e}");
-                event_loop.exit();
-            }
+            self.sync(event_loop);
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.start_native_ui();
+            self.open_control_window(event_loop);
         }
     }
 
@@ -930,6 +1061,8 @@ impl ApplicationHandler<UserEvent> for App {
                 let response = self.debug_request(event_loop, request);
                 let _ = reply.send(response);
             }
+            #[cfg(target_os = "macos")]
+            UserEvent::Ui(event) => self.ui_event(event_loop, event),
         }
         self.sync(event_loop);
     }
@@ -983,7 +1116,6 @@ impl ApplicationHandler<UserEvent> for App {
         if now.duration_since(self.last_display_check) >= DISPLAY_CHECK {
             self.last_display_check = now;
             self.controller.displays_changed();
-            self.start_portal();
             self.sync(event_loop);
         }
         event_loop.set_control_flow(ControlFlow::WaitUntil(now + TICK));
@@ -1055,11 +1187,16 @@ pub(crate) struct Parts {
 
 /// Writes a network event to stderr for diagnostics. It does not write input
 /// events, clipboard text, or pointer datagrams: they can contain private text.
+/// It does not write `PortalCursor` either: it comes with each pointer motion.
 fn log_net_event(event: &NetEvent) {
     match event {
         NetEvent::Pointer { .. } => {}
         NetEvent::Message {
-            message: Message::Heartbeat | Message::Input { .. } | Message::ClipboardText { .. },
+            message:
+                Message::Heartbeat
+                | Message::Input { .. }
+                | Message::ClipboardText { .. }
+                | Message::PortalCursor { .. },
             ..
         } => {}
         NetEvent::Message { peer, message } => eprintln!("telescreen: from {peer}: {message:?}"),
@@ -1084,4 +1221,15 @@ fn log_job(output: &JobOutput) {
             eprintln!("telescreen: handoff: {result:?} {error:?}")
         }
     }
+}
+
+/// The Core Graphics display id of a macOS display token (`cg-<id>`).
+#[cfg(target_os = "macos")]
+fn cg_ids(token: &DisplayToken) -> Vec<u32> {
+    token
+        .0
+        .strip_prefix("cg-")
+        .and_then(|id| id.parse().ok())
+        .into_iter()
+        .collect()
 }

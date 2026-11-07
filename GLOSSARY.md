@@ -62,6 +62,14 @@ _Avoid_: confirmation, approval
 The built-in verifier: the message on the switched display, with the hint, that asks for an acknowledgement.
 _Avoid_: dialog, popup
 
+**Attach**:
+A session for a device that already shows the target, with no handoff steps. The target still verifies.
+_Avoid_: connect, join, takeover
+
+**Control request**:
+A message from a peer that asks a different peer to attach to it as the source, for one device.
+_Avoid_: invite, remote control request
+
 **Device state**:
 What the destination knows about a device after a handoff: confirmed, unverified, or unknown.
 _Avoid_: video input state
@@ -75,6 +83,14 @@ _Avoid_: tip, note
 **Portal**:
 The fullscreen window on the source that stands for the target. While the pointer is in the portal, the source forwards its input.
 _Avoid_: viewer, remote window
+
+**Menu**:
+The small panel that lists the sessions, the displays, and the actions. The status item, the Control Center button, and the Plasma applet open it.
+_Avoid_: popover, tray menu (for the general concept)
+
+**Main window**:
+The window that opens when the user starts Telescreen. It shows the content of the menu, the computers, and the notices. It replaces the control window.
+_Avoid_: hub (in code and docs), dashboard
 
 **Session**:
 The authenticated relation between one source and one target for one device, from the lease grant to its end.

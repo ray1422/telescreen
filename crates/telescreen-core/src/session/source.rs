@@ -57,6 +57,12 @@ pub struct SourceSession {
     video: VideoInput,
     ack_wanted: bool,
     keyboard_in_portal: bool,
+    /// The target knows that the portal is on screen (FLOW-26).
+    portal_shown: bool,
+    /// The last cursor position that the target got while the portal is hidden.
+    portal_cursor: Option<Normalized>,
+    /// An attach runs no handoff steps (ACT-3).
+    attach: bool,
     held: HeldInputs,
     seq: u64,
     /// The position of the last pointer datagram (NET-2).
@@ -80,12 +86,29 @@ impl SourceSession {
             video: VideoInput::Unchanged,
             ack_wanted: false,
             keyboard_in_portal: true,
+            portal_shown: true,
+            portal_cursor: None,
+            attach: false,
             held: HeldInputs::default(),
             seq: 0,
             last_pointer: None,
             first_pointer_at: None,
         };
         (source, actions)
+    }
+
+    /// Starts an attach to `target` for `device` (ACT-3): a session with no
+    /// handoff steps. Returns `[Send(RequestSession { device })]`, as `start`.
+    /// After `SessionGranted`, it sends `HandoffDone` at once (ACT-6).
+    pub fn attach(target: ComputerId, device: DeviceId) -> (Self, Vec<SourceAction>) {
+        let (mut session, actions) = Self::start(target, device);
+        session.attach = true;
+        (session, actions)
+    }
+
+    /// True for a session that [`SourceSession::attach`] made.
+    pub fn is_attach(&self) -> bool {
+        self.attach
     }
 
     pub fn target(&self) -> &ComputerId {
@@ -123,6 +146,9 @@ impl SourceSession {
     /// `SessionGranted` for this device after the session finished returns
     /// `Send(End { session, reason: SourceClosed })`, so that the target releases
     /// the lease.
+    ///
+    /// The `SessionGranted` of an attach goes to `Verifying` with no steps (ACT-3).
+    /// A `Started` with no verification makes an attach `Unverified` (ACT-6).
     pub fn on_message(&mut self, message: &Message, _now: Instant) -> Vec<SourceAction> {
         match *message {
             Message::SessionGranted {
@@ -137,6 +163,10 @@ impl SourceSession {
                 }
                 if self.phase == SourcePhase::Requesting {
                     self.session = Some(session);
+                    if self.attach {
+                        self.phase = SourcePhase::Verifying;
+                        return vec![SourceAction::Send(Message::HandoffDone { session })];
+                    }
                     self.phase = SourcePhase::HandingOff;
                     return vec![SourceAction::RunHandoff];
                 }
@@ -158,9 +188,14 @@ impl SourceSession {
                 self.ack_wanted = false;
                 if verified {
                     self.video = VideoInput::Confirmed;
+                } else if self.attach {
+                    // The user switched the display by hand (ACT-6).
+                    self.video = VideoInput::Unverified;
                 }
                 self.last_pointer = None;
                 self.keyboard_in_portal = true;
+                self.portal_shown = true;
+                self.portal_cursor = None;
                 return vec![SourceAction::StartForwarding];
             }
             Message::End { session, reason } if self.session == Some(session) => {
@@ -225,6 +260,38 @@ impl SourceSession {
             Message::KeyboardAway { session }
         };
         vec![SourceAction::Send(message)]
+    }
+
+    /// The portal went off or on the screen (FLOW-26). The target shows a warning
+    /// while it is off. The portal starts on screen when forwarding starts.
+    pub fn on_portal_visible(&mut self, visible: bool) -> Vec<SourceAction> {
+        if self.phase != SourcePhase::Forwarding || self.portal_shown == visible {
+            return Vec::new();
+        }
+        let Some(session) = self.session else {
+            return Vec::new();
+        };
+        self.portal_shown = visible;
+        self.portal_cursor = None;
+        let message = if visible {
+            Message::PortalShown { session }
+        } else {
+            Message::PortalHidden { session }
+        };
+        vec![SourceAction::Send(message)]
+    }
+
+    /// The cursor of the source while the portal is not on screen (FLOW-26).
+    /// `None`: the cursor is out of the portal area. Sends only a change.
+    pub fn portal_cursor(&mut self, at: Option<Normalized>) -> Vec<SourceAction> {
+        if self.phase != SourcePhase::Forwarding || self.portal_shown || self.portal_cursor == at {
+            return Vec::new();
+        }
+        let Some(session) = self.session else {
+            return Vec::new();
+        };
+        self.portal_cursor = at;
+        vec![SourceAction::Send(Message::PortalCursor { session, at })]
     }
 
     /// Releases held input when the capture can no longer see up events (IN-13).

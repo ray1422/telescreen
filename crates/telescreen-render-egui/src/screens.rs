@@ -3,8 +3,8 @@
 
 use telescreen_core::session::VideoInput;
 use telescreen_view::{
-    ControlScreen, Intent, Matching, PortalScreen, PromptScreen, SessionPhase, SetupIntent,
-    SetupScreen, VideoInputText,
+    ControlScreen, DisplayMatching, Intent, Matching, PortalScreen, PromptScreen, SessionPhase,
+    SetupIntent, SetupScreen, VideoInputText,
 };
 
 pub(crate) fn setup(ui: &mut egui::Ui, screen: &SetupScreen) -> Vec<SetupIntent> {
@@ -65,20 +65,105 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
         {
             intents.push(Intent::SetClipboard { on });
         }
+        if let Some(session) = &screen.session {
+            ui.horizontal(|ui| {
+                ui.label(format!("Controlling {}", session.target));
+                ui.label(phase_text(&session.phase));
+                if !matches!(session.phase, SessionPhase::Ended { .. }) {
+                    if ui.button("Hand back").clicked() {
+                        intents.push(Intent::SourceHandBack);
+                    }
+                    if ui.button("End session").clicked() {
+                        intents.push(Intent::EndSession);
+                    }
+                }
+            });
+        }
+        // ACT-1, ACT-5: each action names the display, the device, and the target.
         for display in &screen.displays {
             ui.push_id(&display.token, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(&display.name);
-                    if display.has_portal {
-                        if ui.button("Close portal").clicked() {
-                            intents.push(Intent::ClosePortal);
-                        }
-                    } else if ui.button("Open portal").clicked() {
-                        intents.push(Intent::OpenPortal {
+                    ui.heading(&display.name);
+                    // NET-10: dial the offline candidates of this display.
+                    let has_candidates = display.devices.iter().any(|d| !d.candidates.is_empty());
+                    if has_candidates
+                        && ui
+                            .add_enabled(display.can_refresh, egui::Button::new("Refresh"))
+                            .clicked()
+                    {
+                        intents.push(Intent::Refresh {
                             display: display.token.clone(),
                         });
                     }
                 });
+                match &display.matching {
+                    DisplayMatching::Evaluating => {
+                        ui.label("Checking this display…");
+                    }
+                    DisplayMatching::Failed { error } => {
+                        ui.label(error);
+                    }
+                    DisplayMatching::Done if display.devices.is_empty() => {
+                        ui.label("No device in the config matches this display.");
+                    }
+                    DisplayMatching::Done => {}
+                }
+                for device in &display.devices {
+                    ui.push_id(&device.device, |ui| {
+                        ui.label(&device.label);
+                        if device.candidates.is_empty() {
+                            ui.label("No handoff routes in the config");
+                        }
+                        for candidate in &device.candidates {
+                            ui.push_id(&candidate.target, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("{} ({})", candidate.label, candidate.status));
+                                    let actions = [
+                                        ("Switch & control", &candidate.switch_and_control),
+                                        ("Switch display only", &candidate.switch_display_only),
+                                        ("Control only", &candidate.control_only),
+                                    ];
+                                    for (index, (label, unavailable)) in
+                                        actions.into_iter().enumerate()
+                                    {
+                                        let button = ui
+                                            .add_enabled(
+                                                unavailable.is_none(),
+                                                egui::Button::new(label),
+                                            )
+                                            .on_disabled_hover_text(
+                                                unavailable.as_deref().unwrap_or(""),
+                                            );
+                                        if button.clicked() {
+                                            let (display, device, target) = (
+                                                display.token.clone(),
+                                                device.device.clone(),
+                                                candidate.target.clone(),
+                                            );
+                                            intents.push(match index {
+                                                0 => Intent::SwitchAndControl {
+                                                    display,
+                                                    device,
+                                                    target,
+                                                },
+                                                1 => Intent::SwitchDisplayOnly {
+                                                    display,
+                                                    device,
+                                                    target,
+                                                },
+                                                _ => Intent::ControlOnly {
+                                                    display,
+                                                    device,
+                                                    target,
+                                                },
+                                            });
+                                        }
+                                    }
+                                });
+                            });
+                        }
+                    });
+                }
             });
         }
         ui.heading("Devices");
@@ -131,108 +216,38 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
     intents
 }
 
+/// ACT-5: the portal shows no candidates and at most one status line.
 pub(crate) fn portal(ui: &mut egui::Ui, screen: &PortalScreen) -> Vec<Intent> {
-    let mut intents = Vec::new();
-    ui.scope(|ui| {
-        ui.style_mut().override_font_id = Some(egui::FontId::proportional(28.0));
-        ui.spacing_mut().interact_size.y = 56.0;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.label(egui::RichText::new(&screen.display).size(36.0));
-            match &screen.matching {
-                Matching::Evaluating => {
-                    ui.label("Checking this display…");
-                }
-                Matching::NoMatch => {
-                    ui.label("No device in the config matches this display.");
-                }
-                Matching::Ambiguous(choices) => {
-                    ui.label("More than one device matches. Select one:");
-                    for choice in choices {
-                        ui.push_id(&choice.alias, |ui| {
-                            if ui.button(&choice.label).clicked() {
-                                intents.push(Intent::SelectDevice {
-                                    alias: choice.alias.clone(),
-                                });
-                            }
-                        });
-                    }
-                }
-                Matching::Matched(choice) => {
-                    ui.label(&choice.label);
-                }
-                Matching::Failed(error) => {
-                    ui.label(error);
-                }
-            }
-            for candidate in &screen.candidates {
-                ui.push_id(&candidate.target, |ui| {
-                    if ui
-                        .add_enabled(
-                            candidate.unavailable.is_none(),
-                            egui::Button::new(&candidate.label),
-                        )
-                        .clicked()
-                    {
-                        intents.push(Intent::StartHandoff {
-                            target: candidate.target.clone(),
-                        });
-                    }
-                    if let Some(reason) = &candidate.unavailable {
-                        ui.label(reason);
-                    }
-                });
-            }
-            if screen.show_refresh
-                && ui
-                    .add_enabled(screen.can_refresh, egui::Button::new("Refresh"))
-                    .clicked()
-            {
-                intents.push(Intent::Refresh);
-            }
-            if let Some(session) = &screen.session {
-                ui.label(format!("Target: {}", session.target));
-                match &session.phase {
-                    SessionPhase::Requesting => {
-                        ui.label("Requesting a session…");
-                    }
-                    SessionPhase::HandingOff => {
-                        ui.label("Handing off…");
-                    }
-                    SessionPhase::Verifying => {
-                        ui.label("The target verifies the display.");
-                    }
-                    SessionPhase::WaitingForAck { key } => {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Press {key} or click here to take control of {}.",
-                                session.target
-                            ))
-                            .size(48.0),
-                        );
-                    }
-                    SessionPhase::Forwarding => {
-                        ui.label("Forwarding input.");
-                    }
-                    SessionPhase::Ended { reason } => {
-                        ui.label(format!("Session ended: {reason}."));
-                    }
-                }
-                ui.label(format!("Video input: {}", session.video_input.text()));
-                if !matches!(session.phase, SessionPhase::Ended { .. })
-                    && ui.button("End session").clicked()
-                {
-                    intents.push(Intent::EndSession);
-                }
-            }
-            if ui.button("Close portal").clicked() {
-                intents.push(Intent::ClosePortal);
-            }
-            if let Some(notice) = &screen.notice {
-                ui.label(notice);
-            }
-        });
+    let line = match (&screen.session, &screen.notice) {
+        (Some(session), _) => match &session.phase {
+            SessionPhase::WaitingForAck { key } => format!(
+                "Press {key} or click here to take control of {}.",
+                session.target
+            ),
+            phase => phase_text(phase),
+        },
+        (None, Some(notice)) => notice.clone(),
+        (None, None) => match &screen.matching {
+            Matching::Failed(error) => error.clone(),
+            _ => "Starting…".into(),
+        },
+    };
+    ui.add_space((ui.available_height() / 2.0 - 32.0).max(0.0));
+    ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new(line).size(48.0));
     });
-    intents
+    Vec::new()
+}
+
+fn phase_text(phase: &SessionPhase) -> String {
+    match phase {
+        SessionPhase::Requesting => "Requesting a session…".into(),
+        SessionPhase::HandingOff => "Handing off…".into(),
+        SessionPhase::Verifying => "The target verifies the display.".into(),
+        SessionPhase::WaitingForAck { key } => format!("Press {key} in the portal."),
+        SessionPhase::Forwarding => "Forwarding input.".into(),
+        SessionPhase::Ended { reason } => format!("Session ended: {reason}."),
+    }
 }
 
 pub(crate) fn prompt(ui: &mut egui::Ui, screen: &PromptScreen) {
@@ -269,7 +284,8 @@ mod tests {
     use super::*;
     use telescreen_core::{ids::SessionId, session::VideoInput};
     use telescreen_view::{
-        CandidateRow, DeviceChoice, DeviceRow, DiscoveryRow, DisplayRow, IncomingRow, SessionRow,
+        CandidateRow, DeviceChoice, DeviceRow, DiscoveryRow, IncomingRow, MenuCandidate,
+        MenuDevice, MenuDisplay, SessionRow,
     };
 
     fn assert_idle_frame(
@@ -325,17 +341,64 @@ mod tests {
                 computer: "This peer".into(),
                 fingerprint: "ab:cd:ef:01".into(),
                 displays: vec![
-                    DisplayRow {
+                    MenuDisplay {
                         token: "built-in".into(),
                         name: "Display".into(),
-                        has_portal: false,
+                        matching: DisplayMatching::Done,
+                        devices: Vec::new(),
+                        can_refresh: false,
                     },
-                    DisplayRow {
+                    MenuDisplay {
+                        token: "evaluating".into(),
+                        name: "Display".into(),
+                        matching: DisplayMatching::Evaluating,
+                        devices: Vec::new(),
+                        can_refresh: false,
+                    },
+                    MenuDisplay {
+                        token: "failed".into(),
+                        name: "Display".into(),
+                        matching: DisplayMatching::Failed {
+                            error: "no EDID".into(),
+                        },
+                        devices: Vec::new(),
+                        can_refresh: false,
+                    },
+                    MenuDisplay {
                         token: "shared".into(),
                         name: "Display".into(),
-                        has_portal: true,
+                        matching: DisplayMatching::Done,
+                        can_refresh: true,
+                        devices: vec![
+                            MenuDevice {
+                                device: "no-route".into(),
+                                alias: "Other".into(),
+                                label: "Other".into(),
+                                state: VideoInput::Unchanged,
+                                candidates: Vec::new(),
+                            },
+                            MenuDevice {
+                                device: "shared".into(),
+                                alias: "Monitor".into(),
+                                label: "Monitor".into(),
+                                state: VideoInput::Confirmed,
+                                candidates: vec![MenuCandidate {
+                                    target: "pc1".into(),
+                                    label: "Target peer".into(),
+                                    status: "offline".into(),
+                                    switch_and_control: Some("Target peer is offline".into()),
+                                    switch_display_only: None,
+                                    control_only: Some("Target peer is offline".into()),
+                                }],
+                            },
+                        ],
                     },
                 ],
+                session: Some(SessionRow {
+                    target: "Target peer".into(),
+                    phase: SessionPhase::Forwarding,
+                    video_input: VideoInput::Confirmed,
+                }),
                 devices: vec![
                     DeviceRow {
                         alias: "Monitor".into(),
@@ -479,6 +542,8 @@ mod tests {
                         confirm_key: "Return".into(),
                         text: text.clone(),
                         ack_wanted,
+                        portal_hidden: false,
+                        blank: false,
                     };
                     assert_idle_frame(&context, |ui| {
                         prompt(ui, &screen);

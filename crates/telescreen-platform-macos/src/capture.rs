@@ -21,7 +21,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
-use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::key_route::{InputRouter, Route};
 use telescreen_core::keys::{self, Key};
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
@@ -53,6 +53,11 @@ struct Shared {
     /// The portal bounds as f64 bits: x, y, width, height.
     portal: [AtomicU64; 4],
     /// The cursor is in the portal.
+    /// The portal is on screen (FLOW-26). While it is not, the portal area does
+    /// not count as the portal.
+    visible: AtomicBool,
+    /// The cursor is in the portal area while the portal is not on screen.
+    over_hidden: AtomicBool,
     entered: AtomicBool,
     /// The latest cursor position as f64 bits, for the merged `PointerMoved`.
     moved: [AtomicU64; 2],
@@ -105,6 +110,8 @@ impl MacCapture {
             guarded: AtomicBool::new(false),
             secure_input: AtomicBool::new(false),
             portal: Default::default(),
+            visible: AtomicBool::new(true),
+            over_hidden: AtomicBool::new(false),
             entered: AtomicBool::new(false),
             moved: Default::default(),
             move_queued: AtomicBool::new(false),
@@ -202,6 +209,13 @@ impl InputCapture for MacCapture {
         }
     }
 
+    fn set_portal_visible(&mut self, visible: bool) {
+        let s = &self.shared;
+        s.visible.store(visible, SeqCst);
+        let at = ffi::cursor_position();
+        s.cursor_at(Point { x: at.x, y: at.y });
+    }
+
     fn guard(&mut self, on: bool) -> Result<(), PlatformError> {
         let s = &self.shared;
         if on && s.mode.load(SeqCst) == OFF {
@@ -218,6 +232,8 @@ impl InputCapture for MacCapture {
         s.mode.store(OFF, SeqCst);
         s.guarded.store(false, SeqCst);
         s.entered.store(false, SeqCst);
+        s.visible.store(true, SeqCst);
+        s.over_hidden.store(false, SeqCst);
         let mut keys = s.lock_keys();
         keys.router = InputRouter::new();
         keys.modifiers.clear();
@@ -281,10 +297,20 @@ impl Shared {
         self.mode.load(SeqCst) == FORWARDING && self.entered.load(SeqCst)
     }
 
+    /// FLOW-26: while forwarding and the portal is not on screen, input in the
+    /// portal area goes to neither computer. Pointer motion still goes to macOS.
+    fn blocked_now(&self) -> bool {
+        self.mode.load(SeqCst) == FORWARDING && self.over_hidden.load(SeqCst)
+    }
+
     /// The cursor is at `at`: report a crossing of the portal edge (FLOW-14), and
     /// the position while forwarding in the portal.
     fn cursor_at(&self, at: Point) {
-        let inside = self.portal().contains(at);
+        let in_area = self.portal().contains(at);
+        let visible = self.visible.load(SeqCst);
+        let over_hidden = in_area && !visible;
+        let was_over_hidden = self.over_hidden.swap(over_hidden, SeqCst);
+        let inside = in_area && visible;
         if inside != self.entered.swap(inside, SeqCst) {
             self.push(if inside {
                 CapturedEvent::PointerEntered { at }
@@ -292,7 +318,10 @@ impl Shared {
                 CapturedEvent::PointerLeft
             });
         }
-        if inside && self.mode.load(SeqCst) == FORWARDING {
+        // FLOW-26: while the portal is hidden, the position in the portal area
+        // and the move out of it go to the warning on the target.
+        let report = inside || over_hidden || was_over_hidden;
+        if report && self.mode.load(SeqCst) == FORWARDING {
             self.moved[0].store(at.x.to_bits(), SeqCst);
             self.moved[1].store(at.y.to_bits(), SeqCst);
             if !self.move_queued.swap(true, SeqCst) {
@@ -471,7 +500,9 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
                 return keys.router.keyboard_in_portal();
             };
             let forwarded = route(shared, &mut keys, InputEvent::Key { key, down });
-            if forwarded && down && key == Key::ESC && safety_exit(&mut keys) {
+            // IN-8: count each Escape while forwarding, also when the key stays
+            // on macOS, for example while the portal has no focus (FLOW-26).
+            if forwarding && down && key == Key::ESC && safety_exit(&mut keys) {
                 shared.stop(CapturedEvent::SafetyExit);
             }
             forwarded
@@ -504,22 +535,47 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
                 },
             };
             match button {
+                // IN-17: a forwarded button does not reach the source.
                 Some(button) => {
-                    route(shared, &mut keys, InputEvent::Button { button, down });
-                    false
+                    route(shared, &mut keys, InputEvent::Button { button, down })
+                        || shared.blocked_now()
                 }
-                None => shared.forward_now(),
+                None => shared.forward_now() || shared.blocked_now(),
             }
         }
         ffi::SCROLL_WHEEL => {
             // Point deltas: positive is up or left on macOS; the wire is the opposite.
             let dy = -(field(ffi::FIELD_SCROLL_POINT_DELTA_1) as f32);
             let dx = -(field(ffi::FIELD_SCROLL_POINT_DELTA_2) as f32);
-            route(shared, &mut keys, InputEvent::Scroll { dx, dy })
+            let phase = scroll_phase(
+                field(ffi::FIELD_SCROLL_PHASE),
+                field(ffi::FIELD_MOMENTUM_PHASE),
+            );
+            route(shared, &mut keys, InputEvent::Scroll { dx, dy, phase }) || shared.blocked_now()
         }
         // Gestures (Space swipes, Mission Control), system-defined events, and all
         // other types: in the portal, suppress and do not forward (IN-10, ADR 0003).
-        _ => shared.forward_now(),
+        _ => shared.forward_now() || shared.blocked_now(),
+    }
+}
+
+/// The phase of a scroll from the trackpad fields (IN-18). A mouse wheel has
+/// neither phase. The gesture end is not the end of the scroll, because momentum
+/// can follow: with no momentum, the target ends the scroll after
+/// `SCROLL_IDLE_END`.
+fn scroll_phase(scroll: i64, momentum: i64) -> ScrollPhase {
+    // CGMomentumScrollPhase: 1 begin, 2 continue, 3 end.
+    match momentum {
+        1 | 2 => return ScrollPhase::Update,
+        3 => return ScrollPhase::End,
+        _ => {}
+    }
+    // CGScrollPhase: 1 began, 2 changed, 4 ended, 8 cancelled, 128 may begin.
+    match scroll {
+        0 => ScrollPhase::None,
+        1 => ScrollPhase::Begin,
+        8 => ScrollPhase::End,
+        _ => ScrollPhase::Update,
     }
 }
 
@@ -527,8 +583,8 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
 /// returns true to suppress it.
 fn route(shared: &Shared, keys: &mut KeyState, input: InputEvent) -> bool {
     let decision = keys.router.route(&input, shared.entered.load(SeqCst));
-    if let Some(focused) = decision.keyboard {
-        shared.keyboard_changed(focused);
+    if decision.focus_wanted {
+        shared.push(CapturedEvent::FocusWanted);
     }
     if decision.route == Route::Forward {
         shared.push(CapturedEvent::Input(input));
@@ -589,4 +645,26 @@ fn modifier_events(keys: &mut KeyState, code: i64, flags: u64) -> Vec<InputEvent
         _ => return Vec::new(),
     }
     vec![InputEvent::Key { key, down }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in18_the_scroll_ends_after_the_momentum() {
+        assert_eq!(scroll_phase(0, 0), ScrollPhase::None, "a mouse wheel");
+        assert_eq!(scroll_phase(128, 0), ScrollPhase::Update, "may begin");
+        assert_eq!(scroll_phase(1, 0), ScrollPhase::Begin);
+        assert_eq!(scroll_phase(2, 0), ScrollPhase::Update);
+        assert_eq!(
+            scroll_phase(4, 0),
+            ScrollPhase::Update,
+            "momentum can follow"
+        );
+        assert_eq!(scroll_phase(0, 1), ScrollPhase::Update);
+        assert_eq!(scroll_phase(0, 2), ScrollPhase::Update);
+        assert_eq!(scroll_phase(0, 3), ScrollPhase::End);
+        assert_eq!(scroll_phase(8, 0), ScrollPhase::End, "cancelled");
+    }
 }

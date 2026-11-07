@@ -3,17 +3,20 @@
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 
-const BACKGROUND: u32 = 0xE010_1418;
+pub const BACKGROUND: u32 = 0xE010_1418;
+/// The warning of FLOW-26 lets the user see the applications below it.
+/// Premultiplied: each color channel is at most the alpha.
+pub const WARNING_BACKGROUND: u32 = 0x9008_0A0C;
 const TITLE_COLOR: (u8, u8, u8) = (0xFF, 0xFF, 0xFF);
 const HINT_COLOR: (u8, u8, u8) = (0xC8, 0xD0, 0xD8);
 
 /// Draws the prompt: the title in large text and the hint below it, both centered.
 /// Returns `width * height` premultiplied ARGB pixels.
-pub fn prompt(width: u32, height: u32, title: &str, hint: Option<&str>) -> Vec<u32> {
+pub fn draw(width: u32, height: u32, title: &str, hint: Option<&str>, background: u32) -> Vec<u32> {
     let mut canvas = Canvas {
         width,
         height,
-        pixels: vec![BACKGROUND; (width * height) as usize],
+        pixels: vec![background; (width * height) as usize],
     };
     let Ok(font) = FontRef::try_from_slice(epaint_default_fonts::UBUNTU_LIGHT) else {
         return canvas.pixels;
@@ -112,12 +115,13 @@ impl Canvas {
         }
         let index = (y as u32 * self.width + x as u32) as usize;
         let old = self.pixels[index];
+        // Premultiplied "over" with an opaque text color: the alpha mixes too.
         let mix = |shift: u32, new: u8| {
             let old = f32::from(((old >> shift) & 0xFF) as u8);
             (old + (f32::from(new) - old) * coverage.clamp(0.0, 1.0)) as u32
         };
         self.pixels[index] =
-            (old & 0xFF00_0000) | (mix(16, r) << 16) | (mix(8, g) << 8) | mix(0, b);
+            (mix(24, 0xFF) << 24) | (mix(16, r) << 16) | (mix(8, g) << 8) | mix(0, b);
     }
 }
 
@@ -125,11 +129,35 @@ impl Canvas {
 mod tests {
     #[test]
     fn draws_text_on_the_background() {
-        let pixels = super::prompt(400, 200, "Press Return on MacBook", Some("Copy: Ctrl+C"));
+        let pixels = super::draw(
+            400,
+            200,
+            "Press Return on MacBook",
+            Some("Copy: Ctrl+C"),
+            super::BACKGROUND,
+        );
         assert_eq!(pixels.len(), 400 * 200);
         assert!(
             pixels.iter().any(|&p| p != super::BACKGROUND),
             "no text was drawn"
         );
+    }
+
+    #[test]
+    fn flow26_the_warning_pixels_are_premultiplied() {
+        let pixels = super::draw(
+            400,
+            200,
+            "MacBook",
+            Some("Input"),
+            super::WARNING_BACKGROUND,
+        );
+        assert!(pixels.contains(&super::WARNING_BACKGROUND));
+        for p in pixels {
+            let alpha = p >> 24;
+            for shift in [16, 8, 0] {
+                assert!((p >> shift) & 0xFF <= alpha, "{p:08x}");
+            }
+        }
     }
 }

@@ -24,6 +24,7 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 - The app makes a view model from the session state and gives it to the renderer. The renderer returns intents. The app does not read the state of the renderer.
 - Window management (winit windows, fullscreen, window level, shortcut inhibit, input sources) is not part of the renderer. A different renderer uses the same windows.
 - The Linux layer-shell prompt draws the same prompt view model with its own small text renderer in `telescreen-platform-linux`.
+- ADR 0012 (user, 2026-11-06) replaces egui with a native UI on each platform: SwiftUI on macOS and Qt/QML on Linux. The view boundary stays. M20 changes the renderer contract and then removes egui and winit.
 
 ## Who does what
 
@@ -53,6 +54,8 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M14 | `pointer-smooth`: the pointer on the target feels slow and not smooth (user, 2026-10-27; docs/test-plan.md section 6) | The loss, the latency, and the datagram interval are measured on the hardware; a fix is decided with the user and passes the same measurement | done (2026-10-28; docs/test-plan.md section 6): no loss. Mac to Linux: AWDL on the Wi-Fi of the Mac; Wi-Fi channel 149 or AWDL off removes it; README.md has the troubleshooting steps. Linux to Mac: datagrams waited in the event queue of the main loop; the target now injects only the newest position, and all pointer queues are bounded (NET-2). NET-8 and NET-9 measure it. No prediction (user, 2026-10-28) |
 | M15 | `scroll-speed`: the scroll speed is adjustable (user, 2026-10-27) | `scroll-speed` in the computer section of the target (IN-14, user, 2026-11-04) | done |
 | M19 | `kde-scroll`: Chrome animates the scroll on KDE, thus the scroll feels slow (user, 2026-11-05) | Button scroll on KWin (IN-15, spike 5) | done; the user checked the pointer shape and the scroll feel with a real trackpad |
+| M20 | `ui-redesign` (v0.600.0): spec section 4.7, ADR 0012, ADR 0013 (user, 2026-11-06) | The steps of M20 are done, and the user accepts the UI on macOS and on KDE | spec and ADRs done (2026-11-06); mockups continue |
+| M21 | `focus-scroll`: in v0.5.0 the keys went to the target with no end after Mission Control, and one application did not scroll (user, 2026-11-07) | The native focus is the only keyboard focus state (FLOW-22); the target warns while the portal is not on screen, and shows the source cursor on the warning (FLOW-26); macOS suppresses forwarded buttons (IN-17); each forwarded scroll has an end (IN-18); AC-51 to AC-54 pass | code done (2026-11-07): tests pass on macOS and Linux; the hardware tests AC-51 to AC-54 are open |
 
 ### M16: first binary release
 
@@ -79,14 +82,58 @@ Each step is one commit or more. Claude writes the tests first; Codex implements
 | c | The driver runtime: `exec`, `command`, the search path | done (WIP on the `hand-back` branch) |
 | d | The verifier runtime (JSON lines, `prompt`) and the device state on the destination | done (WIP on the `hand-back` branch) |
 | e | Hand back on the wire and in the flows (HB-1 to HB-5, FLOW-17, FLOW-24) | done (WIP on the `hand-back` branch); FLOW-24 is tested with three controllers, step g adds a real third peer |
-| f | The status icons (UI-4): macOS `NSStatusItem`, Linux StatusNotifierItem | not started |
+| f | The status icons (UI-4): macOS `NSStatusItem`, Linux StatusNotifierItem | replaced by M20 (UI-9 to UI-11) |
 | g | The third peer for FLOW-24 (headless sway in a container) | not started |
+
+### M20 steps
+
+Order (user, 2026-11-07): the bug fixes come first. Do M21, then ACT-5 (the portal opens when a session starts and closes when it ends; done 2026-11-07: the UI has no "Open portal", and the portal shows one status line), then the update of the macOS UI to the current mockups (done 2026-11-07: the menu and the main window follow the canvas; "Add computer…" is disabled until the pairing of ADR 0014, and the gear button sends `open_settings`, which does nothing until UI-14), then step h (more than one portal), then the rest of step f1, f2, g, and i.
+
+The sequence can change after the spikes.
+
+| Step | Content | Status |
+| --- | --- | --- |
+| a | Spec section 4.7, ADR 0012, ADR 0013, the glossary | done (2026-11-06) |
+| b | Mockups: the menu, the main window, the settings, the KDE applet, the control request flow, the icon | done (2026-11-07) |
+| c | Spikes (ADR 0012, open points): the Wayland shortcut inhibit from a cxx-qt window on niri and KWin; `NSHostingView` and the C ABI with the Rust main loop | done (2026-11-07, spikes 6 and 7: KWin, nested niri, macOS); a supervised key test not run |
+| d | Core: "Switch display only", the attach, and the control request on the wire (ACT-1 to ACT-5), with acceptance tests | done (2026-11-07): wire protocol 6, `SourceSession::attach`, and the new intents in the controller (`controller/actions.rs`); the current portal flow is not changed. Not tested on the hardware; no UI calls the intents yet (steps e to g) |
+| e | View models: the menu and the main window, stable row ids, a serializable form, and the push renderer contract | done (2026-11-07): `MenuScreen`, `MainScreen`, `Publisher` in `telescreen-view` (UI-18, JSON shape in `tests/json.rs`); `menu_screen`, `main_screen`, `evaluate_displays`, `set_trusted` in the controller (`controller/menu.rs`) |
+| f | macOS UI: Rust main loop, SwiftUI menu, status item, Control Center extension, main window, settings, lifecycle (UI-10, UI-13 to UI-16) | in progress: f1 (status item, menu, main window, reopen, Dock icon) done in `telescreen-ui-macos` (2026-11-07), checked with the bundle and the debug protocol, no clicks; winit still owns the run loop. f2 (2026-11-07): the Control Center button opens the menu through `telescreen://menu` (spike 8); `scripts/make-macos-app.sh` builds the extension. Not done: settings (UI-14), the single instance for a second CLI start, the on state of the button (UI-17). The custom SF Symbol is in the build; only a build with Xcode shows it |
+| g | Linux UI: Qt/QML through cxx-qt, the Plasma applet, the StatusNotifierItem fallback, the menu command, lifecycle (UI-11, UI-13 to UI-16) | not started |
+| h | More than one portal: one portal for each display (FLOW-2, FLOW-25). The controller keeps a portal for each display; the input capture watches more than one portal area and reports the portal of each event; the macOS and Linux captures and the portal windows follow | not started |
+| i | Native portal windows; remove egui and winit | not started |
+
+### M20 implementation notes
+
+- From spikes 6 and 7 (2026-11-07):
+  - A view model push is a full snapshot. SwiftUI skips old snapshots in a burst.
+  - Rust sets the frame of each window. The SwiftUI view reports its size with `onGeometryChange`.
+  - Menu panels need a subclass with `canBecomeKeyWindow = true`, else SwiftUI draws inactive controls.
+  - Linux: drop all Wayland objects of Telescreen before `QGuiApplication`. Dispatch the private event queue from a Qt timer or a socket notifier.
+  - Linux: the `wl_surface` comes from a private Qt API. Get it again for each inhibit request.
+- From step d (2026-11-07):
+  - Step e: the menu view model must show "Waiting for <peer>" for each control request that this peer sent. The controller has it only as `control_request_pending()`.
+  - Steps f and g: call `evaluate_displays` at the start; call `set_trusted` with the local trust list (else every computer shows "Not trusted"); push `menu_screen` and `main_screen` through a `Publisher` after each event.
+  - Steps f and g: the evaluation at the start runs the `portal-match` helpers of each display and dials the candidates. On macOS, a new install then shows the Local Network question at the start, not at the first portal.
+  - Step f: a `rustc-link-arg` of a dependency does not reach the final binary. `telescreen-app/build.rs` sets the rpath to the Swift runtime. Without it, the bundle does not start ("Library not loaded: @rpath/libswift_Concurrency.dylib"), and macOS shows a dialog that tells the user to ask the developer.
+  - Step f2: `scripts/make-macos-control.sh` makes the App Intents metadata with the Xcode tool, or copies the hand-written fallback in `crates/telescreen-ui-macos/control/fallback/` with a warning (user, 2026-11-07; spike 8 has the arguments). CI and the release set `TELESCREEN_REQUIRE_XCODE=1`. CI tested both tool calls on 2026-11-07 (Xcode 26.6 with the macOS 26.5 SDK): `actool` needs the baseline and the capline of the S, M, and L scales in the symbol template, and the generated metadata has no macOS 27 availability entry with that SDK. The custom SF Symbol (`tools/make_symbol.py`, `control/Assets.xcassets`) needs `actool` the same way: with no Xcode, the button shows the system symbol "display"; CI and the release require `actool`. The on state needs a shared state between the app and the sandboxed extension (an app group or a different channel); not decided.
+  - Step f: the status glyph is the UI-17 glyph of the canvas (2026-11-07). `tools/make_icon.py` renders it with headless Chrome to `assets/macos/glyph-*.tiff`. `tools/make_symbol.py` writes the same glyph (the "menu-open" state) as the custom SF Symbol of the Control Center button, with the stroke of the stand as an outline.
+  - Step f: on macOS the native main window replaces the egui control window. The start window (UI-8) and the verifier prompt (UI-5) stay egui until step i.
+  - Step h: `control_request` and `control_match_done` in `controller/actions.rs` refuse with `Busy` if any source session exists. Change them to check only the matching display (ACT-6).
+  - Step i: the verifier prompt window (UI-5) is egui too. Replace it before egui goes away.
+  - Step i: the window layer must call `take_portal_window_request` also after network events. A received control request sets the request in `on_net`. Without that call, no portal window opens on the receiving peer, and the user cannot acknowledge.
+
+- Corners (user, 2026-11-06): use continuous (G2) corners on all surfaces that Telescreen draws, on both platforms. The HTML mockups use circular corners; do not copy that.
+  - macOS: SwiftUI gives G2 corners with `RoundedRectangle(cornerRadius:style: .continuous)`.
+  - Qt Quick: `Rectangle.radius` draws circular arcs (G1). Make one shared QML component for a G2 rounded rectangle, for example a `QtQuick.Shapes` path with cubic corner curves, or a `ShaderEffect` with a superellipse distance function. Use it for all cards, buttons, and fields. Do not use `Rectangle.radius` directly.
+  - Qt Quick: to clip child items to a G2 shape, use a layer mask (for example `MultiEffect` with `maskSource`). This costs one more render pass, so use it only where a child must be clipped.
+  - KDE: the Plasma theme draws the frame of the applet popup. Telescreen cannot change those corners. G2 applies only to the items inside the popup.
 
 ## Not scheduled
 
-The user plans a new design of the UI later (user, 2026-10-27). Until then, do not spend time on UI details. The pairing UI is not scheduled:
+The pairing UI is not scheduled. M20 makes the main window where it can go later:
 
-- A pairing UI. Until then, pairing stays manual with `telescreen trust` (ADR 0004).
+- A pairing UI: spec section 4.8 (PAIR-1 to PAIR-8, ADR 0014, user, 2026-11-07), in a v0.6XX.0 version. Until then, pairing stays manual with `telescreen trust` (ADR 0004).
 - A question on the first use of the clipboard sync (user, 2026-10-27). Until then, the switch starts on (CLIP-1).
 - Touchpad gestures to a Linux target (user, 2026-10-27). niri gets gestures only from libinput, which reads finger positions from a touchpad device. Thus the target needs a uinput multitouch touchpad, and the macOS source must read the finger positions (for example `NSTouch` in the portal). Telescreen can change the finger count, because niri cannot (niri: three fingers switch workspaces and scroll columns, four fingers toggle the overview). Example: macOS four fingers become Linux three fingers, and the macOS three-finger drag stays a left-button drag. Conflict: macOS uses four-finger swipes for Spaces, and a Space change makes the portal leave fullscreen (UI-3). Alternative: map a gesture to a shortcut, with no tracking of the fingers.
 - Screen edges on KWin (user, 2026-11-04). The top-left hot corner does not open the overview through the uinput pointer, (issue 1). Probable cause, from the KWin 6.7 source (`Edge::check`): the first motion on an edge pushes the cursor back by 1 pixel, and the action needs a second motion on the edge 75 to 350 ms later. The source does not send a repeated position (NET-2). The kernel also does not send a repeated absolute axis value to the compositor. Thus the second motion does not arrive. Not confirmed with a measurement. Possible fix: the source sends a repeated position when it is on an edge of the portal, and the uinput pointer changes the value by 1 axis unit on each repeat.

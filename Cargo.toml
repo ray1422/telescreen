@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.501.0"
 edition = "2024"
 rust-version = "1.88"
 license = "BSD-3-Clause"
@@ -17,6 +17,7 @@ telescreen-view = { path = "crates/telescreen-view" }
 telescreen-render-egui = { path = "crates/telescreen-render-egui" }
 telescreen-platform-macos = { path = "crates/telescreen-platform-macos" }
 telescreen-platform-linux = { path = "crates/telescreen-platform-linux" }
+telescreen-ui-macos = { path = "crates/telescreen-ui-macos" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

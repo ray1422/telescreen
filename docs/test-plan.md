@@ -49,8 +49,8 @@ Negative test (AC-21): before the trust step, start both apps (step 2). Each con
 
 | Step | Action | Expected | AC |
 | --- | --- | --- | --- |
-| 3.1 | Mac control window on the built-in display: "Open portal" on the built-in display | Matching says no device matches. No candidate | AC-9 |
-| 3.2 | The control window stays on the built-in display: "Open portal" on the LG | A fullscreen Space on the LG. No menu bar or title bar at the top edge. Input source is ABC while it has the focus. "LG" matched. Candidate "Linux" available after the connection | UI-1, UI-2, FLOW-2, FLOW-3 |
+| 3.1 | Mac main window: the built-in display | The display says no device matches. No candidate | AC-9 |
+| 3.2 | The main window stays on the built-in display: "Switch & control" for "Linux" on the LG | A fullscreen Space on the LG. No menu bar or title bar at the top edge. Input source is ABC while it has the focus. "LG" matched. Candidate "Linux" available after the connection | UI-1, UI-2, FLOW-2, FLOW-3 |
 | 3.3 | Click "Linux" (switches the display; Linux gets the prompt) | The LG shows Linux. The prompt with the hint shows on the LG. The Mac portal says "Press Return or click". The click did not go to Linux | AC-3, AC-4 |
 | 3.4 | Before Return: three-finger swipe, Command+Tab, and a click on the built-in display | The portal stays fullscreen and keeps the focus | AC-26 |
 | 3.5 | Focus the portal, press Return | The prompt goes away. The Mac cursor stays free. Pointer and keys control Linux. Video input "confirmed". Return did not go to Linux | AC-5 |

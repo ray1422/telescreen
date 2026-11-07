@@ -16,7 +16,7 @@ use telescreen_core::clipboard::{ClipboardChange, ClipboardItem};
 use telescreen_core::config::{Config, Driver, Operation};
 use telescreen_core::driver::{OperationKind, Outcome, Request};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken};
-use telescreen_core::input::InputEvent;
+use telescreen_core::input::{InputEvent, ScrollPhase};
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{
     Capability, CapturedEvent, Clipboard, Discovery, DisplayInfo, Displays, FocusHolder, Injector,
@@ -108,6 +108,8 @@ struct Log {
     pointer: Vec<Normalized>,
     prompts: Vec<String>,
     prompt_visible: bool,
+    /// The cursor positions on the prompt (FLOW-26).
+    prompt_cursor: Vec<Option<Normalized>>,
     /// Peers of each `NetCommand::Close`.
     closed: Vec<ComputerId>,
     /// The number of `NetPort::shutdown` calls.
@@ -182,6 +184,13 @@ impl InputCapture for Capture {
         let text = if on { "guard on" } else { "guard off" };
         self.0.borrow_mut().capture.push(text.into());
         Ok(())
+    }
+    fn set_portal_visible(&mut self, visible: bool) {
+        let text = if visible { "visible" } else { "hidden" };
+        self.0.borrow_mut().capture.push(text.into());
+    }
+    fn set_portal_focus(&mut self, focused: bool) {
+        self.0.borrow_mut().capture.push(format!("focus {focused}"));
     }
 }
 
@@ -306,6 +315,9 @@ impl PromptPresenter for Prompt {
     }
     fn hide(&mut self, _: PromptId) {
         self.0.borrow_mut().prompt_visible = false;
+    }
+    fn cursor(&mut self, _: PromptId, at: Option<Normalized>) {
+        self.0.borrow_mut().prompt_cursor.push(at);
     }
 }
 
@@ -549,11 +561,15 @@ impl World {
                             request,
                             ..
                         } => {
-                            // Only the external display matches.
+                            // Only the external display matches. "broken" fails.
                             let token = request.portal.unwrap().display_token.unwrap();
-                            JobOutput::Operation(Ok(Outcome::Matched(
-                                token.0 == "lg" || token.0 == "HDMI-A-2",
-                            )))
+                            if token.0 == "broken" {
+                                JobOutput::Operation(Err("no EDID".into()))
+                            } else {
+                                JobOutput::Operation(Ok(Outcome::Matched(
+                                    token.0 == "lg" || token.0 == "HDMI-A-2",
+                                )))
+                            }
                         }
                         Job::Operation {
                             kind: OperationKind::InputTarget,
@@ -586,6 +602,16 @@ impl World {
 
     fn phase(&self) -> Option<SessionPhase> {
         Some(self.mac.controller.portal_screen()?.session?.phase)
+    }
+
+    /// ACT-5: the portal closed with its session, and a notice has the reason.
+    fn assert_ended(&self, reason: &str) {
+        assert!(!self.mac.controller.has_portal(), "ACT-5");
+        assert!(
+            has_notice(&self.mac, &format!("ended: {reason}")),
+            "{:?}",
+            self.mac.controller.control_screen().notices
+        );
     }
 
     /// Completes the portal match and delivers no network command.
@@ -641,6 +667,7 @@ fn in14_the_target_multiplies_a_scroll_by_its_speed() {
         .on_captured(CapturedEvent::Input(InputEvent::Scroll {
             dx: -2.0,
             dy: 8.0,
+            phase: ScrollPhase::None,
         }));
     w.mac
         .controller
@@ -648,7 +675,14 @@ fn in14_the_target_multiplies_a_scroll_by_its_speed() {
     w.pump();
     assert_eq!(
         w.pc1.log.borrow().injected,
-        [InputEvent::Scroll { dx: -1.0, dy: 4.0 }, key(30, true)]
+        [
+            InputEvent::Scroll {
+                dx: -1.0,
+                dy: 4.0,
+                phase: ScrollPhase::None
+            },
+            key(30, true)
+        ]
     );
 }
 
@@ -736,7 +770,7 @@ fn flow7_ac3_prompt_with_hint_on_target() {
     assert_eq!(video, VideoInput::Unverified);
     assert_eq!(
         w.mac.log.borrow().capture,
-        ["arm 3400", "guard on"],
+        ["arm 3400", "focus true", "guard on"],
         "no forwarding before the confirmation; only the guard (FLOW-21)"
     );
 }
@@ -761,7 +795,16 @@ fn flow10_ac5_forwarding_after_confirmation() {
     assert!(!w.pc1.log.borrow().prompt_visible, "the prompt goes away");
     assert_eq!(
         w.mac.log.borrow().capture,
-        ["arm 3400", "guard on", "guard off", "forward"]
+        // FLOW-22, FLOW-26: forwarding starts from the native portal state.
+        [
+            "arm 3400",
+            "focus true",
+            "guard on",
+            "guard off",
+            "forward",
+            "focus true",
+            "visible"
+        ]
     );
     let video = w
         .mac
@@ -922,7 +965,7 @@ fn flow14_ac11_leaving_the_portal_keeps_forwarding() {
     w.mac.controller.on_captured(CapturedEvent::PointerLeft);
     w.pump();
     assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
-    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "forward");
+    assert!(!w.mac.log.borrow().capture.contains(&"disarm".to_string()));
     // The keyboard is still in the portal, so the capture forwards the up (IN-3).
     w.mac
         .controller
@@ -974,6 +1017,159 @@ fn flow23_ac27_one_visible_keyboard_focus() {
         ]
     );
     assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+}
+
+#[test]
+fn flow22_a_click_in_the_portal_asks_for_the_native_focus() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.set_portal_focus(false);
+    assert!(!w.mac.controller.take_portal_focus_request());
+
+    // IN-17: macOS suppresses the click, so the window layer asks for the focus.
+    w.mac.controller.on_captured(CapturedEvent::FocusWanted);
+    assert!(w.mac.controller.take_portal_focus_request());
+    assert!(!w.mac.controller.take_portal_focus_request(), "once");
+
+    // The native focus comes before the window layer asks: no request.
+    w.mac.controller.on_captured(CapturedEvent::FocusWanted);
+    w.mac.controller.set_portal_focus(true);
+    assert!(!w.mac.controller.take_portal_focus_request());
+}
+
+#[test]
+fn flow22_act5_the_next_session_has_a_new_portal() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
+    w.pump();
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    w.mac.log.borrow_mut().capture.clear();
+    w.advance_to_confirmation();
+    // The new portal window gets the native focus (FLOW-22).
+    w.mac.controller.set_portal_focus(true);
+    w.advance_to_forwarding_from_confirmation();
+    let capture = w.mac.log.borrow().capture.clone();
+    assert!(capture.contains(&"focus true".to_string()), "{capture:?}");
+}
+
+#[test]
+fn flow26_ac51_the_target_warns_while_the_portal_is_hidden() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let shown = w.pc1.log.borrow().prompts.len();
+
+    // Mission Control opens on the Mac.
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    // The portal keeps the native focus, but the keys stay on the Mac.
+    assert!(
+        w.mac
+            .log
+            .borrow()
+            .capture
+            .ends_with(&["hidden".into(), "focus false".into()])
+    );
+    w.mac.controller.set_portal_focus(true);
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "focus false");
+    assert!(w.mac.controller.portal_hidden());
+    {
+        let log = w.pc1.log.borrow();
+        assert_eq!(
+            log.prompts[shown..],
+            ["MacBook does not show its portal | Input is paused"]
+        );
+        assert!(log.prompt_visible);
+    }
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    assert_eq!(w.pc1.log.borrow().prompts.len(), shown + 1, "no change");
+
+    w.mac.controller.set_portal_visible(true);
+    w.pump();
+    assert!(
+        w.mac
+            .log
+            .borrow()
+            .capture
+            .ends_with(&["visible".into(), "focus true".into()])
+    );
+    assert!(!w.mac.controller.portal_hidden());
+    assert!(!w.pc1.log.borrow().prompt_visible);
+}
+
+#[test]
+fn flow26_the_warning_shows_the_cursor_of_the_source() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    let datagrams = w.pc1.log.borrow().pointer.len();
+    let moved = |w: &mut World, x: f64| {
+        w.mac.controller.on_captured(CapturedEvent::PointerMoved {
+            at: Point { x, y: 500.0 },
+        });
+        w.pump();
+    };
+    moved(&mut w, 1699.0);
+    {
+        let log = w.pc1.log.borrow();
+        let at = log.prompt_cursor.last().unwrap().unwrap();
+        assert!((at.x - 1699.0 / 3399.0).abs() < 1e-4, "{at:?}");
+        assert_eq!(log.pointer.len(), datagrams, "the target pointer stays");
+    }
+    moved(&mut w, 1699.0);
+    assert_eq!(w.pc1.log.borrow().prompt_cursor.len(), 1, "no change");
+    // Out of the portal area: the cursor image goes away.
+    moved(&mut w, -100.0);
+    moved(&mut w, -200.0);
+    assert_eq!(w.pc1.log.borrow().prompt_cursor[1..], [None]);
+
+    moved(&mut w, 100.0);
+    w.mac.controller.set_portal_visible(true);
+    w.pump();
+    assert_eq!(*w.pc1.log.borrow().prompt_cursor.last().unwrap(), None);
+    let count = w.pc1.log.borrow().prompt_cursor.len();
+    moved(&mut w, 200.0);
+    assert_eq!(w.pc1.log.borrow().prompt_cursor.len(), count);
+    assert!(
+        w.pc1.log.borrow().pointer.len() > datagrams,
+        "forwarding again"
+    );
+}
+
+#[test]
+fn flow26_the_warning_goes_away_with_the_session() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    assert!(w.pc1.log.borrow().prompt_visible);
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
+    w.pump();
+    assert!(!w.pc1.log.borrow().prompt_visible);
+}
+
+#[test]
+fn flow26_a_portal_hidden_before_forwarding_warns_at_the_start() {
+    let mut w = World::new();
+    w.advance_to_confirmation();
+    w.mac.controller.set_portal_visible(false);
+    w.pump();
+    assert!(!w.mac.controller.portal_hidden(), "not forwarding yet");
+    w.mac.controller.set_portal_visible(true);
+    w.pump();
+    w.mac.controller.set_portal_visible(false);
+    w.advance_to_forwarding_from_confirmation();
+    assert!(w.mac.controller.portal_hidden());
+    assert!(
+        w.pc1
+            .log
+            .borrow()
+            .prompts
+            .iter()
+            .any(|p| p.starts_with("MacBook does not show its portal"))
+    );
 }
 
 #[test]
@@ -1047,21 +1243,15 @@ fn flow16_in8_the_safety_exit_ends_both_sides() {
         .on_captured(CapturedEvent::Input(key(29, true)));
     w.mac.controller.on_captured(CapturedEvent::SafetyExit);
     w.pump();
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "safety exit".into()
-        })
-    );
+    w.assert_ended("safety exit");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(29, false)));
     assert!(
         w.pc1.controller.control_screen().incoming.is_empty(),
         "the lease is released"
     );
-    // A new session can start: the lease is free.
-    w.mac.controller.start_handoff(ComputerId::from("pc1"));
-    w.pump();
+    // A new session can start in a new portal: the lease is free.
+    w.advance_to_confirmation();
     assert!(matches!(
         w.phase(),
         Some(SessionPhase::WaitingForAck { .. })
@@ -1077,15 +1267,18 @@ fn flow11_ac7_timeout_removes_prompt() {
         .tick(w.now + std::time::Duration::from_secs(61));
     w.pump();
     assert!(!w.pc1.log.borrow().prompt_visible);
-    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
-    assert_eq!(session.video_input, VideoInput::Unknown);
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert!(has_notice(&w.mac, "The display state is unknown."));
 }
 
 #[test]
 fn flow21_ac26_guard_from_handoff_to_confirmation() {
     let mut w = World::new();
     w.advance_to_confirmation();
-    assert_eq!(w.mac.log.borrow().capture, ["arm 3400", "guard on"]);
+    assert_eq!(
+        w.mac.log.borrow().capture,
+        ["arm 3400", "focus true", "guard on"]
+    );
     assert!(w.mac.controller.guarded());
 }
 
@@ -1128,12 +1321,7 @@ fn flow12_ac10_failed_handoff_does_not_reach_the_prompt() {
         w.pc1.controller.control_screen().incoming.is_empty(),
         "the target released the lease"
     );
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "the handoff failed".into()
-        })
-    );
+    w.assert_ended("the handoff failed");
 }
 
 #[test]
@@ -1148,12 +1336,7 @@ fn ac23_stop_this_session() {
     w.pc1.controller.on_intent(Intent::StopSession { session });
     w.pump();
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "the target stopped the session".into()
-        })
-    );
+    w.assert_ended("the target stopped the session");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert!(
         w.pc1.controller.portal_screen().is_none(),
@@ -1287,12 +1470,7 @@ fn ac18_target_exit_ends_the_session_and_closes() {
     w.pc1.controller.shutdown();
     w.pump();
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "disconnected on the target".into()
-        })
-    );
+    w.assert_ended("disconnected on the target");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert_eq!(w.pc1.log.borrow().closed, vec![ComputerId::from("mac")]);
     assert_eq!(w.pc1.log.borrow().net_shutdowns, 1);
@@ -1322,12 +1500,7 @@ fn ac18_peer_lost_releases_both_sides() {
     );
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(30, false)));
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
-    assert_eq!(
-        w.phase(),
-        Some(SessionPhase::Ended {
-            reason: "connection lost".into()
-        })
-    );
+    w.assert_ended("connection lost");
 }
 
 #[test]
@@ -1375,22 +1548,9 @@ fn flow4_ac8_portal_moves_to_other_display() {
         .controller
         .portal_display_changed(display("builtin", -1500.0, 1500.0));
     w.pump();
-    let screen = w.mac.controller.portal_screen().unwrap();
-    assert_eq!(
-        screen.matching,
-        Matching::NoMatch,
-        "portal-match ran again on the new display"
-    );
-    assert!(
-        screen.candidates.is_empty(),
-        "the old device binding does not apply"
-    );
-    assert_eq!(
-        screen.session.unwrap().phase,
-        SessionPhase::Ended {
-            reason: "the portal display is gone".into()
-        }
-    );
+    // The old device binding does not apply on the new display, so the
+    // session ends, and the portal closes with it (ACT-5).
+    w.assert_ended("the portal display is gone");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert!(w.pc1.controller.control_screen().incoming.is_empty());
 }
@@ -1809,9 +1969,8 @@ fn flow11_ac10_a_failed_verification_ends_the_session() {
         .controller
         .on_verifier_event(VerifierId(1), VerifierEvent::Failed("timeout".into()));
     w.pump();
-    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
-    assert!(matches!(session.phase, SessionPhase::Ended { .. }));
-    assert_eq!(session.video_input, VideoInput::Unknown);
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert!(has_notice(&w.mac, "The display state is unknown."));
     assert!(!w.mac.controller.guarded(), "the guard ends (FLOW-21)");
     assert!(w.pc1.controller.control_screen().incoming.is_empty());
 }
@@ -1969,7 +2128,7 @@ fn hb1_hb2_ac36_the_target_hands_back() {
         ]
     );
     assert!(w.pc1.controller.control_screen().incoming.is_empty());
-    assert!(matches!(w.phase(), Some(SessionPhase::Ended { .. })));
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     // VER-6: the device left pc1, so pc1 shows no state.
     assert_eq!(pc1_state(&w), VideoInput::Unchanged);
@@ -2307,7 +2466,9 @@ fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
         (screen.candidates[0].unavailable.clone(), screen.can_refresh)
     };
     assert_eq!(candidate(&w), (None, false), "connected");
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w), 0, "a connected candidate needs no dial");
 
     w.mac.controller.on_net(
@@ -2320,10 +2481,14 @@ fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
     assert_eq!(candidate(&w), (Some("offline".into()), true));
     assert_eq!(dials(&w), 0, "no automatic dial");
 
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w), 1);
     assert_eq!(candidate(&w), (Some("connecting".into()), false));
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w), 1, "one dial at a time");
 
     w.mac.controller.on_net(
@@ -2336,7 +2501,9 @@ fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
     assert_eq!(candidate(&w), (Some("offline".into()), true));
     w.mac.log.borrow_mut().net.clear();
 
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w), 1, "the user can try again");
     w.pump();
     assert_eq!(candidate(&w), (None, false));
@@ -2345,7 +2512,9 @@ fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
 #[test]
 fn net10_refresh_without_a_portal_does_not_dial() {
     let mut w = World::new();
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert!(w.mac.log.borrow().net.is_empty());
 }
 
@@ -2466,7 +2635,9 @@ fn net11_a_dial_has_all_hosts_in_sequence() {
         endpoint_of(config, PC1).hosts = vec!["a.test".into(), "b.test".into()];
     });
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(
         dials(&w),
         [vec![dial_target("a.test"), dial_target("b.test")]]
@@ -2477,7 +2648,9 @@ fn net11_a_dial_has_all_hosts_in_sequence() {
 fn net15_refresh_with_no_discovery_key_does_not_search() {
     let mut w = World::new();
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert!(discovery_calls(&w).is_empty());
     assert_eq!(status(&w), Some("connecting".into()));
 }
@@ -2515,13 +2688,17 @@ fn net15_a_portal_with_no_discovery_candidate_does_not_search() {
 fn net15_refresh_during_a_dial_starts_a_search() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac.log.borrow_mut().net.clear();
     w.mac.controller.tick(w.now + Duration::from_secs(31));
     assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
     assert_eq!(status(&w), Some("connecting".into()));
     assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert!(dials(&w).is_empty(), "one dial at a time");
     assert_eq!(discovery_calls(&w), ["search", "stop_search", "search"]);
 }
@@ -2530,7 +2707,9 @@ fn net15_refresh_during_a_dial_starts_a_search() {
 fn net10_refresh_is_shown_but_not_available_during_a_dial_with_no_discovery() {
     let mut w = World::new();
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     let screen = w.mac.controller.portal_screen().unwrap();
     assert!(screen.show_refresh);
     assert!(!screen.can_refresh);
@@ -2543,12 +2722,16 @@ fn net15_refresh_searches_for_30_seconds_and_the_candidate_shows_it() {
     assert_eq!(status(&w), Some("offline".into()));
     assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
 
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(discovery_calls(&w), ["search"]);
     assert!(dials(&w).is_empty(), "no host and no known address");
     assert_eq!(status(&w), Some("searching".into()));
     assert!(!w.mac.controller.portal_screen().unwrap().can_refresh);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(discovery_calls(&w), ["search"], "one search at a time");
 
     w.mac.controller.tick(w.now + Duration::from_secs(29));
@@ -2563,7 +2746,9 @@ fn net15_refresh_searches_for_30_seconds_and_the_candidate_shows_it() {
 fn net16_a_result_dials_the_found_address_first() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     fail_dial(&mut w);
     w.mac
         .controller
@@ -2579,7 +2764,9 @@ fn net16_a_result_dials_the_found_address_first() {
 fn net16_a_result_during_a_dial_joins_its_race() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac.log.borrow_mut().net.clear();
     w.mac
         .controller
@@ -2595,7 +2782,9 @@ fn net16_a_result_during_a_dial_joins_its_race() {
 fn net16_a_lost_connection_does_not_dial_again() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac
         .controller
         .on_discovered(ComputerId::from(PC1), vec![dial_target("192.168.0.9")]);
@@ -2622,7 +2811,9 @@ fn net16_a_new_result_replaces_the_previous_one_and_later_dials_use_it() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
     let pc1 = ComputerId::from(PC1);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     fail_dial(&mut w);
     w.mac
         .controller
@@ -2633,7 +2824,9 @@ fn net16_a_new_result_replaces_the_previous_one_and_later_dials_use_it() {
         .on_discovered(pc1, vec![dial_target("192.168.0.9")]);
     fail_dial(&mut w);
     w.mac.controller.tick(w.now + Duration::from_secs(31));
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(
         dials(&w),
         [vec![dial_target("192.168.0.9"), dial_target("pc1.test")]]
@@ -2667,7 +2860,9 @@ fn net16_a_result_that_is_not_an_offline_candidate_does_not_dial() {
 fn net15_closing_the_portal_stops_the_search() {
     let mut w = mdns_world(&[]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac.controller.close_portal(EndReason::SourceClosed);
     assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
 }
@@ -2677,7 +2872,9 @@ fn net12_ac48_a_search_error_gives_a_notice_and_the_dial_still_runs() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
     w.mac.log.borrow_mut().discovery_fails = true;
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w).len(), 1);
     assert_eq!(status(&w), Some("connecting".into()));
     assert!(
@@ -2694,7 +2891,9 @@ fn net12_ac48_a_search_error_gives_a_notice_and_the_dial_still_runs() {
 fn net12_a_search_that_stops_with_an_error_ends_the_searching_state() {
     let mut w = mdns_world(&[]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac.controller.on_discovery_failed("gone".into());
     assert_eq!(status(&w), Some("offline".into()));
     assert!(
@@ -2792,5 +2991,864 @@ fn net12_ac48_an_announce_error_gives_a_notice() {
             .notices
             .iter()
             .any(|n| n.contains("no responder"))
+    );
+}
+
+// ----- ACT-1 to ACT-6: the three actions and the control request -----
+
+fn lg() -> DisplayToken {
+    DisplayToken::from("lg")
+}
+
+fn shared() -> DeviceId {
+    DeviceId::from("shared-lg")
+}
+
+/// Connects the Mac and pc1 with no portal and no session.
+fn connect(w: &mut World) {
+    w.open_portal();
+    w.mac.controller.close_portal(EndReason::SourceClosed);
+    w.pump();
+    assert!(!w.mac.controller.has_portal());
+}
+
+fn act(w: &mut World, intent: Intent) {
+    w.mac.controller.on_intent(intent);
+    w.pump();
+}
+
+fn handoff_jobs(peer: &Peer) -> usize {
+    peer.log
+        .borrow()
+        .target
+        .iter()
+        .filter(|t| t.starts_with("handoff"))
+        .count()
+}
+
+fn armed(peer: &Peer) -> bool {
+    peer.log
+        .borrow()
+        .capture
+        .iter()
+        .any(|c| c.starts_with("arm"))
+}
+
+fn waiting_for_ack() -> Option<SessionPhase> {
+    Some(SessionPhase::WaitingForAck {
+        key: "Return".into(),
+    })
+}
+
+#[test]
+fn act1_act2_switch_display_only_runs_the_steps_with_no_session() {
+    let mut w = World::new();
+    connect(&mut w);
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(handoff_jobs(&w.mac), 1, "the steps of handoff.pc1");
+    assert!(!w.mac.controller.has_portal(), "ACT-6: no portal");
+    assert!(!armed(&w.mac), "ACT-6: no capture");
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    // The destination verifies, as after a hand back (ACT-2, VER-4).
+    assert!(w.pc1.controller.awaiting_local_ack());
+    assert_eq!(pc1_state(&w), VideoInput::Unverified);
+    assert!(w.pc1.controller.acknowledge_local());
+    assert_eq!(pc1_state(&w), VideoInput::Confirmed);
+    // VER-6: the device left the Mac.
+    assert_eq!(mac_state(&w), VideoInput::Unchanged);
+}
+
+#[test]
+fn act2_switch_display_only_to_a_destination_that_is_not_connected() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(
+        handoff_jobs(&w.mac),
+        1,
+        "ACT-1: no Telescreen on the destination is necessary"
+    );
+    assert!(!w.pc1.controller.awaiting_local_ack());
+    assert!(has_notice(&w.mac, "not verified"));
+    assert!(
+        !w.mac.log.borrow().closed.contains(&ComputerId::from("pc1")),
+        "no dial and no close"
+    );
+}
+
+#[test]
+fn act6_switch_display_only_needs_no_capture_permission() {
+    let mut w = World::new();
+    w.mac = peer_with(
+        "mac",
+        vec![display("lg", 0.0, 3400.0)],
+        InputCapabilities {
+            capture: Capability::Missing("grant Input Monitoring".into()),
+            suppress: Capability::Missing("grant Accessibility".into()),
+            inject: Capability::Available,
+        },
+    );
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(handoff_jobs(&w.mac), 1);
+}
+
+#[test]
+fn act6_switch_display_only_needs_a_route() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc2"),
+        },
+    );
+    assert_eq!(handoff_jobs(&w.mac), 0);
+    assert!(has_notice(&w.mac, "no handoff route"));
+}
+
+#[test]
+fn flow12_a_partial_switch_display_only_makes_the_device_unknown() {
+    let mut w = World::new();
+    w.handoff = HandoffResult::Failed { completed_steps: 1 };
+    connect(&mut w);
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(mac_state(&w), VideoInput::Unknown);
+    assert!(
+        !w.pc1.controller.awaiting_local_ack(),
+        "no DisplaySwitched after a failure"
+    );
+}
+
+#[test]
+fn act6_display_switched_from_a_peer_with_no_route_is_ignored() {
+    let mut w = World::new();
+    // pc2 has no handoff.mac route for the device.
+    w.mac.controller.on_net(
+        NetEvent::Message {
+            peer: ComputerId::from("pc2"),
+            message: Message::DisplaySwitched { device: shared() },
+        },
+        w.now,
+    );
+    w.pump();
+    assert!(!w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), VideoInput::Unchanged);
+}
+
+#[test]
+fn act6_flow6_display_switched_ends_the_sessions_of_the_device() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert!(matches!(w.phase(), Some(SessionPhase::Ended { .. }) | None));
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert!(w.pc1.controller.awaiting_local_ack());
+}
+
+#[test]
+fn act3_control_only_attaches_with_no_steps() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::ControlOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(w.mac.controller.take_portal_window_request(), Some(lg()));
+    assert_eq!(handoff_jobs(&w.mac), 0, "ACT-3: no steps");
+    assert_eq!(w.phase(), waiting_for_ack());
+    // FLOW-21: the portal guards the keyboard while it waits.
+    assert!(armed(&w.mac));
+    assert!(w.mac.log.borrow().capture.contains(&"guard on".to_string()));
+    w.advance_to_forwarding_from_confirmation();
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+    assert_eq!(pc1_state(&w), VideoInput::Confirmed);
+}
+
+#[test]
+fn act3_flow3_control_only_with_an_offline_target_does_nothing() {
+    let mut w = World::new();
+    // The dial does not connect: drop it.
+    w.mac.controller.on_intent(Intent::ControlOnly {
+        display: lg(),
+        device: shared(),
+        target: ComputerId::from("pc2"),
+    });
+    w.pump();
+    assert_eq!(w.phase(), None);
+    assert!(has_notice(&w.mac, "Cannot"));
+}
+
+#[test]
+fn act5_switch_and_control_opens_the_portal_and_closes_it_at_the_end() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::SwitchAndControl {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(w.mac.controller.take_portal_window_request(), Some(lg()));
+    assert_eq!(handoff_jobs(&w.mac), 1);
+    assert_eq!(w.phase(), waiting_for_ack());
+    w.advance_to_forwarding_from_confirmation();
+    act(&mut w, Intent::EndSession);
+    assert!(
+        !w.mac.controller.has_portal(),
+        "ACT-5: the portal exists only with its session"
+    );
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+}
+
+#[test]
+fn act5_a_refused_session_closes_the_portal() {
+    let mut w = world_with_pc1_verify(None);
+    w.pc1 = peer_full(
+        "pc1",
+        vec![display("HDMI-A-2", 0.0, 2048.0)],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+        false,
+    );
+    act(
+        &mut w,
+        Intent::ControlOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert!(!w.mac.controller.has_portal());
+    assert!(!w.mac.controller.control_screen().notices.is_empty());
+}
+
+#[test]
+fn act5_every_portal_closes_with_its_session() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    act(&mut w, Intent::EndSession);
+    assert!(!w.mac.controller.has_portal());
+    assert!(
+        w.mac.controller.control_screen().notices.is_empty(),
+        "no notice for an end on this computer"
+    );
+}
+
+#[test]
+fn act5_flow17_the_portal_of_control_from_here_closes_after_a_hand_back() {
+    // Hardware test 2026-11-07: the portal stayed after "Hand back".
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let session = w.pc1.controller.control_screen().incoming[0].session;
+    w.pc1
+        .controller
+        .on_intent(Intent::ControlFromHere { session });
+    w.pump();
+    assert!(w.pc1.controller.portal_screen().is_some());
+    assert!(w.pc1.controller.acknowledge());
+    w.pc1.controller.on_captured(CapturedEvent::PointerEntered {
+        at: Point { x: 10.0, y: 10.0 },
+    });
+    w.pump();
+    w.pc1.controller.on_intent(Intent::SourceHandBack);
+    w.pump();
+    assert!(!w.pc1.controller.has_portal(), "ACT-5");
+}
+
+#[test]
+fn act6_an_action_on_a_display_that_does_not_match_the_device() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::ControlOnly {
+            display: DisplayToken::from("builtin"),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(w.phase(), None);
+    assert!(!w.mac.controller.has_portal());
+    assert!(has_notice(&w.mac, "does not match"));
+}
+
+fn let_control(w: &mut World) {
+    w.pc1.controller.on_intent(Intent::LetControl {
+        peer: ComputerId::from("mac"),
+        device: shared(),
+    });
+    w.pump();
+}
+
+#[test]
+fn act4_a_control_request_makes_the_receiver_attach() {
+    let mut w = World::new();
+    let_control(&mut w);
+    // The Mac opens a portal on the matching display and attaches (ACT-4).
+    assert_eq!(w.mac.controller.take_portal_window_request(), Some(lg()));
+    assert_eq!(handoff_jobs(&w.mac), 0);
+    assert_eq!(w.phase(), waiting_for_ack());
+    assert!(
+        !w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared()),
+        "the attach request ends the wait"
+    );
+    // The prompt shows on pc1, the asking peer, and the Mac keyboard acknowledges.
+    assert!(w.pc1.log.borrow().prompt_visible);
+    w.advance_to_forwarding_from_confirmation();
+    assert_eq!(w.phase(), Some(SessionPhase::Forwarding));
+    assert_eq!(w.pc1.controller.control_screen().incoming.len(), 1);
+}
+
+#[test]
+fn act6_a_control_request_waits_15_seconds() {
+    let mut w = World::new();
+    w.pc1.controller.on_intent(Intent::LetControl {
+        peer: ComputerId::from("mac"),
+        device: shared(),
+    });
+    assert!(
+        w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared())
+    );
+    // The Mac never answers.
+    w.pc1.log.borrow_mut().net.clear();
+    w.now += Duration::from_secs(14);
+    w.pc1.controller.tick(w.now);
+    assert!(
+        w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared())
+    );
+    w.now += Duration::from_secs(2);
+    w.pc1.controller.tick(w.now);
+    assert!(
+        !w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared())
+    );
+    assert!(has_notice(&w.pc1, "did not answer"));
+}
+
+/// The asking peer got `ControlRefused` and shows a notice with this text.
+fn refused(w: &World, text: &str) {
+    assert!(
+        !w.pc1
+            .controller
+            .control_request_pending(&ComputerId::from("mac"), &shared())
+    );
+    assert!(
+        has_notice(&w.pc1, text),
+        "{:?}",
+        w.pc1.controller.control_screen().notices
+    );
+    assert!(!w.mac.controller.has_portal());
+}
+
+#[test]
+fn act6_a_control_request_with_no_capture_is_refused() {
+    let mut w = World::new();
+    w.mac = peer_with(
+        "mac",
+        vec![display("lg", 0.0, 3400.0)],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Missing("grant Accessibility".into()),
+            inject: Capability::Available,
+        },
+    );
+    let_control(&mut w);
+    refused(&w, "cannot capture");
+}
+
+#[test]
+fn act6_a_control_request_with_two_matching_displays_is_refused() {
+    let mut w = World::new();
+    w.mac = peer(
+        "mac",
+        vec![
+            display("lg", 0.0, 3400.0),
+            display("HDMI-A-2", 3400.0, 2048.0),
+        ],
+    );
+    let_control(&mut w);
+    refused(&w, "more than one display");
+}
+
+#[test]
+fn act6_a_control_request_with_no_matching_display_is_refused() {
+    let mut w = World::new();
+    w.mac = peer("mac", vec![display("builtin", -1500.0, 1500.0)]);
+    let_control(&mut w);
+    refused(&w, "no display");
+}
+
+#[test]
+fn act6_a_control_request_while_the_receiver_is_a_source_is_refused() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    let_control(&mut w);
+    assert!(has_notice(&w.pc1, "already controls"));
+    assert_eq!(
+        w.phase(),
+        Some(SessionPhase::Forwarding),
+        "the session stays"
+    );
+}
+
+#[test]
+fn act6_a_control_request_with_no_route_is_refused() {
+    let mut w = World::new();
+    w.extra.push(pc4());
+    // The Mac has no handoff.pc4 route for the device.
+    w.extra[0].controller.on_intent(Intent::LetControl {
+        peer: ComputerId::from("mac"),
+        device: shared(),
+    });
+    w.pump();
+    assert!(has_notice(&w.extra[0], "no route"));
+    assert!(!w.mac.controller.has_portal());
+}
+
+#[test]
+fn act6_a_control_request_for_an_unknown_device_is_refused() {
+    let mut w = World::new();
+    w.mac.controller.on_net(
+        NetEvent::Message {
+            peer: ComputerId::from("pc1"),
+            message: Message::ControlRequest {
+                device: DeviceId::from("nope"),
+            },
+        },
+        w.now,
+    );
+    let sent = w.mac.log.borrow().net.iter().any(|c| {
+        matches!(
+            c,
+            NetCommand::Send {
+                message: Message::ControlRefused {
+                    reason: telescreen_core::wire::ControlRefuseReason::UnknownDevice,
+                    ..
+                },
+                ..
+            }
+        )
+    });
+    assert!(sent);
+}
+
+#[test]
+fn act6_ac9_a_portal_match_error_refuses_the_control_request() {
+    let mut w = World::new();
+    w.mac = peer(
+        "mac",
+        vec![
+            display("broken", -1500.0, 1500.0),
+            display("lg", 0.0, 3400.0),
+        ],
+    );
+    let_control(&mut w);
+    refused(&w, "portal-match failed");
+}
+
+#[test]
+fn act6_an_action_dials_when_the_display_matches_two_devices() {
+    let mut w = world_with(|config| {
+        let mac = config.computers.get_mut(&ComputerId::from("mac")).unwrap();
+        let usb: telescreen_core::config::Device = serde_json::from_value(json!({
+            "id": "usb-switch",
+            "portal-match": {"driver": "command", "command": ["/bin/match"]}
+        }))
+        .unwrap();
+        mac.devices.insert("Usb".into(), usb);
+    });
+    act(
+        &mut w,
+        Intent::ControlOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert_eq!(w.phase(), waiting_for_ack());
+}
+
+#[test]
+fn act4_in8_the_safety_exit_ends_the_wait_of_a_control_request() {
+    let mut w = World::new();
+    let_control(&mut w);
+    assert_eq!(w.phase(), waiting_for_ack());
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
+    w.pump();
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+    assert!(!w.pc1.log.borrow().prompt_visible);
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+}
+
+#[test]
+fn act4_ver5_the_prompt_timeout_ends_the_wait_of_a_control_request() {
+    let mut w = World::new();
+    let_control(&mut w);
+    w.pc1.controller.tick(w.now + Duration::from_secs(61));
+    w.pump();
+    assert!(!w.pc1.log.borrow().prompt_visible);
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+}
+
+// ----- UI-18: the menu view model -----
+
+fn evaluated() -> World {
+    let mut w = World::new();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    w
+}
+
+fn lg_row(peer: &Peer) -> telescreen_view::MenuDisplay {
+    peer.controller
+        .menu_screen()
+        .displays
+        .into_iter()
+        .find(|d| d.token == lg())
+        .expect("a row for the LG display")
+}
+
+fn pc1_candidate(peer: &Peer) -> telescreen_view::MenuCandidate {
+    let row = lg_row(peer);
+    assert_eq!(row.devices.len(), 1);
+    row.devices[0]
+        .candidates
+        .iter()
+        .find(|c| c.target == ComputerId::from("pc1"))
+        .cloned()
+        .expect("pc1 is a candidate")
+}
+
+#[test]
+fn ui18_no_display_rows_before_the_first_evaluation() {
+    let w = World::new();
+    assert!(w.mac.controller.menu_screen().displays.is_empty());
+    assert!(
+        w.mac.log.borrow().jobs.is_empty(),
+        "no portal-match at the start"
+    );
+}
+
+#[test]
+fn ui18_each_display_shows_its_matching_devices_and_candidates() {
+    let w = evaluated();
+    let menu = w.mac.controller.menu_screen();
+    let tokens: Vec<_> = menu.displays.iter().map(|d| d.token.0.as_str()).collect();
+    assert_eq!(tokens, ["builtin", "lg"], "stable ids: the display tokens");
+    let builtin = &menu.displays[0];
+    assert_eq!(builtin.matching, telescreen_view::DisplayMatching::Done);
+    assert!(builtin.devices.is_empty());
+    let lg = lg_row(&w.mac);
+    assert_eq!(lg.devices[0].device, shared());
+    assert_eq!(lg.devices[0].alias, "Desktop");
+    // NET-10: the evaluation dialed the candidate.
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.label, "Linux");
+    assert_eq!(candidate.status, "online");
+    assert_eq!(candidate.switch_and_control, None);
+    assert_eq!(candidate.switch_display_only, None);
+    assert_eq!(candidate.control_only, None);
+}
+
+#[test]
+fn ui18_an_offline_target_leaves_only_switch_display_only() {
+    let mut w = world_with(|config| endpoint_of(config, "pc1").hosts.clear());
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.status, "offline");
+    assert_eq!(candidate.switch_and_control.as_deref(), Some("offline"));
+    assert_eq!(candidate.control_only.as_deref(), Some("offline"));
+    assert_eq!(candidate.switch_display_only, None, "ACT-6");
+}
+
+#[test]
+fn ui18_missing_capture_leaves_only_switch_display_only() {
+    let mut w = World::new();
+    w.mac = peer_with(
+        "mac",
+        vec![display("lg", 0.0, 3400.0)],
+        InputCapabilities {
+            capture: Capability::Missing("grant Input Monitoring".into()),
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+    );
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    let candidate = pc1_candidate(&w.mac);
+    assert!(
+        candidate
+            .switch_and_control
+            .unwrap()
+            .contains("input capture")
+    );
+    assert!(candidate.control_only.unwrap().contains("input capture"));
+    assert_eq!(candidate.switch_display_only, None);
+}
+
+#[test]
+fn ui18_a_stale_portal_match_result_is_dropped() {
+    let mut w = World::new();
+    w.mac.controller.evaluate_displays();
+    // The first job is the built-in display. Keep it, and evaluate again.
+    let (old, _) = w.mac.log.borrow_mut().jobs.pop_front().unwrap();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    w.mac
+        .controller
+        .on_job_done(old, JobOutput::Operation(Ok(Outcome::Matched(true))));
+    let menu = w.mac.controller.menu_screen();
+    assert!(
+        menu.displays[0].devices.is_empty(),
+        "the old result has no effect"
+    );
+}
+
+#[test]
+fn net10_ui18_refresh_of_a_display_dials_its_offline_candidates() {
+    let mut w = evaluated();
+    let pc1 = ComputerId::from("pc1");
+    let dials = |w: &World| {
+        w.mac
+            .log
+            .borrow()
+            .net
+            .iter()
+            .filter(|c| matches!(c, NetCommand::Dial { .. }))
+            .count()
+    };
+    let lg_display = |w: &World| {
+        w.mac
+            .controller
+            .menu_screen()
+            .displays
+            .into_iter()
+            .find(|d| d.token == lg())
+            .unwrap()
+    };
+    assert!(!lg_display(&w).can_refresh, "connected");
+    w.mac.controller.on_net(
+        NetEvent::Disconnected {
+            peer: pc1.clone(),
+            reason: "test".into(),
+        },
+        w.now,
+    );
+    assert!(lg_display(&w).can_refresh);
+    w.mac.log.borrow_mut().net.clear();
+
+    // A display with no candidate has nothing to dial.
+    w.mac.controller.on_intent(Intent::Refresh {
+        display: DisplayToken::from("builtin"),
+    });
+    assert_eq!(dials(&w), 0);
+
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
+    assert_eq!(dials(&w), 1, "no portal is necessary (ACT-5)");
+    assert!(
+        w.mac.log.borrow().jobs.is_empty(),
+        "no portal-match again (user, 2026-11-07)"
+    );
+    let display = lg_display(&w);
+    assert!(!display.can_refresh, "the dial runs");
+    assert_eq!(display.devices[0].candidates[0].status, "connecting");
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
+    assert_eq!(dials(&w), 1, "one dial at a time");
+}
+
+#[test]
+fn ui18_the_session_rows_and_the_glyph() {
+    let mut w = World::new();
+    assert_eq!(
+        w.mac.controller.menu_screen().glyph,
+        telescreen_view::Glyph::Idle
+    );
+    w.advance_to_forwarding();
+    let mac = w.mac.controller.menu_screen();
+    assert_eq!(mac.glyph, telescreen_view::Glyph::Controlling);
+    assert_eq!(mac.sessions.len(), 1);
+    assert_eq!(mac.sessions[0].id, telescreen_view::MenuSessionId::Portal);
+    assert_eq!(mac.sessions[0].peer, ComputerId::from("pc1"));
+    assert!(matches!(
+        mac.sessions[0].role,
+        telescreen_view::MenuRole::Source {
+            phase: SessionPhase::Forwarding,
+            ..
+        }
+    ));
+    let pc1 = w.pc1.controller.menu_screen();
+    assert_eq!(pc1.glyph, telescreen_view::Glyph::Controlled);
+    let session = w.pc1.controller.control_screen().incoming[0].session;
+    assert_eq!(
+        pc1.sessions[0].id,
+        telescreen_view::MenuSessionId::Incoming { session }
+    );
+    assert!(matches!(
+        pc1.sessions[0].role,
+        telescreen_view::MenuRole::Target {
+            hand_back: None,
+            ..
+        }
+    ));
+    act(&mut w, Intent::EndSession);
+    assert_eq!(
+        w.mac.controller.menu_screen().glyph,
+        telescreen_view::Glyph::Idle
+    );
+    assert!(w.mac.controller.menu_screen().sessions.is_empty());
+}
+
+#[test]
+fn ui9_hb3_hand_back_from_the_session_part_of_the_source() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    act(&mut w, Intent::SourceHandBack);
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert!(
+        w.mac.controller.awaiting_local_ack(),
+        "HB-1: the Mac verifies"
+    );
+}
+
+#[test]
+fn act5_hb3_a_hand_back_from_the_source_closes_the_portal() {
+    let mut w = World::new();
+    act(
+        &mut w,
+        Intent::SwitchAndControl {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    w.advance_to_forwarding_from_confirmation();
+    act(&mut w, Intent::SourceHandBack);
+    assert!(!w.mac.controller.has_portal(), "ACT-5");
+    assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
+}
+
+fn request_rows(peer: &Peer) -> Vec<(String, bool)> {
+    peer.controller
+        .menu_screen()
+        .control_requests
+        .into_iter()
+        .map(|r| (r.peer.0, r.waiting))
+        .collect()
+}
+
+#[test]
+fn ui18_let_control_rows_and_the_waiting_state() {
+    let mut w = World::new();
+    // The Mac and pc3 have handoff.pc1 for the device.
+    assert_eq!(
+        request_rows(&w.pc1),
+        [("mac".to_string(), false), ("pc3".to_string(), false)]
+    );
+    w.pc1.controller.on_intent(Intent::LetControl {
+        peer: ComputerId::from("mac"),
+        device: shared(),
+    });
+    w.pc1.log.borrow_mut().net.clear();
+    assert_eq!(request_rows(&w.pc1)[0], ("mac".to_string(), true));
+    w.pc1.controller.tick(w.now + Duration::from_secs(16));
+    assert_eq!(request_rows(&w.pc1)[0], ("mac".to_string(), false));
+}
+
+#[test]
+fn ui18_a_refusal_ends_the_waiting_state() {
+    let mut w = World::new();
+    w.mac = peer("mac", vec![display("builtin", -1500.0, 1500.0)]);
+    let_control(&mut w);
+    assert_eq!(request_rows(&w.pc1)[0], ("mac".to_string(), false));
+}
+
+#[test]
+fn ui13_the_main_window_lists_the_computers_and_their_trust() {
+    let mut w = World::new();
+    let row = |w: &World, id: &str| {
+        w.mac
+            .controller
+            .main_screen()
+            .computers
+            .into_iter()
+            .find(|c| c.id == ComputerId::from(id))
+            .unwrap()
+    };
+    assert!(row(&w, "mac").this_computer);
+    assert!(!row(&w, "pc1").trusted, "the app sets the trust state");
+    assert!(!row(&w, "pc1").connected);
+    w.mac
+        .controller
+        .set_trusted([ComputerId::from("pc1")].into_iter().collect());
+    w.open_portal();
+    assert!(row(&w, "pc1").trusted);
+    assert!(row(&w, "pc1").connected);
+    assert_eq!(w.mac.controller.main_screen().devices.len(), 1);
+}
+
+#[test]
+fn ui18_the_same_display_list_does_not_evaluate_again() {
+    // The window layer calls `displays_changed` every 2 seconds.
+    let mut w = evaluated();
+    w.mac.controller.displays_changed();
+    assert!(
+        w.mac.log.borrow().jobs.is_empty(),
+        "no portal-match helper runs"
     );
 }

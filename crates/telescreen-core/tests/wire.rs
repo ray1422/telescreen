@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests may panic on a failed setup.
 
 use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
-use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::keys::Key;
 use telescreen_core::pointer::Normalized;
 use telescreen_core::wire::*;
@@ -63,7 +63,11 @@ fn messages_round_trip() {
         },
         Message::Input {
             session: s,
-            event: InputEvent::Scroll { dx: -1.5, dy: 12.0 },
+            event: InputEvent::Scroll {
+                dx: -1.5,
+                dy: 12.0,
+                phase: ScrollPhase::None,
+            },
         },
         Message::ReleaseAll { session: s },
         Message::KeyboardAway { session: s },
@@ -81,6 +85,17 @@ fn messages_round_trip() {
         Message::End {
             session: s,
             reason: EndReason::SafetyExit,
+        },
+        // ACT-6.
+        Message::DisplaySwitched {
+            device: DeviceId::from("shared-lg"),
+        },
+        Message::ControlRequest {
+            device: DeviceId::from("shared-lg"),
+        },
+        Message::ControlRefused {
+            device: DeviceId::from("shared-lg"),
+            reason: ControlRefuseReason::AmbiguousDisplay,
         },
     ];
     for message in messages {
@@ -121,10 +136,31 @@ fn net2_pointer_round_trip_and_order() {
 }
 
 #[test]
-fn protocol_version_5_has_the_verification_messages() {
-    // VER-3 changed the messages (AckWanted, Ack, Started.verified), so an older
+fn act6_protocol_version_6_has_the_control_request_messages() {
+    // ACT-6 added DisplaySwitched, ControlRequest, and ControlRefused, so an older
     // peer is refused.
-    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 5);
+    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 6);
+}
+
+#[test]
+fn act6_each_control_refuse_reason_round_trips() {
+    use ControlRefuseReason::*;
+    for reason in [
+        UnknownDevice,
+        NoRoute,
+        NoDisplay,
+        AmbiguousDisplay,
+        MatchFailed,
+        NoCapture,
+        Busy,
+    ] {
+        let message = Message::ControlRefused {
+            device: DeviceId::from("d"),
+            reason,
+        };
+        let bytes = encode_message(&message).unwrap();
+        assert_eq!(decode_message(&bytes).unwrap(), message);
+    }
 }
 
 #[test]

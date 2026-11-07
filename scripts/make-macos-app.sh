@@ -35,8 +35,10 @@ env -u CARGO_TARGET_DIR cargo build --release -p telescreen-app $features
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp target/release/telescreen "$app/Contents/MacOS/telescreen"
+# The app icon; tools/make_icon.py makes it from the mockup canvas.
+cp assets/macos/Telescreen.icns "$app/Contents/Resources/Telescreen.icns"
 cat >"$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -45,6 +47,7 @@ cat >"$app/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>dev.telescreen.Telescreen</string>
   <key>CFBundleName</key><string>Telescreen</string>
   <key>CFBundleExecutable</key><string>telescreen</string>
+  <key>CFBundleIconFile</key><string>Telescreen</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$version</string>
   <key>CFBundleVersion</key><string>$version</string>
@@ -54,14 +57,27 @@ cat >"$app/Contents/Info.plist" <<PLIST
   <string>Telescreen connects to your other computers on the local network to forward the keyboard and the mouse.</string>
   <key>NSBonjourServices</key>
   <array><string>_telescreen._udp</string></array>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>dev.telescreen.Telescreen</string>
+      <key>CFBundleURLSchemes</key><array><string>telescreen</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST
 identity=${TELESCREEN_SIGN_IDENTITY:-Telescreen Dev}
-if security find-identity -p codesigning | grep -qF "\"$identity\""; then
-  codesign --force --sign "$identity" "$app"
-else
+if ! security find-identity -p codesigning | grep -qF "\"$identity\""; then
   echo "no signing identity \"$identity\": ad-hoc signature" >&2
-  codesign --force --sign - "$app"
+  identity=-
 fi
+
+# The Control Center button (UI-10, spike 8).
+appex="$app/Contents/PlugIns/TelescreenControl.appex"
+scripts/make-macos-control.sh "$app" "$version" "$identity"
+codesign --force --sign "$identity" "$app"
+# A running extension answers with its old code.
+pkill -f "$appex/Contents/MacOS/TelescreenControl" || true
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R "$app"
 echo "built $app"

@@ -4,7 +4,7 @@
 use std::time::{Duration, Instant};
 
 use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
-use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::keys::Key;
 use telescreen_core::pointer::Normalized;
 use telescreen_core::session::VideoInput;
@@ -243,7 +243,11 @@ fn flow13_forwards_input_only_while_forwarding() {
         s.on_input(event),
         vec![Send(Message::Input { session: S, event })]
     );
-    let scroll = InputEvent::Scroll { dx: 0.0, dy: 3.0 };
+    let scroll = InputEvent::Scroll {
+        dx: 0.0,
+        dy: 3.0,
+        phase: ScrollPhase::None,
+    };
     assert_eq!(
         s.on_input(scroll),
         vec![Send(Message::Input {
@@ -564,5 +568,178 @@ fn hb1_an_end_for_a_hand_back_from_the_target() {
         reason: EndReason::HandBack,
     };
     assert_eq!(s.on_message(&end, now), vec![StopForwarding]);
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandBack));
+}
+
+// ----- Attach (ACT-3, ACT-6) -----
+
+fn attach() -> SourceSession {
+    let (session, actions) = SourceSession::attach(ComputerId::from("pc1"), device());
+    assert_eq!(
+        actions,
+        vec![Send(Message::RequestSession { device: device() })],
+        "ACT-6: an attach uses the same request as a handoff"
+    );
+    assert!(session.is_attach());
+    assert_eq!(session.phase(), SourcePhase::Requesting);
+    assert_eq!(session.video_input(), VideoInput::Unchanged);
+    session
+}
+
+/// The target granted the lease. An attach runs no steps (ACT-3).
+fn attach_verifying(now: Instant) -> SourceSession {
+    let mut s = attach();
+    let actions = s.on_message(
+        &Message::SessionGranted {
+            session: S,
+            device: device(),
+        },
+        now,
+    );
+    assert_eq!(actions, vec![Send(Message::HandoffDone { session: S })]);
+    assert_eq!(s.phase(), SourcePhase::Verifying);
+    assert_eq!(s.session(), Some(S));
+    s
+}
+
+#[test]
+fn act3_a_handoff_is_not_an_attach() {
+    assert!(!start().is_attach());
+}
+
+#[test]
+fn act3_an_attach_runs_no_steps_and_verifies_at_once() {
+    let mut s = attach_verifying(Instant::now());
+    assert!(
+        s.on_handoff_finished(HandoffResult::Done).is_empty(),
+        "no steps ran, so a handoff result has no effect"
+    );
+    assert_eq!(s.phase(), SourcePhase::Verifying);
+}
+
+#[test]
+fn act3_flow8_an_attach_takes_the_acknowledgement() {
+    let now = Instant::now();
+    let mut s = attach_verifying(now);
+    s.on_message(&Message::AckWanted { session: S }, now);
+    assert!(s.ack_wanted());
+    assert_eq!(
+        s.acknowledge(true),
+        Some(vec![Send(Message::Ack { session: S })])
+    );
+}
+
+#[test]
+fn act6_a_verified_attach_is_confirmed() {
+    let now = Instant::now();
+    let mut s = attach_verifying(now);
+    let actions = s.on_message(
+        &Message::Started {
+            session: S,
+            verified: true,
+        },
+        now,
+    );
+    assert_eq!(actions, vec![StartForwarding]);
+    assert_eq!(s.phase(), SourcePhase::Forwarding);
+    assert_eq!(s.video_input(), VideoInput::Confirmed);
+}
+
+#[test]
+fn act6_an_attach_with_no_verify_is_switched_not_verified() {
+    let now = Instant::now();
+    let mut s = attach_verifying(now);
+    s.on_message(
+        &Message::Started {
+            session: S,
+            verified: false,
+        },
+        now,
+    );
+    assert_eq!(s.phase(), SourcePhase::Forwarding);
+    assert_eq!(s.video_input(), VideoInput::Unverified);
+    s.end(EndReason::SourceClosed);
+    assert_eq!(
+        s.video_input(),
+        VideoInput::Unknown,
+        "FLOW-16: an unverified state is unknown after the end"
+    );
+}
+
+#[test]
+fn act6_a_confirmed_attach_stays_confirmed_after_the_end() {
+    let now = Instant::now();
+    let mut s = attach_verifying(now);
+    s.on_message(
+        &Message::Started {
+            session: S,
+            verified: true,
+        },
+        now,
+    );
+    s.end(EndReason::SourceClosed);
+    assert_eq!(s.video_input(), VideoInput::Confirmed);
+}
+
+#[test]
+fn act3_flow11_a_failed_verification_of_an_attach_ends() {
+    let now = Instant::now();
+    let mut s = attach_verifying(now);
+    let actions = s.on_message(
+        &Message::End {
+            session: S,
+            reason: EndReason::VerifyFailed,
+        },
+        now,
+    );
+    assert!(
+        actions.is_empty(),
+        "not forwarding yet, and the target ended it"
+    );
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::VerifyFailed));
+}
+
+#[test]
+fn act3_flow5_a_refused_attach() {
+    let mut s = attach();
+    s.on_message(
+        &Message::SessionRefused {
+            device: device(),
+            reason: RefuseReason::NoRoute,
+        },
+        Instant::now(),
+    );
+    assert_eq!(s.phase(), SourcePhase::Refused(RefuseReason::NoRoute));
+}
+
+#[test]
+fn act3_hb3_a_hand_back_request_during_an_attach() {
+    let now = Instant::now();
+    let mut s = attach_verifying(now);
+    s.on_message(
+        &Message::Started {
+            session: S,
+            verified: true,
+        },
+        now,
+    );
+    assert_eq!(
+        s.request_hand_back(),
+        vec![
+            StopForwarding,
+            Send(Message::HandBackRequest { session: S })
+        ],
+        "the same as after a handoff"
+    );
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandBack));
+}
+
+#[test]
+fn act3_hb3_a_hand_back_request_while_an_attach_verifies() {
+    let mut s = attach_verifying(Instant::now());
+    assert_eq!(
+        s.request_hand_back(),
+        vec![Send(Message::HandBackRequest { session: S })]
+    );
     assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandBack));
 }

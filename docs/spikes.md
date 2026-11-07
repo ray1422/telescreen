@@ -86,3 +86,70 @@ Code: `spikes/scroll-source/probe.py`. A script on the target makes the uinput d
 | Real trackpad on the product build, with the KWin setting turned off while the button is down | User observation: the pointer shape is normal, and the scroll feels normal. |
 | Other browsers and Qt applications, each one on its own | Not reported. |
 | Button state after a compositor or session restart, a VT change, or a screen lock | Not tested. |
+
+## Spike 6: Wayland shortcut inhibit from a cxx-qt window (2026-11-07, KWin 6.8.2 and nested niri 26.04, Qt 6.12.0, cxx-qt 0.10.0)
+
+Code: `spikes/qt-inhibit/`. Built and run on the Linux computer over SSH, with `QT_QPA_PLATFORM=wayland`. No key and no click.
+
+| Question | Result |
+| --- | --- |
+| Wayland platform | `QGuiApplication::platformName()` is `wayland`. |
+| `wl_display` | Public API: `nativeInterface<QNativeInterface::QWaylandApplication>()->display()`. |
+| `wl_surface` of a QML `Window` | Private API: `QWindow::nativeInterface<QNativeInterface::Private::QWaylandWindow>()->surface()`, from `QtGui/qpa/qplatformwindow_p.h`. The build adds the versioned private include directories of QtCore and QtGui (`qmake6 -query`). A Qt update can change this API. |
+| Second binding of the protocol | QtWaylandClient 6.12 does not bind `zwp_keyboard_shortcuts_inhibit_manager_v1` (no such string in the library). Thus the inhibitor of Telescreen is the only one for the surface. |
+| Inhibitor on KWin | Works. The connection of Qt is a foreign display for `wayland-client` (the same as `inhibit.rs`). `inhibit_shortcuts` gets the `active` event about 100 ms later. The window was active (`QWindow::isActive`) with no click, also when SSH started it. |
+| Events on the foreign display | A private event queue gets its events only when Telescreen dispatches it. The spike calls `dispatch_pending` from a Qt timer every 100 ms. |
+| Hide, show, inhibit again | Works: `active` again. The surface pointer was the same after the show. Get the surface again before each request in any case. |
+| Release and request again (UI-6) | Works: `active` again. |
+| Exit | Fail with the first order: the process dumped core at exit when the Wayland proxies dropped after `QGuiApplication`. Pass when Telescreen drops all its Wayland objects before Qt closes the display. |
+| Shortcut actually blocked | Not tested. It needs a key press with the user. |
+| niri | Works in a nested niri 26.04 (an empty config, in a window of the KWin session): `active` after each request, also after hide and show, and a clean exit. The window had the focus in niri with no click. A niri session on the hardware is not tested. |
+| cxx-qt bridge | A `#[cxx_qt::bridge]` does not accept a function pointer argument. The spike uses an `extern "C"` Rust function for the Qt timer. |
+
+## Spike 7: SwiftUI in a window of the Rust main loop (2026-11-07, macOS 27, Swift 6.4, objc2 0.6)
+
+Code: `spikes/swiftui-host/`. `build.rs` compiles one Swift file into a static library with `swiftc -emit-library -static`. The Swift code exports C functions with `@_cdecl`. Plain C ABI with JSON, no UniFFI.
+
+| Question | Result |
+| --- | --- |
+| Link | Works with link search paths to the Swift libraries of the toolchain and the SDK, and an rpath to `/usr/lib/swift`. The binary uses the Swift runtime and SwiftUI of the system. |
+| Run loop | The Rust `main` makes `NSApplication` (accessory policy), an `NSPanel`, and an `NSStatusItem`, and calls `run`. Swift makes the `NSHostingView` and returns it retained. |
+| Push from a background thread | Works. Swift decodes the JSON on the caller thread and changes an `@Observable` model on the main thread (`DispatchQueue.main.async`). |
+| Push to SwiftUI update | 60 pushes per second: 100 of 100 snapshots reached `onChange`. Push to `onChange` p50 3.5 to 4.0 ms, p95 4.5 to 5.5 ms, max 11 ms (4 runs). |
+| Burst | 20 pushes with no wait: `onChange` saw 2 of them, the last one included. SwiftUI shows the newest snapshot and skips old ones. A view model must be a full state, not a change. |
+| Intent to Rust | Works. The C callback runs on the main thread. Tested with intents that the view sends from `onChange` and `onGeometryChange`. A click on a button was not tested. |
+| Window size | `fittingSize` before the first layout is too small (44 pt). The view reports its size with `onGeometryChange`, and Rust sets the panel frame. The first report can arrive before Rust keeps the panel, so Rust keeps the last size and applies it. |
+| Active controls | A borderless `NSPanel` cannot become key by default, and then SwiftUI draws the buttons as inactive. A subclass with `canBecomeKeyWindow = true` (as `focus.rs`) fixes it. |
+| Glass | `glassEffect` in the panel shows the desktop behind it (screenshot of the screen region). A screenshot of the window only (`screencapture -l`) shows no backdrop. |
+| Not tested | A click on the status item, the Control Center extension (WidgetKit) in a bundle with a Rust main, and an app bundle build. |
+
+## Spike 8: a Control Center button with no Xcode (2026-11-07, macOS 27, Command Line Tools only)
+
+Code: `spikes/control-center/`. `build.sh` compiles one Swift file with `swiftc` into a WidgetKit extension, puts it into `Contents/PlugIns/` of the dev `Telescreen.app`, and signs it with the sandbox entitlement.
+
+| Question | Result |
+| --- | --- |
+| Build with no Xcode | Works. `swiftc -parse-as-library -application-extension` with `-Xlinker -e -Xlinker _NSExtensionMain`. Without the entry point, the extension stopped at once in `_EXRunningExtension._shared` (ExtensionFoundation): `ExtensionMain.shared` had no extension type. Xcode adds this entry point. An installed widget (Tailscale) has it too. |
+| Registration | `pluginkit` registers the extension after `lsregister -f -R` of the app. chronod reads the control descriptor (`kind`, `OpenURLIntent`, `isLauncher: YES`). |
+| Signing | The self-signed "Telescreen Dev" identity is sufficient. The extension has no team identifier and no provisioning profile. An ad-hoc signature also stopped in the same place before the entry point fix, so the signature was not the cause. |
+| Control Center gallery | The control shows in "Add a Control" (user, 2026-11-07). |
+| Button action, system intent | Fail. With the system `OpenURLIntent`, a press fails: `Failed to create LinkAction`, then `Encountered action intent without linkAction` (CHSErrorDomain 1107). The extension needs App Intents metadata (`Metadata.appintents`) also for a system intent. Only Xcode has the tool that makes it (`appintentsmetadataprocessor`). |
+| Button action, own intent | Works with metadata written by hand (a test only, user, 2026-11-07). `OpenMenuIntent` in the extension opens `telescreen://menu` with `NSWorkspace`. `Metadata.appintents/extract.actionsdata` has one action, copied from the format of an installed widget (Tailscale); `mangledTypeName` must match the module name (`-module-name TelescreenControl`). chronod: `Successfully ran action`; Control Center: `Button control action succeeded`. The intent runs in the extension (`requiredLaunch: NO`). The sandboxed extension can open the URL: Telescreen was not running, and LaunchServices started it. The format of the metadata is not public, so a release build must not depend on a hand-written file. |
+| Refetch | chronod reads the descriptors again only when `CFBundleVersion` changes, and an extension process that still runs answers with the old code. After a change: stop the extension process, increase the version, and run `lsregister` again. |
+| Custom SF Symbol | Not tested on this Mac: it needs an asset catalog, and only Xcode has `actool`. `scripts/make-macos-control.sh` calls `actool` with the arguments of swift-build when Xcode is available (CI). In CI (Xcode 26.6), `actool` compiles the symbol into `Assets.car`; it needs the baseline and capline guides of the S, M, and L scales, also when only Regular-M has a drawing. |
+| Result | The Control Center button works: an extension with an own intent, the self-signed signature, and an app with a Rust main. A release build needs the Xcode tools for the App Intents metadata and for the asset catalog of the custom glyph (a macOS CI runner has Xcode). The app does not handle `telescreen://menu` yet (step f2). |
+
+### Spike 8, part 2: App Intents metadata in the build (2026-11-07)
+
+User decision: the hand-written metadata is a fallback; CI uses the metadata of the Xcode tool. `scripts/make-macos-control.sh` builds the extension. `TELESCREEN_REQUIRE_XCODE=1` (CI and release) makes the build fail when the tool is missing.
+
+The arguments come from the swift-build sources (swiftlang/swift-build, read 2026-11-07), not from a guess:
+
+- `Sources/SWBApplePlatform/Specs/AppIntentsMetadata.xcspec`: `appintentsmetadataprocessor --toolchain-dir $(TOOLCHAIN_DIR) --module-name $(SWIFT_MODULE_NAME) --sdk-root $(SDKROOT) --xcode-version $(XCODE_PRODUCT_BUILD_VERSION) --platform-family $(PLATFORM_FAMILY_NAME) --deployment-target …`, then the options `--bundle-identifier`, `--output` (the Resources folder of the product), `--target-triple` (one for each architecture), `--binary-file`, `--dependency-file` (the linker `-dependency_info` file), `--stringsdata-file`, `--source-file-list`, `--metadata-file-list`, `--static-metadata-file-list`, `--swift-const-vals-list`, and the default flags `--compile-time-extraction`, `--deployment-aware-processing`, `--no-app-shortcuts-localization`.
+- `Sources/SWBApplePlatform/AppIntentsMetadataCompiler.swift`: each file list has one path on each line.
+- `Sources/SWBCore/SpecImplementations/Tools/SwiftCompiler.swift`: swiftc gets `-emit-const-values` and `-Xfrontend -const-gather-protocols-file -Xfrontend <file>`, a JSON list of protocol names. The output is a `.swiftconstvalues` file.
+- `Sources/SWBApplePlatform/Plugin.swift`: the protocol names (`SWIFT_EMIT_CONST_VALUE_PROTOCOLS`): the App Intents protocols and `AppExtension`, `ExtensionPointDefining`.
+
+Checked with no Xcode: `swiftc -wmo -emit-const-values-path` with the protocol list writes a `.swiftconstvalues` file that names `TelescreenControl.OpenMenuIntent`. The call of `appintentsmetadataprocessor` itself is not tested here (no Xcode); the first CI run of the macOS job tests it. The script compares the `actions` of the generated file with the fallback and warns when they differ.
+
+`actool` for the custom SF Symbol: not done. Read its arguments from swift-build in the same way before the CI step.

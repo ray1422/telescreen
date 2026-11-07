@@ -22,6 +22,9 @@
 //! Input / ReleaseAll / datagrams ▶         inject
 //! KeyboardAway{session} ────────▶          hold keyboard focus (FLOW-23)
 //! KeyboardBack{session} ────────▶          release keyboard focus holder
+//! PortalHidden{session} ────────▶          show the portal warning (FLOW-26)
+//! PortalShown{session} ─────────▶          hide the portal warning
+//! PortalCursor{session, at} ────▶          the source cursor on the warning
 //! ClipboardText{session, text} ◀▶          sync text while forwarding (CLIP-2)
 //! ClipboardClear{session}     ◀▶          the sent concealed text went away (CLIP-7)
 //! End{session, reason}  ◀──────▶  End{session, reason}
@@ -29,6 +32,11 @@
 //! (or target sends End{reason: HandBack}, ends, runs route back)
 //!        ◀─────────────────────── HandBackResult{device, outcome} (no session)
 //! (on Done, old source verifies as the destination, VER-4)
+//! Attach (ACT-3): RequestSession, SessionGranted, then HandoffDone at once.
+//! DisplaySwitched{device} ──────▶          after "Switch display only": verify
+//!                                         as the destination (ACT-6)
+//! ControlRequest{device} ───────▶          the receiver attaches to the sender
+//!        ◀─────────────────────── ControlRefused{device, reason} (ACT-4)
 //! Heartbeat ◀──────────────────▶ Heartbeat (each second; the transport owns it)
 //! ```
 
@@ -39,7 +47,7 @@ use crate::input::InputEvent;
 use crate::pointer::Normalized;
 
 /// The wire protocol version. A peer refuses a different version.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 
 /// The maximum size of one reliable frame payload.
 pub const MAX_FRAME: usize = crate::clipboard::MAX_TEXT + 4 * 1024;
@@ -86,6 +94,20 @@ pub enum Message {
     KeyboardBack {
         session: SessionId,
     },
+    /// The portal is not on the screen of the source (FLOW-26).
+    PortalHidden {
+        session: SessionId,
+    },
+    /// The portal is on the screen of the source again (FLOW-26).
+    PortalShown {
+        session: SessionId,
+    },
+    /// The cursor of the source while the portal is not on screen (FLOW-26).
+    /// `None`: the cursor is not in the portal area.
+    PortalCursor {
+        session: SessionId,
+        at: Option<Normalized>,
+    },
     /// Plain text in both directions while forwarding (CLIP-2). `concealed` is the
     /// concealed mark of a password manager (CLIP-7).
     ClipboardText {
@@ -128,6 +150,41 @@ pub enum Message {
         session: SessionId,
         reason: EndReason,
     },
+
+    // Not part of a session (ACT-6).
+    /// "Switch display only" ran its steps to the receiver (ACT-2). The receiver
+    /// verifies as the destination.
+    DisplaySwitched {
+        device: DeviceId,
+    },
+    /// The sender asks the receiver to control it on this device (ACT-4).
+    ControlRequest {
+        device: DeviceId,
+    },
+    /// The receiver of a `ControlRequest` does not attach (ACT-6).
+    ControlRefused {
+        device: DeviceId,
+        reason: ControlRefuseReason,
+    },
+}
+
+/// Why the receiver of a control request does not attach (ACT-6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ControlRefuseReason {
+    /// The receiver has no device with this ID.
+    UnknownDevice,
+    /// The receiver has no `handoff.<sender>` route for this device.
+    NoRoute,
+    /// No display of the receiver matches the device.
+    NoDisplay,
+    /// More than one display of the receiver matches the device.
+    AmbiguousDisplay,
+    /// `portal-match` failed on a display of the receiver (AC-9).
+    MatchFailed,
+    /// The receiver cannot capture or suppress input.
+    NoCapture,
+    /// The receiver already is the source of a session on the matching display.
+    Busy,
 }
 
 /// The result of the old target's route back to the old source.

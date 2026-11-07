@@ -1,7 +1,7 @@
 //! FLOW-20 and IN-3: each up event goes where its down event went, also when the
 //! free cursor crossed the portal edge in between.
 
-use telescreen_core::input::{Button, InputEvent};
+use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::key_route::{KeyRoutes, Route};
 use telescreen_core::keys::Key;
 
@@ -108,7 +108,11 @@ fn full_key_range() {
 #[test]
 fn scroll_follows_the_cursor() {
     let mut r = KeyRoutes::new();
-    let scroll = InputEvent::Scroll { dx: 0.0, dy: 3.0 };
+    let scroll = InputEvent::Scroll {
+        dx: 0.0,
+        dy: 3.0,
+        phase: ScrollPhase::None,
+    };
     assert_eq!(r.route(&scroll, INSIDE), Route::Forward);
     assert_eq!(r.route(&scroll, OUTSIDE), Route::Local);
     assert!(!r.any_forwarded());

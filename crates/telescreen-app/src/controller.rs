@@ -29,12 +29,17 @@ use telescreen_core::verifier::{PromptVerifier, VerifierEvent};
 use telescreen_core::wire::{EndReason, HandBackOutcome, Message, RefuseReason};
 use telescreen_transport::{DialTarget, NetCommand, NetEvent};
 use telescreen_view::{
-    CandidateRow, ControlScreen, DeviceChoice, DeviceRow, DiscoveryRow, DisplayRow, IncomingRow,
-    Intent, Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase,
-    SessionRow,
+    CandidateRow, ControlScreen, DeviceChoice, DeviceRow, DiscoveryRow, IncomingRow, Intent,
+    Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase, SessionRow,
 };
 
 use crate::pointer_mailbox::ReceivedPointer;
+
+mod actions;
+mod menu;
+
+use actions::{ControlMatch, PendingStart};
+use menu::DisplayEvaluation;
 
 /// Sends commands to the transport.
 pub trait NetPort {
@@ -196,6 +201,22 @@ enum Pending {
         peer: ComputerId,
         device: DeviceId,
     },
+    /// The steps of "Switch display only" (ACT-1).
+    SwitchOnly {
+        target: ComputerId,
+        device: DeviceId,
+    },
+    /// `portal-match` of one display for a control request (ACT-4).
+    ControlMatch {
+        request: u64,
+        display: DisplayInfo,
+    },
+    /// `portal-match` of one device on one display for the menu (UI-18).
+    DisplayMatch {
+        generation: u64,
+        token: DisplayToken,
+        alias: String,
+    },
 }
 
 struct Portal {
@@ -203,13 +224,19 @@ struct Portal {
     display: DisplayInfo,
     bounds: Rect,
     focused: bool,
+    /// A click in the portal asks for the native focus, and the window layer has
+    /// not asked the OS yet (FLOW-22).
+    focus_wanted: bool,
+    /// The portal is on screen (FLOW-26).
+    visible: bool,
     guarded: bool,
     matching: Matching,
     match_pending: usize,
     matched: Vec<String>,
     match_error: Option<String>,
     device: Option<String>,
-    handoff_target: Option<ComputerId>,
+    /// The session to start after `portal-match` (FLOW-17, ACT-1, ACT-4).
+    pending_start: Option<PendingStart>,
     session: Option<SourceSession>,
     pointer: Point,
     notice: Option<String>,
@@ -254,9 +281,23 @@ pub struct Controller {
     verifiers: BTreeMap<SessionId, Verifier>,
     next_verifier: u64,
     prompts: BTreeMap<SessionId, PromptId>,
+    /// The warning of FLOW-26 for each incoming session.
+    portal_warnings: BTreeMap<SessionId, PromptId>,
     next_prompt: u64,
     pending_hand_backs: BTreeSet<(ComputerId, DeviceId)>,
     hand_back_verifications: BTreeMap<DeviceId, HandBackVerification>,
+    /// Control requests that this peer sent, with their deadline (ACT-6). A
+    /// request waits in `unsent_control` until its peer connects.
+    control_requests: BTreeMap<(ComputerId, DeviceId), Instant>,
+    unsent_control: BTreeSet<(ComputerId, DeviceId)>,
+    /// `portal-match` runs for the control requests that this peer received (ACT-4).
+    control_matches: BTreeMap<u64, ControlMatch>,
+    next_control_match: u64,
+    /// `portal-match` of each display for the menu (UI-18). `None` until the
+    /// first `evaluate_displays`.
+    display_evaluation: Option<DisplayEvaluation>,
+    /// The computers with a fingerprint in the local trust list (UI-13).
+    trusted: BTreeSet<ComputerId>,
     notices: Vec<String>,
     /// The last display list, for the view. `displays()` refreshes it.
     display_cache: Vec<DisplayInfo>,
@@ -340,9 +381,16 @@ impl Controller {
             verifiers: BTreeMap::new(),
             next_verifier: 1,
             prompts: BTreeMap::new(),
+            portal_warnings: BTreeMap::new(),
             next_prompt: 1,
             pending_hand_backs: BTreeSet::new(),
             hand_back_verifications: BTreeMap::new(),
+            control_requests: BTreeMap::new(),
+            unsent_control: BTreeSet::new(),
+            control_matches: BTreeMap::new(),
+            next_control_match: 1,
+            display_evaluation: None,
+            trusted: BTreeSet::new(),
             notices: Vec::new(),
             display_cache: Vec::new(),
             last_heartbeat: None,
@@ -425,9 +473,10 @@ impl Controller {
     fn scaled(&self, event: InputEvent) -> InputEvent {
         let speed = self.config.computers[&self.local].scroll_speed;
         match event {
-            InputEvent::Scroll { dx, dy } => InputEvent::Scroll {
+            InputEvent::Scroll { dx, dy, phase } => InputEvent::Scroll {
                 dx: dx * speed,
                 dy: dy * speed,
+                phase,
             },
             other => other,
         }
@@ -489,18 +538,29 @@ impl Controller {
             display,
             bounds,
             focused: true,
+            focus_wanted: false,
+            visible: true,
             guarded: false,
             matching: Matching::Evaluating,
             match_pending: 0,
             matched: Vec::new(),
             match_error: None,
             device: None,
-            handoff_target: None,
+            pending_start: None,
             session: None,
             pointer: Point::default(),
             notice: None,
         });
         self.evaluate_portal_match();
+    }
+
+    /// True once when the window layer must give the portal window the native
+    /// focus (FLOW-22). The capture gave it the keyboard for a click that the OS
+    /// does not use to focus a window, for example a middle click on macOS.
+    pub fn take_portal_focus_request(&mut self) -> bool {
+        self.portal
+            .as_mut()
+            .is_some_and(|portal| std::mem::take(&mut portal.focus_wanted))
     }
 
     /// Takes the portal window request from FLOW-17.
@@ -523,7 +583,7 @@ impl Controller {
         portal.display = display;
         portal.bounds = bounds;
         portal.device = None;
-        portal.handoff_target = None;
+        portal.pending_start = None;
         self.evaluate_portal_match();
     }
 
@@ -622,14 +682,10 @@ impl Controller {
         if matches!(portal.matching, Matching::Evaluating) {
             return;
         }
-        let Some(target) = portal.handoff_target.take() else {
+        let Some(pending) = portal.pending_start.take() else {
             return;
         };
-        if !matches!(portal.matching, Matching::Matched(_)) {
-            self.notice("Cannot control from here: the portal needs one matching device.".into());
-            return;
-        }
-        self.start_handoff(target);
+        self.start_pending(pending);
     }
 
     fn portal_device(&self) -> Option<Device> {
@@ -692,15 +748,12 @@ impl Controller {
         self.search_deadline.is_some() && self.discovery_enabled(peer)
     }
 
-    /// True if a candidate of the portal has no connection and can be found.
+    /// True if a candidate of a display has no connection and can be found.
     fn candidate_to_search(&self) -> bool {
-        self.portal_device().is_some_and(|device| {
-            routes::candidates(&self.config, &device)
-                .iter()
-                .any(|route| {
-                    !self.connected.contains(route.target) && self.discovery_enabled(route.target)
-                })
-        })
+        self.display_cache
+            .iter()
+            .flat_map(|display| self.display_peers(&display.token))
+            .any(|peer| !self.connected.contains(&peer) && self.discovery_enabled(&peer))
     }
 
     fn start_search(&mut self) {
@@ -749,8 +802,84 @@ impl Controller {
     pub fn set_portal_focus(&mut self, focused: bool) {
         if let Some(portal) = self.portal.as_mut() {
             portal.focused = focused;
-            self.ports.capture.set_portal_focus(focused);
+            portal.focus_wanted &= !focused;
+            // FLOW-26: a hidden portal can keep the native focus, for example
+            // while Mission Control is open. Then the keys stay on the source.
+            self.ports
+                .capture
+                .set_portal_focus(focused && portal.visible);
         }
+    }
+
+    /// Shows the warning of FLOW-26 for an incoming session, or a blank one.
+    fn show_portal_warning(&mut self, session: SessionId, source: &ComputerId, hidden: bool) {
+        let prompt = match self.portal_warnings.get(&session) {
+            Some(prompt) => *prompt,
+            None => {
+                let prompt = self.allocate_prompt();
+                self.portal_warnings.insert(session, prompt);
+                prompt
+            }
+        };
+        let label = self.label_of(source);
+        let screen = if hidden {
+            PromptScreen::portal_hidden(label)
+        } else {
+            PromptScreen::portal_shown(label)
+        };
+        let shown = match self.find_display(session) {
+            Some(display) => self.ports.prompt.show(prompt, &display, &screen),
+            None => Err("the input-target display is gone".into()),
+        };
+        if let Err(e) = shown {
+            self.notice(format!("Cannot show the portal warning: {e}"));
+        }
+    }
+
+    /// At the start of forwarding, gives the capture and the session the native
+    /// state of the portal. The window layer reports only changes, so the portal
+    /// can keep the focus, or stay off screen, from an earlier session (FLOW-22,
+    /// FLOW-26).
+    fn sync_portal_state(&mut self) {
+        let Some(portal) = self.portal.as_mut() else {
+            return;
+        };
+        let (focused, visible) = (portal.focused && portal.visible, portal.visible);
+        self.ports.capture.set_portal_focus(focused);
+        self.ports.capture.set_portal_visible(visible);
+        let actions = portal
+            .session
+            .as_mut()
+            .map(|session| {
+                let mut actions = session.on_keyboard(focused);
+                actions.extend(session.on_portal_visible(visible));
+                actions
+            })
+            .unwrap_or_default();
+        self.run_source_actions(actions);
+    }
+
+    /// The window layer reports whether the portal is on screen (FLOW-26). While
+    /// it is not, the capture forwards no pointer input, and the target shows a
+    /// warning.
+    pub fn set_portal_visible(&mut self, visible: bool) {
+        let Some(portal) = self.portal.as_mut() else {
+            return;
+        };
+        if portal.visible == visible {
+            return;
+        }
+        portal.visible = visible;
+        self.ports.capture.set_portal_visible(visible);
+        self.ports
+            .capture
+            .set_portal_focus(portal.focused && visible);
+        let actions = portal
+            .session
+            .as_mut()
+            .map(|session| session.on_portal_visible(visible))
+            .unwrap_or_default();
+        self.run_source_actions(actions);
     }
 
     /// The acknowledgement key or a click in the portal (FLOW-8). Returns true
@@ -813,7 +942,12 @@ impl Controller {
 
     fn candidate_unavailable(&self, target: &ComputerId) -> Option<String> {
         let device = self.portal_device()?;
-        let route = routes::candidates(&self.config, &device)
+        self.route_unavailable(&device, target)
+    }
+
+    /// The FLOW-3 conditions of a session to `target` for a local device.
+    fn route_unavailable(&self, device: &Device, target: &ComputerId) -> Option<String> {
+        let route = routes::candidates(&self.config, device)
             .into_iter()
             .find(|r| r.target == target);
         let Some(route) = route else {
@@ -894,7 +1028,10 @@ impl Controller {
                 SourceAction::StartForwarding => {
                     self.set_guard(false);
                     match self.ports.capture.forward() {
-                        Ok(()) => self.send_pointer(),
+                        Ok(()) => {
+                            self.send_pointer();
+                            self.sync_portal_state();
+                        }
                         Err(e) => {
                             self.notice(format!("Input capture failed: {e}"));
                             let actions = self.end_actions(EndReason::PermissionLost);
@@ -915,6 +1052,7 @@ impl Controller {
         if finished {
             self.set_guard(false);
             self.ports.capture.disarm();
+            self.close_session_portal();
         }
         self.update_clipboard();
     }
@@ -1019,6 +1157,16 @@ impl Controller {
         let actions = match event {
             CapturedEvent::Input(input) => session.on_input(input),
             CapturedEvent::PointerMoved { at } => {
+                if !portal.visible {
+                    // FLOW-26: the warning on the target shows the cursor.
+                    let cursor = portal
+                        .bounds
+                        .contains(at)
+                        .then(|| pointer::normalize(portal.bounds, at));
+                    let actions = session.portal_cursor(cursor);
+                    self.run_source_actions(actions);
+                    return;
+                }
                 portal.pointer = portal.bounds.clamp(at);
                 if session.phase() == SourcePhase::Forwarding {
                     self.send_pointer();
@@ -1032,6 +1180,17 @@ impl Controller {
                 return;
             }
             CapturedEvent::PointerLeft => return,
+            CapturedEvent::FocusWanted => {
+                if portal.focused {
+                    // The OS reported the focus, but the capture lost it, for
+                    // example at a disarm (FLOW-22).
+                    self.ports.capture.set_portal_focus(portal.visible);
+                } else {
+                    // FLOW-22: the window layer asks the OS for the native focus.
+                    portal.focus_wanted = true;
+                }
+                return;
+            }
             CapturedEvent::KeyboardEntered => session.on_keyboard(true),
             CapturedEvent::KeyboardLeft => session.on_keyboard(false),
             CapturedEvent::InputLost => session.on_input_lost(),
@@ -1049,6 +1208,12 @@ impl Controller {
     /// stops its heartbeat and the other peer ends the sessions (ADR 0007, AC-18).
     pub fn tick(&mut self, now: Instant) {
         self.now = now;
+        if let Some(injector) = self.ports.injector.as_mut()
+            && let Err(e) = injector.tick(now)
+        {
+            // Not a notice: the next tick can fail again.
+            eprintln!("telescreen: injection timer: {e}");
+        }
         if self.search_deadline.is_some_and(|deadline| now >= deadline) {
             self.stop_search();
         }
@@ -1058,6 +1223,7 @@ impl Controller {
         {
             self.stop_discovery();
         }
+        self.expire_control_requests(now);
         if self
             .last_heartbeat
             .is_none_or(|t| now.duration_since(t) >= HEARTBEAT)
@@ -1319,10 +1485,12 @@ impl Controller {
         match event {
             NetEvent::Connected { peer } => {
                 self.dialing.remove(&peer);
-                self.connected.insert(peer);
+                self.connected.insert(peer.clone());
                 if !self.candidate_to_search() {
                     self.stop_search();
                 }
+                self.send_control_requests(&peer);
+                self.start_pending_handoff();
             }
             NetEvent::Disconnected { peer, reason } => {
                 self.connected.remove(&peer);
@@ -1331,6 +1499,7 @@ impl Controller {
             }
             NetEvent::DialFailed { peer, reason } => {
                 self.dialing.remove(&peer);
+                self.dial_failed(&peer);
                 self.notice(format!(
                     "Cannot connect to {}: {reason}",
                     self.label_of(&peer)
@@ -1400,7 +1569,12 @@ impl Controller {
                 self.source_message(&peer, &message, now)
             }
             // To the target side.
-            Message::RequestSession { device } => self.request_session(peer, device.clone()),
+            Message::RequestSession { device } => {
+                // ACT-6: the attach of a control request ends the wait.
+                self.control_requests
+                    .remove(&(peer.clone(), device.clone()));
+                self.request_session(peer, device.clone());
+            }
             Message::HandoffDone { session }
             | Message::HandBackRequest { session }
             | Message::Ack { session }
@@ -1408,6 +1582,9 @@ impl Controller {
             | Message::ReleaseAll { session }
             | Message::KeyboardAway { session }
             | Message::KeyboardBack { session }
+            | Message::PortalHidden { session }
+            | Message::PortalShown { session }
+            | Message::PortalCursor { session, .. }
             | Message::End { session, .. } => {
                 let session = *session;
                 let Some(target) = self.incoming.get_mut(&session) else {
@@ -1431,6 +1608,13 @@ impl Controller {
                 self.run_target_actions_at(session, actions, now);
             }
             Message::Hello { .. } | Message::Heartbeat => {}
+            Message::DisplaySwitched { device } => {
+                self.display_switched(peer, device.clone(), now);
+            }
+            Message::ControlRequest { device } => self.control_request(peer, device.clone()),
+            Message::ControlRefused { device, reason } => {
+                self.control_refused(&peer, device, *reason);
+            }
         }
     }
 
@@ -1454,6 +1638,13 @@ impl Controller {
             && let Some(portal) = self.portal.as_mut()
         {
             portal.notice = Some(refuse_text(*reason));
+            // ACT-5: the portal closes with its session, so keep the reason.
+            let text = format!(
+                "{} refused the session: {}",
+                self.label_of(peer),
+                refuse_text(*reason)
+            );
+            self.notice(text);
         }
         self.run_source_actions(actions);
     }
@@ -1737,6 +1928,8 @@ impl Controller {
                         confirm_key: self.labels.confirm_key.clone(),
                         text,
                         ack_wanted,
+                        portal_hidden: false,
+                        blank: false,
                     };
                     let prompt = match self.prompts.get(&session) {
                         Some(prompt) => *prompt,
@@ -1785,6 +1978,24 @@ impl Controller {
                         queue.extend(more.unwrap_or_default().into_iter().map(TargetWork::Action));
                     }
                 }
+                TargetAction::PortalWarning(true) => {
+                    self.show_portal_warning(session, &source, true)
+                }
+                TargetAction::PortalWarning(false) => {
+                    if let Some(prompt) = self.portal_warnings.get(&session) {
+                        self.ports.prompt.cursor(*prompt, None);
+                    }
+                    if self.ports.prompt.keeps_blank() {
+                        self.show_portal_warning(session, &source, false);
+                    } else if let Some(prompt) = self.portal_warnings.remove(&session) {
+                        self.ports.prompt.hide(prompt);
+                    }
+                }
+                TargetAction::PortalCursor(at) => {
+                    if let Some(prompt) = self.portal_warnings.get(&session) {
+                        self.ports.prompt.cursor(*prompt, at);
+                    }
+                }
                 TargetAction::ReleaseKeyboard => {
                     if let Some(holder) = self.ports.focus_holder.as_mut() {
                         holder.release();
@@ -1804,6 +2015,10 @@ impl Controller {
                     };
                     if valid {
                         self.injector_session = Some(session);
+                        // FLOW-26: a blank warning now shows at once later.
+                        if self.ports.prompt.keeps_blank() {
+                            self.show_portal_warning(session, &source, false);
+                        }
                     }
                     let more = self
                         .target_mut(session)
@@ -1836,8 +2051,14 @@ impl Controller {
                     self.leases.release(session);
                     self.remove_incoming(session);
                     self.prompts.remove(&session);
+                    if let Some(prompt) = self.portal_warnings.remove(&session) {
+                        self.ports.prompt.hide(prompt);
+                    }
                     if self.injector_session == Some(session) {
                         self.injector_session = None;
+                        if let Some(injector) = self.ports.injector.as_mut() {
+                            injector.end_session();
+                        }
                     }
                 }
                 TargetAction::RunHandBack => self.run_hand_back(source.clone(), device_id.clone()),
@@ -1974,22 +2195,26 @@ impl Controller {
                     self.device_states.insert(device, VideoInput::Unknown);
                 }
             }
-            HandBackOutcome::Done => {
-                self.device_states
-                    .insert(device.clone(), VideoInput::Unverified);
-                let prompt = self.allocate_prompt();
-                self.hand_back_verifications.insert(
-                    device.clone(),
-                    HandBackVerification {
-                        prompt,
-                        display: None,
-                        verification: Verification::new(),
-                        verifier: None,
-                    },
-                );
-                self.start_hand_back_input_target(peer, device, prompt, now);
-            }
+            HandBackOutcome::Done => self.verify_as_destination(peer, device, now),
         }
+    }
+
+    /// Verifies as the destination with no session: after a hand back (HB-1) and
+    /// after "Switch display only" (ACT-2).
+    fn verify_as_destination(&mut self, peer: ComputerId, device: DeviceId, now: Instant) {
+        self.device_states
+            .insert(device.clone(), VideoInput::Unverified);
+        let prompt = self.allocate_prompt();
+        self.hand_back_verifications.insert(
+            device.clone(),
+            HandBackVerification {
+                prompt,
+                display: None,
+                verification: Verification::new(),
+                verifier: None,
+            },
+        );
+        self.start_hand_back_input_target(peer, device, prompt, now);
     }
 
     fn hand_back_verification_failed(
@@ -2162,6 +2387,8 @@ impl Controller {
                         confirm_key: self.labels.confirm_key.clone(),
                         text,
                         ack_wanted,
+                        portal_hidden: false,
+                        blank: false,
                     };
                     let shown = match display {
                         Some(display) => self.ports.prompt.show(prompt, &display, &screen),
@@ -2350,6 +2577,17 @@ impl Controller {
                 }
                 self.send_hand_back_result(peer, device, outcome);
             }
+            Pending::SwitchOnly { target, device } => {
+                self.switch_only_done(target, device, output);
+            }
+            Pending::ControlMatch { request, display } => {
+                self.control_match_done(request, display, output);
+            }
+            Pending::DisplayMatch {
+                generation,
+                token,
+                alias,
+            } => self.display_match_done(generation, token, alias, output),
             Pending::HandBackInputTarget {
                 prompt,
                 peer,
@@ -2381,11 +2619,7 @@ impl Controller {
                 self.clipboard.set_enabled(on);
                 self.update_clipboard();
             }
-            Intent::OpenPortal { .. } | Intent::ClosePortal => {
-                // The window layer opens and closes the portal window, then calls
-                // `open_portal` or `close_portal`.
-            }
-            Intent::Refresh => self.dial_candidates(),
+            Intent::Refresh { display } => self.refresh_display(&display),
             Intent::AllowDiscovery => {
                 if self.discovery_enabled(&self.local) {
                     if self.discovery_deadline.is_some() {
@@ -2403,17 +2637,6 @@ impl Controller {
                 }
             }
             Intent::StopDiscovery => self.stop_discovery(),
-            Intent::SelectDevice { alias } => {
-                if let Some(portal) = self.portal.as_mut()
-                    && let Matching::Ambiguous(choices) = &portal.matching
-                    && let Some(choice) = choices.iter().find(|c| c.alias == alias).cloned()
-                {
-                    portal.device = Some(alias);
-                    portal.matching = Matching::Matched(choice);
-                    self.dial_candidates();
-                }
-            }
-            Intent::StartHandoff { target } => self.start_handoff(target),
             Intent::EndSession => self.end_portal_session(EndReason::SourceClosed),
             Intent::HandBack { session } => {
                 if self
@@ -2428,6 +2651,23 @@ impl Controller {
             }
             Intent::StopSession { session } => self.end_incoming(session, EndReason::TargetStopped),
             Intent::ControlFromHere { session } => self.control_from_here(session),
+            Intent::SwitchAndControl {
+                display,
+                device,
+                target,
+            } => self.start_on_display(&display, device, target, false),
+            Intent::ControlOnly {
+                display,
+                device,
+                target,
+            } => self.start_on_display(&display, device, target, true),
+            Intent::SwitchDisplayOnly {
+                display,
+                device,
+                target,
+            } => self.switch_display_only(&display, device, target),
+            Intent::LetControl { peer, device } => self.let_control(peer, device),
+            Intent::SourceHandBack => self.portal_left_fullscreen(),
         }
     }
 
@@ -2450,7 +2690,11 @@ impl Controller {
         let Some(portal) = self.portal.as_mut() else {
             return;
         };
-        portal.handoff_target = Some(source);
+        portal.pending_start = Some(PendingStart {
+            target: source,
+            device: None,
+            attach: false,
+        });
         self.portal_window_request = Some(token);
         self.start_pending_handoff();
     }
@@ -2505,6 +2749,9 @@ impl Controller {
         for session in gone {
             self.end_incoming(session, EndReason::DisplayGone);
         }
+        if self.displays_differ(&displays) {
+            self.evaluate_displays();
+        }
         let portal_token = self.portal.as_ref().map(|p| p.display.token.clone());
         if let Some(token) = portal_token {
             match displays.iter().find(|d| d.token == token).cloned() {
@@ -2539,6 +2786,12 @@ impl Controller {
     }
 
     /// The bounds of all displays except the one with this token.
+    /// True while a control request to `peer` for `device` waits (ACT-6).
+    pub fn control_request_pending(&self, peer: &ComputerId, device: &DeviceId) -> bool {
+        self.control_requests
+            .contains_key(&(peer.clone(), device.clone()))
+    }
+
     pub fn has_portal(&self) -> bool {
         self.portal.is_some()
     }
@@ -2546,6 +2799,11 @@ impl Controller {
     /// True while input is forwarded (FLOW-13).
     pub fn forwarding(&self) -> bool {
         self.portal_phase() == Some(SourcePhase::Forwarding)
+    }
+
+    /// True while forwarding and the portal is not on screen (FLOW-26).
+    pub fn portal_hidden(&self) -> bool {
+        self.forwarding() && self.portal.as_ref().is_some_and(|portal| !portal.visible)
     }
 
     /// True while the portal keeps focus during handoff and verification (FLOW-21).
@@ -2609,17 +2867,7 @@ impl Controller {
     }
 
     pub fn control_screen(&self) -> ControlScreen {
-        let portal_token = self.portal.as_ref().map(|p| p.display.token.clone());
-        let displays = self
-            .display_cache
-            .iter()
-            .cloned()
-            .map(|d| DisplayRow {
-                has_portal: Some(&d.token) == portal_token.as_ref(),
-                name: display_name(&d),
-                token: d.token,
-            })
-            .collect();
+        let session = self.portal_screen().and_then(|p| p.session);
         let devices = self
             .local_devices()
             .into_iter()
@@ -2646,7 +2894,8 @@ impl Controller {
         ControlScreen {
             computer: self.label_of(&self.local),
             fingerprint: self.fingerprint.clone(),
-            displays,
+            displays: self.menu_screen().displays,
+            session,
             devices,
             incoming,
             clipboard: self

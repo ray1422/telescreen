@@ -271,7 +271,7 @@ impl Injector for MacInjector {
         match *event {
             InputEvent::Key { key, down } => self.key(key, down),
             InputEvent::Button { button, down } => self.button(button, down),
-            InputEvent::Scroll { dx, dy } => self.scroll(dx, dy),
+            InputEvent::Scroll { dx, dy, .. } => self.scroll(dx, dy),
         }
     }
 }
