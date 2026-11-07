@@ -20,16 +20,24 @@ jobs:
           dnf -y install epel-release dnf-plugins-core
           dnf config-manager --set-enabled crb
           dnf -y --setopt=install_weak_deps=False install git gcc-c++ cmake ninja-build python3-pip gettext xz bzip2 file findutils which binutils \
-            zlib-devel bzip2-devel xz-devel libzstd-devel mesa-libGL-devel mesa-libEGL-devel \
+            zlib-devel bzip2-devel xz-devel libzstd-devel openssl-devel mesa-libGL-devel mesa-libEGL-devel \
             libxkbcommon-devel libxkbcommon-x11-devel wayland-devel fontconfig-devel freetype-devel dbus-devel \
             libX11-devel libxcb-devel xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-cursor \
             patchelf desktop-file-utils
       - uses: actions/checkout@v4
-      - uses: actions/cache@v4
+      # Save the built frameworks also after a failure, so that the next run
+      # continues from the first framework that failed.
+      - uses: actions/cache/restore@v4
         with:
           path: spikes/appimage/work/kf6
-          key: kf6-6.20.0-qt6.8.3-alma9-v1
+          key: kf6-6.20.0-qt6.8.3-alma9-${{ github.run_id }}
+          restore-keys: kf6-6.20.0-qt6.8.3-alma9-
       - run: sh spikes/appimage/build.sh
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: spikes/appimage/work/kf6
+          key: kf6-6.20.0-qt6.8.3-alma9-${{ github.run_id }}
       - uses: actions/upload-artifact@v4
         with:
           name: appimage
