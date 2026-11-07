@@ -10,7 +10,7 @@
 //!   outputs together, so this backend computes the position in that area. Its
 //!   scroll uses [`ButtonScroll`] on KWin, and the wheel on other compositors.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use evdev::uinput::VirtualDevice;
 use evdev::{
@@ -42,11 +42,6 @@ const AXIS_MAX: i32 = 65_535;
 /// has 120 units and is 60 pixels. The user changes the speed with `scroll-speed`.
 const WHEEL_UNITS_PER_PIXEL: f32 = 2.0;
 
-/// The button scroll of IN-15 ends a scroll this time after the last scroll
-/// event, also after an end phase (IN-18). A shorter time made the scroll choppy:
-/// the next flick started while the button was pressed again (user, 2026-11-07).
-const BUTTON_SCROLL_IDLE_END: Duration = Duration::from_secs(1);
-
 enum PointerBackend {
     Virtual {
         manager: ZwlrVirtualPointerManagerV1,
@@ -70,6 +65,8 @@ pub struct LinuxInjector {
     start: Instant,
     /// The time of the last scroll event that was not an end (IN-18).
     scrolling: Option<Instant>,
+    /// The last scroll that moved, for the direction of the end (IN-15).
+    last_scroll: (f32, f32),
 }
 
 impl std::fmt::Debug for LinuxInjector {
@@ -118,6 +115,7 @@ impl LinuxInjector {
             keyboard,
             start: Instant::now(),
             scrolling: None,
+            last_scroll: (0.0, 0.0),
         })
     }
 
@@ -174,14 +172,45 @@ impl LinuxInjector {
 
     fn scroll(&mut self, dx: f32, dy: f32, phase: ScrollPhase) -> Result<(), PlatformError> {
         self.inject_scroll(dx, dy)?;
-        // The button scroll ends a scroll only after `BUTTON_SCROLL_IDLE_END`:
-        // each end needs a new press, and the next scroll waits for it (IN-18).
-        if phase == ScrollPhase::End && !self.button_scroll() {
+        if dx != 0.0 || dy != 0.0 {
+            self.last_scroll = (dx, dy);
+        }
+        if phase == ScrollPhase::End {
             self.end_scroll()
         } else {
             self.scrolling = Some(Instant::now());
             Ok(())
         }
+    }
+
+    /// IN-15: the end of a button scroll. The button stays down, because a new
+    /// press waits 250 ms. One wheel unit on the absolute pointer makes Chromium
+    /// release the scroll target, so that the next scroll goes to the pane below
+    /// the pointer. The unit is on the other axis than the last scroll, and its
+    /// opposite follows, so the view does not move.
+    fn release_scroll_target(&mut self) -> Result<(), PlatformError> {
+        let (dx, dy) = self.last_scroll;
+        let PointerBackend::Uinput {
+            device,
+            button_scroll: Some(_),
+            ..
+        } = &mut self.backend
+        else {
+            return Ok(());
+        };
+        let axis = if dx.abs() > dy.abs() {
+            RelativeAxisCode::REL_WHEEL_HI_RES
+        } else {
+            RelativeAxisCode::REL_HWHEEL_HI_RES
+        };
+        // One unit and its opposite, as two events: the view goes back to where
+        // it was, also in a pane that scrolls on that axis.
+        for value in [1, -1] {
+            device
+                .emit(&[evdev::InputEvent::new(EventType::RELATIVE.0, axis.0, value)])
+                .map_err(failed)?;
+        }
+        Ok(())
     }
 
     fn button_scroll(&self) -> bool {
@@ -200,6 +229,9 @@ impl LinuxInjector {
         if self.scrolling.take().is_none() {
             return Ok(());
         }
+        if self.button_scroll() {
+            return self.release_scroll_target();
+        }
         let time = self.time();
         match &mut self.backend {
             PointerBackend::Virtual { pointer, .. } => {
@@ -212,10 +244,7 @@ impl LinuxInjector {
                 pointer.frame();
                 self.flush()
             }
-            PointerBackend::Uinput { button_scroll, .. } => match button_scroll {
-                Some(button_scroll) => button_scroll.end_scroll().map_err(failed),
-                None => Ok(()),
-            },
+            PointerBackend::Uinput { .. } => Ok(()),
         }
     }
 
@@ -397,14 +426,9 @@ impl Injector for LinuxInjector {
     }
 
     fn tick(&mut self, now: Instant) -> Result<(), PlatformError> {
-        let idle = if self.button_scroll() {
-            BUTTON_SCROLL_IDLE_END
-        } else {
-            SCROLL_IDLE_END
-        };
         if self
             .scrolling
-            .is_some_and(|last| now.duration_since(last) >= idle)
+            .is_some_and(|last| now.duration_since(last) >= SCROLL_IDLE_END)
         {
             self.end_scroll()?;
         }
