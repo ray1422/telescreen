@@ -74,6 +74,9 @@ cp -R "$LIBDIR/plugins/"* AppDir/usr/plugins/ || true
 cp -R "$QT/plugins/wayland-graphics-integration-client" AppDir/usr/plugins/
 find AppDir/usr/plugins AppDir/usr/qml -name '*.so' | sort
 
+# --deploy-deps-only does not go into subdirectories: give each copied file.
+copied=$(find AppDir/usr/plugins AppDir/usr/qml/org/kde -name '*.so' -printf '--deploy-deps-only %p ')
+
 curl -fsSLO https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
 curl -fsSLO https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
 chmod +x linuxdeploy-*.AppImage
@@ -90,12 +93,7 @@ export LDAI_OUTPUT=$OUT/Telescreen-preview-x86_64.AppImage
     --custom-apprun "$ROOT/spikes/appimage/AppRun" \
     --desktop-file AppDir/usr/share/applications/dev.telescreen.Telescreen.desktop \
     --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/dev.telescreen.Telescreen.png \
-    --deploy-deps-only AppDir/usr/plugins/kf6 \
-    --deploy-deps-only AppDir/usr/plugins/kiconthemes6 \
-    --deploy-deps-only AppDir/usr/plugins/iconengines \
-    --deploy-deps-only AppDir/usr/plugins/wayland-graphics-integration-client \
-    --deploy-deps-only AppDir/usr/qml/org/kde/desktop \
-    --deploy-deps-only AppDir/usr/qml/org/kde/qqc2desktopstyle \
+    $copied \
     --plugin qt --output appimage
 # The copied plugins must use the bundled KDE Frameworks, never the ones of the host.
 echo "KDE Frameworks in the AppImage:"
