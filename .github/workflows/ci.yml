@@ -16,6 +16,17 @@ jobs:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config
       - run: rustup toolchain install stable --profile minimal && rustup default stable
+      # A pull request restores only its own caches and the caches of the
+      # base branch. The release workflow saves the same key on that branch.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-linux-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-linux-
       - run: cargo test --workspace
 
   macos:
@@ -23,6 +34,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal && rustup default stable
+      # A pull request restores only its own caches and the caches of the
+      # base branch. The release workflow saves the same key on that branch.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-macos-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-macos-
       - run: cargo test --workspace
       # The bundle with the Control Center extension. The App Intents metadata
       # must come from the Xcode tool, not from the fallback (spike 8).
