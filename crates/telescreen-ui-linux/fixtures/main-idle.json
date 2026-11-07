@@ -1,0 +1,97 @@
+{
+  "menu": {
+    "computer": "Linux workstation",
+    "glyph": "idle",
+    "sessions": [],
+    "displays": [
+      {
+        "token": "HDMI-A-2",
+        "name": "LG Ultrawide (HDMI-A-2)",
+        "matching": {
+          "kind": "done"
+        },
+        "can_refresh": true,
+        "devices": [
+          {
+            "device": "shared-lg",
+            "alias": "lg",
+            "label": "LG ultrawide",
+            "state": "confirmed",
+            "candidates": [
+              {
+                "target": "mac",
+                "label": "Mac",
+                "status": "online",
+                "switch_and_control": null,
+                "switch_display_only": null,
+                "control_only": "The display shows this computer"
+              },
+              {
+                "target": "studio",
+                "label": "Studio PC",
+                "status": "offline",
+                "switch_and_control": "Studio PC is offline",
+                "switch_display_only": null,
+                "control_only": "Studio PC is offline"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "token": "eDP-1",
+        "name": "Laptop Panel (eDP-1)",
+        "matching": {
+          "kind": "done"
+        },
+        "can_refresh": false,
+        "devices": []
+      }
+    ],
+    "control_requests": [
+      {
+        "peer": "mac",
+        "peer_label": "Mac",
+        "device": "shared-lg",
+        "device_label": "LG ultrawide",
+        "waiting": false
+      }
+    ],
+    "clipboard": true
+  },
+  "fingerprint": "SHA256:fixture-not-a-real-key",
+  "computers": [
+    {
+      "id": "linux",
+      "label": "Linux workstation",
+      "this_computer": true,
+      "trusted": true,
+      "connected": false
+    },
+    {
+      "id": "mac",
+      "label": "Mac",
+      "this_computer": false,
+      "trusted": true,
+      "connected": true
+    },
+    {
+      "id": "studio",
+      "label": "Studio PC",
+      "this_computer": false,
+      "trusted": false,
+      "connected": false
+    }
+  ],
+  "devices": [
+    {
+      "alias": "lg",
+      "device": "shared-lg",
+      "state": "confirmed"
+    }
+  ],
+  "discovery": {
+    "remaining_seconds": null
+  },
+  "notices": []
+}

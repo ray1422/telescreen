@@ -1,0 +1,21 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "The Telescreen contributors"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Switch the shared display and control another computer",
+        "Icon": "video-display",
+        "Id": "dev.telescreen.menu",
+        "License": "BSD-3-Clause",
+        "Name": "Telescreen",
+        "Version": "0.501.0"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-DBusActivationService": "dev.telescreen.Telescreen",
+    "X-Plasma-NotificationArea": "true",
+    "X-Plasma-NotificationAreaCategory": "Hardware"
+}

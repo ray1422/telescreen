@@ -153,3 +153,18 @@ The arguments come from the swift-build sources (swiftlang/swift-build, read 202
 Checked with no Xcode: `swiftc -wmo -emit-const-values-path` with the protocol list writes a `.swiftconstvalues` file that names `TelescreenControl.OpenMenuIntent`. The call of `appintentsmetadataprocessor` itself is not tested here (no Xcode); the first CI run of the macOS job tests it. The script compares the `actions` of the generated file with the fallback and warns when they differ.
 
 `actool` for the custom SF Symbol: not done. Read its arguments from swift-build in the same way before the CI step.
+
+## Spike 9: an AppImage of the Linux UI (2026-11-07, AlmaLinux 9, Qt 6.12.0 and 6.8.3, KDE Frameworks 6.20.0, KDE Plasma 6.8)
+
+Question: can one AppImage with its own Qt and Kirigami run on most distributions and follow the KDE color scheme? `packaging/appimage/build.sh --preview` makes it with the QML preview of `telescreen-ui-linux` (no Rust). `.github/workflows/appimage.yml` builds it on AlmaLinux 9 and starts it in other containers.
+
+| Point | Result |
+| --- | --- |
+| Build | Qt from the official binaries (aqtinstall, `-m qtshadertools qt5compat`; the Wayland client is a default archive). 11 KDE Frameworks from the release tarballs (ECM to qqc2-desktop-style). KArchive needs OpenSSL; Sonnet needs one spell checker backend (Hunspell). About 2 minutes with the cache. |
+| Size | Qt 6.12.0: 53.9 MiB AppImage, 176 MiB unpacked. The largest part is the ICU data (30.6 MiB). Qt 6.8.3: 49.4 MiB. |
+| glibc | 2.34 with Qt 6.8.3 and with Qt 6.12.0. |
+| Other distributions | Starts offscreen in ubuntu:22.04, ubuntu:24.04, debian:12, and fedora:43 with only these host libraries: OpenGL and EGL (libglvnd), fontconfig, freetype, a font, libxkbcommon, libdbus, glib (no recommended or weak packages). |
+| KDE Plasma 6.8, Breeze Dark | The window follows the color scheme, the accent color, the Breeze icons, and the fonts of the host, with no plasma-integration in the AppImage. The direct start (FUSE) works. Difference: the buttons show the mnemonic underlines; the KDE platform theme normally hides them. |
+| linuxdeploy-plugin-qt | It does not deploy `plugins/wayland-graphics-integration-client`: with no EGL integration, Qt Quick has no OpenGL context on Wayland. It does not find the KDE style, because Kirigami selects it at runtime. Copied plugins need `--deploy-deps-only` for each file (not recursive); else they load the KDE Frameworks of the host, which need the Qt of the host (6.12), and fail. |
+| Qt Shape | The curve renderer of Qt 6.8.3 keeps a stale outline after a resize (wrong card sizes). Qt 6.12.0 is correct. Thus the AppImage has Qt 6.12. |
+| Result | Feasible for the release (user, 2026-11-07: a new Qt in the AppImage). Not tested: the `telescreen` binary with the Qt UI (the app does not link Qt yet), the applet install from the AppImage, GNOME and niri. |
