@@ -20,7 +20,7 @@ jobs:
           dnf -y install epel-release dnf-plugins-core
           dnf config-manager --set-enabled crb
           dnf -y --setopt=install_weak_deps=False install git gcc-c++ cmake ninja-build python3-pip gettext xz bzip2 file findutils which binutils \
-            zlib-devel bzip2-devel xz-devel libzstd-devel openssl-devel mesa-libGL-devel mesa-libEGL-devel \
+            zlib-devel bzip2-devel xz-devel libzstd-devel openssl-devel hunspell-devel mesa-libGL-devel mesa-libEGL-devel \
             libxkbcommon-devel libxkbcommon-x11-devel wayland-devel fontconfig-devel freetype-devel dbus-devel \
             libX11-devel libxcb-devel xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-cursor \
             patchelf desktop-file-utils
