@@ -5,4 +5,5 @@ Comment=Control computers that share a display with one keyboard and mouse
 Exec=telescreen
 Terminal=false
 Categories=Utility;
+Icon=dev.telescreen.Telescreen
 StartupWMClass=dev.telescreen.Telescreen

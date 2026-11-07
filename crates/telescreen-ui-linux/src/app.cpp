@@ -24,6 +24,9 @@ std::int32_t ts_ui_run()
     QApplication::setApplicationName(QStringLiteral("Telescreen"));
     // The Wayland app ID; the launcher entry has this name (DIST-4).
     QApplication::setDesktopFileName(QStringLiteral("dev.telescreen.Telescreen"));
+    // The window icon also with no installed launcher entry (DIST-4). Qt 6.8 or
+    // newer sends it to a compositor with xdg-toplevel-icon.
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/qt/qml/dev/telescreen/ui/qml/telescreen.png")));
     // UI-15: the app continues to run when the user closes all its windows.
     QApplication::setQuitOnLastWindowClosed(false);
 
