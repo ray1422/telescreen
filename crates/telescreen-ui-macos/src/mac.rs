@@ -572,8 +572,9 @@ impl MacUi {
             | NSWindowStyleMask::Resizable
             // The header layer goes under the title bar (mockup Version 75).
             | NSWindowStyleMask::FullSizeContentView;
-        // The size of the mockup "macOS · main window".
-        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1000.0, 680.0));
+        // The smallest size, the `minWidth` and `minHeight` of `MainView`
+        // (user, 2026-11-08). The mockup "macOS · main window" is 1000 x 680.
+        let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(820.0, 520.0));
         // SAFETY: the NSWindow designated initializer, on the main thread.
         let main: Retained<NSWindow> = unsafe {
             msg_send![NSWindow::alloc(mtm), initWithContentRect: rect, styleMask: style,
