@@ -22,8 +22,9 @@ pub struct ControlScreen {
     pub fingerprint: String,
     /// The displays with the actions of each candidate (ACT-1, ACT-5).
     pub displays: Vec<MenuDisplay>,
-    /// The session of the portal on this source.
-    pub session: Option<SessionRow>,
+    /// The session of each portal on this source, in the sequence of the
+    /// portal ids (FLOW-25).
+    pub sessions: Vec<PortalSessionRow>,
     pub devices: Vec<DeviceRow>,
     pub incoming: Vec<IncomingRow>,
     /// The text clipboard switch, or `None` without a backend (CLIP-1, CLIP-8).
@@ -32,6 +33,14 @@ pub struct ControlScreen {
     pub discovery: Option<DiscoveryRow>,
     /// Problems and limits that the user must know (IN-12), newest last.
     pub notices: Vec<String>,
+}
+
+/// The session of one portal on this source (FLOW-25). The actions of the row
+/// name this portal: `SourceHandBack` and `EndSession` (HB-3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortalSessionRow {
+    pub portal: PortalId,
+    pub session: SessionRow,
 }
 
 /// "Allow discovery" (NET-14).
@@ -140,7 +149,9 @@ pub struct PromptScreen {
     /// Then the window takes clicks and the keyboard. The controller sets it;
     /// a shell does not derive it from the other fields.
     pub ack_here: bool,
-    /// The warning of FLOW-26: the source does not show its portal.
+    /// The warning of FLOW-26: the source does not show its portal. A warning
+    /// that is not blank takes clicks and the keyboard (see
+    /// [`PromptScreen::takes_input`]), but it takes no acknowledgement.
     pub portal_hidden: bool,
     /// The prompt shows nothing. A presenter that keeps blank prompts
     /// ([`PromptPresenter::keeps_blank`]) keeps the window, so that the next
@@ -154,7 +165,7 @@ impl PromptScreen {
         Self {
             source: Some(source),
             confirm_key: String::new(),
-            text: Some("Input is paused".into()),
+            text: Some("Input is paused\nPress Escape 10 times to end the session".into()),
             ack_wanted: false,
             ack_here: false,
             portal_hidden: true,
@@ -168,6 +179,13 @@ impl PromptScreen {
             blank: true,
             ..Self::portal_hidden(source)
         }
+    }
+
+    /// The window takes clicks and the keyboard: for the acknowledgement on
+    /// this computer (VER-4), or for the safety exit on the warning (FLOW-26,
+    /// IN-8). A blank prompt takes no input.
+    pub fn takes_input(&self) -> bool {
+        !self.blank && (self.ack_here || self.portal_hidden)
     }
 
     pub fn title(&self) -> Option<String> {
@@ -290,6 +308,15 @@ pub trait VideoInputText {
     fn text(&self) -> &'static str;
 }
 
+/// A press in a prompt window that takes input ([`PromptScreen::takes_input`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptPress {
+    /// A left click, Return, or keypad Enter (VER-4).
+    Acknowledge,
+    /// An Escape key down that is not an auto-repeat (IN-8, FLOW-26).
+    Escape,
+}
+
 /// Shows or updates the verifier window on a display of the destination (UI-5).
 /// The macOS backend and the Linux layer-shell backend implement it.
 pub trait PromptPresenter {
@@ -306,7 +333,7 @@ pub trait PromptPresenter {
         false
     }
     /// Draws the cursor of the source on a shown prompt at a position in the
-    /// display, or removes it (FLOW-26). It takes no input.
+    /// display, or removes it (FLOW-7, FLOW-26).
     fn cursor(&mut self, _prompt: PromptId, _at: Option<Normalized>) {}
 }
 

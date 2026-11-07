@@ -122,9 +122,6 @@ pub enum CapturedEvent {
     /// The capture can no longer see forwarded up events (IN-13). It applies to
     /// all portals.
     InputLost,
-    /// The hand back shortcut (IN-7) in the portal with the keyboard focus. It
-    /// starts a hand back of that portal and is never forwarded.
-    HandBackShortcut { portal: PortalId },
     /// The safety exit (IN-8). The capture already stopped suppression for all
     /// portals.
     SafetyExit,

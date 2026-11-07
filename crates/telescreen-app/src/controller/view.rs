@@ -1,6 +1,6 @@
 //! The view models and the queries of the window layer (spec section 4.7).
 
-use telescreen_core::ids::{ComputerId, DeviceId, PortalId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, PortalId, SessionId};
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::pointer_stats::PointerSummary;
 use telescreen_core::routes;
@@ -9,11 +9,25 @@ use telescreen_core::session::source::{SourcePhase, SourceSession};
 use telescreen_core::session::target::TargetPhase;
 use telescreen_core::wire::{EndReason, RefuseReason};
 use telescreen_view::{
-    CandidateRow, ControlScreen, DeviceRow, DiscoveryRow, IncomingRow, PortalScreen, SessionPhase,
-    SessionRow,
+    CandidateRow, ControlScreen, DeviceRow, DiscoveryRow, IncomingRow, PortalScreen,
+    PortalSessionRow, SessionPhase, SessionRow,
 };
 
 use super::Controller;
+
+/// The state of one portal for the debug protocol (FLOW-25,
+/// docs/debug-protocol.md).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortalState {
+    pub portal: PortalId,
+    /// The display token of the portal display.
+    pub display: DisplayToken,
+    /// The session id, after the target granted the lease.
+    pub session: Option<SessionId>,
+    /// The session phase, or `None` if the portal has no session.
+    pub state: Option<SessionPhase>,
+    pub screen: PortalScreen,
+}
 
 impl Controller {
     /// Pointer statistics of the newest incoming session, else the last ended
@@ -51,7 +65,7 @@ impl Controller {
 
     /// True while the portal forwards and is not on screen (FLOW-26).
     pub fn portal_hidden(&self, id: PortalId) -> bool {
-        self.forwarding(id) && self.portals.get(&id).is_some_and(|portal| !portal.visible)
+        self.forwarding(id) && self.portals.get(&id).is_some_and(|portal| !portal.shown())
     }
 
     /// True while the portal keeps focus during handoff and verification (FLOW-21).
@@ -115,12 +129,33 @@ impl Controller {
         }
     }
 
+    /// The state of each portal, in the sequence of the portal ids (FLOW-25).
+    pub fn portal_states(&self) -> Vec<PortalState> {
+        self.portals
+            .iter()
+            .filter_map(|(id, portal)| {
+                let screen = self.portal_screen(*id)?;
+                Some(PortalState {
+                    portal: *id,
+                    display: portal.display.token.clone(),
+                    session: portal.session.as_ref().and_then(SourceSession::session),
+                    state: screen.session.as_ref().map(|s| s.phase.clone()),
+                    screen,
+                })
+            })
+            .collect()
+    }
+
     pub fn control_screen(&self) -> ControlScreen {
-        // The control screen shows the session of the main portal only.
-        let session = self
-            .main_portal()
-            .and_then(|id| self.portal_screen(id))
-            .and_then(|p| p.session);
+        // One row for the session of each portal (FLOW-25).
+        let sessions = self
+            .portal_ids()
+            .into_iter()
+            .filter_map(|portal| {
+                let session = self.portal_screen(portal)?.session?;
+                Some(PortalSessionRow { portal, session })
+            })
+            .collect();
         let devices = self
             .local_devices()
             .into_iter()
@@ -147,7 +182,7 @@ impl Controller {
             computer: self.label_of(&self.local),
             fingerprint: self.fingerprint.clone(),
             displays: self.menu_screen().displays,
-            session,
+            sessions,
             devices,
             incoming,
             clipboard: self

@@ -3,9 +3,9 @@
 //!
 //! The tap runs on its own thread with its own run loop. The callback only reads
 //! the event, decides to suppress it, and pushes a [`CapturedEvent`] to a bounded
-//! queue (IN-2). The callback itself handles the hand back shortcut and the safety
-//! exit, so they work when the main thread does not respond (IN-7, IN-8). A
-//! watchdog thread stops suppression when the main thread stops its heartbeat (IN-9).
+//! queue (IN-2). The callback itself handles the safety exit, so it works when
+//! the main thread does not respond (IN-8). A watchdog thread stops suppression
+//! when the main thread stops its heartbeat (IN-9).
 //!
 //! The cursor is always free (FLOW-20). The tap never suppresses pointer motion,
 //! drags included. While forwarding, it suppresses and reports the key, button,
@@ -38,7 +38,6 @@ const SLOTS: usize = 4;
 /// IN-9: the main thread must give a heartbeat in this time while forwarding.
 const WATCHDOG: Duration = Duration::from_secs(3);
 const KEYCODE_ESCAPE: i64 = 0x35;
-const RELEASE_FLAGS: u64 = ffi::FLAG_CONTROL | ffi::FLAG_ALTERNATE | ffi::FLAG_COMMAND;
 
 const OFF: u8 = 0;
 const ARMED: u8 = 1;
@@ -325,6 +324,12 @@ impl Slot {
         self.mode.load(SeqCst) == FORWARDING
     }
 
+    /// The slot reports the cursor position: it forwards, or it waits for the
+    /// confirmation (FLOW-7, FLOW-21).
+    fn reports_cursor(&self) -> bool {
+        self.forwarding() || (self.active() && self.guarded.load(SeqCst))
+    }
+
     fn area(&self) -> Rect {
         let v = |i: usize| f64::from_bits(self.area[i].load(SeqCst));
         Rect {
@@ -415,7 +420,8 @@ impl Shared {
     }
 
     /// The cursor is at `at`: report a crossing of the edge of the portal of the
-    /// slot (FLOW-14), and the position while forwarding in the portal.
+    /// slot (FLOW-14), and the position in the portal while forwarding or while
+    /// the portal waits for the confirmation (FLOW-7).
     fn cursor_at(&self, slot: &Slot, at: Point) {
         let portal = slot.portal();
         if portal.0 == 0 {
@@ -436,7 +442,7 @@ impl Shared {
         // FLOW-26: while the portal is hidden, the position in the portal area
         // and the move out of it go to the warning on the target.
         let report = inside || over_hidden || was_over_hidden;
-        if report && slot.forwarding() {
+        if report && slot.reports_cursor() {
             slot.moved[0].store(at.x.to_bits(), SeqCst);
             slot.moved[1].store(at.y.to_bits(), SeqCst);
             if !slot.move_queued.swap(true, SeqCst) {
@@ -445,9 +451,10 @@ impl Shared {
         }
     }
 
-    /// The cursor is at `at`: update each forwarding portal.
+    /// The cursor is at `at`: update each portal that forwards or waits for the
+    /// confirmation.
     fn cursor_at_all(&self, at: Point) {
-        for slot in self.slots.iter().filter(|slot| slot.forwarding()) {
+        for slot in self.slots.iter().filter(|slot| slot.reports_cursor()) {
             self.cursor_at(slot, at);
         }
     }
@@ -580,7 +587,9 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
         ffi::MOUSE_MOVED | ffi::LEFT_DRAGGED | ffi::RIGHT_DRAGGED | ffi::OTHER_DRAGGED
     );
     if motion {
-        if forwarding {
+        // FLOW-7: while a portal waits for the confirmation, its prompt on the
+        // target shows the cursor.
+        if forwarding || shared.guarded_any() {
             // SAFETY: the event is valid during the callback.
             let at = unsafe { ffi::CGEventGetLocation(event) };
             shared.cursor_at_all(Point { x: at.x, y: at.y });
@@ -589,12 +598,17 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
     }
     let guarded = shared.guarded_any();
     // IN-8: the safety exit works also while a portal waits for the
-    // confirmation (FLOW-21). While forwarding, `forward` counts it.
+    // confirmation (FLOW-21). While forwarding, `forward` counts it. With
+    // only armed portals, Escape does not count.
     if !forwarding
         && guarded
         && kind == ffi::KEY_DOWN
         && field(ffi::FIELD_KEYCODE) == KEYCODE_ESCAPE
-        && shared.lock_keys().escapes.press(Instant::now())
+        && shared.lock_keys().escapes.escape_down(
+            Instant::now(),
+            true,
+            field(ffi::FIELD_KEYBOARD_AUTOREPEAT) != 0,
+        )
     {
         shared.stop(CapturedEvent::SafetyExit);
         return false;
@@ -638,20 +652,6 @@ fn forward(shared: &Shared, kind: u32, event: CGEventRef, field: &dyn Fn(u32) ->
         ffi::KEY_DOWN | ffi::KEY_UP => {
             let code = field(ffi::FIELD_KEYCODE);
             let down = kind == ffi::KEY_DOWN;
-            if down && code == KEYCODE_ESCAPE {
-                // SAFETY: as above.
-                let flags = unsafe { ffi::CGEventGetFlags(event) };
-                if flags & RELEASE_FLAGS == RELEASE_FLAGS
-                    && let Some(portal) = hand_back_portal(shared, &keys)
-                {
-                    // IN-7: never forwarded. Only this portal stops.
-                    if let Some(slot) = shared.slot(portal) {
-                        slot.mode.store(OFF, SeqCst);
-                    }
-                    shared.push(CapturedEvent::HandBackShortcut { portal });
-                    return true;
-                }
-            }
             let Some(key) = u16::try_from(code).ok().and_then(keys::from_mac) else {
                 return keys
                     .router
@@ -661,7 +661,15 @@ fn forward(shared: &Shared, kind: u32, event: CGEventRef, field: &dyn Fn(u32) ->
             let forwarded = route(shared, &mut keys, InputEvent::Key { key, down });
             // IN-8: count each Escape while forwarding, also when the key stays
             // on macOS, for example while the portal has no focus (FLOW-26).
-            if down && key == Key::ESC && keys.escapes.press(Instant::now()) {
+            // An auto-repeated key down does not count.
+            if down
+                && key == Key::ESC
+                && keys.escapes.escape_down(
+                    Instant::now(),
+                    true,
+                    field(ffi::FIELD_KEYBOARD_AUTOREPEAT) != 0,
+                )
+            {
                 shared.stop(CapturedEvent::SafetyExit);
             }
             forwarded
@@ -716,17 +724,6 @@ fn forward(shared: &Shared, kind: u32, event: CGEventRef, field: &dyn Fn(u32) ->
         // other types: in the portal, suppress and do not forward (IN-10, ADR 0003).
         _ => shared.forward_now() || shared.blocked_now(),
     }
-}
-
-/// The portal of the hand back shortcut (IN-7, FLOW-25): the forwarding portal
-/// with the keyboard focus, else the only forwarding portal.
-fn hand_back_portal(shared: &Shared, keys: &KeyState) -> Option<PortalId> {
-    let forwarding = shared
-        .slots
-        .iter()
-        .filter(|slot| slot.forwarding())
-        .map(Slot::portal);
-    portal_capture::hand_back_portal(keys.router.keyboard(), forwarding)
 }
 
 /// The phase of a scroll from the trackpad fields (IN-18). A mouse wheel has
@@ -808,6 +805,52 @@ fn modifier_events(keys: &mut KeyState, code: i64, flags: u64) -> Vec<InputEvent
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A capture with no tap: the tests call the callback code directly.
+    fn shared_with_slot(mode: u8, guarded: bool) -> (Shared, Receiver<CapturedEvent>) {
+        let (tx, rx) = bounded(QUEUE);
+        let shared = Shared {
+            start: Instant::now(),
+            slots: Default::default(),
+            secure_input: AtomicBool::new(false),
+            heartbeat_ms: AtomicU64::new(0),
+            overflow: AtomicBool::new(false),
+            woken: AtomicBool::new(false),
+            tap: AtomicPtr::new(std::ptr::null_mut()),
+            keys: Mutex::default(),
+            tx,
+            wake: Box::new(|| {}),
+        };
+        let slot = &shared.slots[0];
+        slot.id.store(1, SeqCst);
+        slot.mode.store(mode, SeqCst);
+        slot.guarded.store(guarded, SeqCst);
+        slot.visible.store(true, SeqCst);
+        for (cell, value) in slot.area.iter().zip([0.0_f64, 0.0, 100.0, 100.0]) {
+            cell.store(value.to_bits(), SeqCst);
+        }
+        (shared, rx)
+    }
+
+    fn moves(rx: &Receiver<CapturedEvent>) -> usize {
+        rx.try_iter()
+            .filter(|e| matches!(e, CapturedEvent::PointerMoved { .. }))
+            .count()
+    }
+
+    #[test]
+    fn flow7_a_guarded_portal_reports_the_cursor_position() {
+        let (shared, rx) = shared_with_slot(ARMED, true);
+        shared.cursor_at_all(Point { x: 50.0, y: 50.0 });
+        assert_eq!(moves(&rx), 1);
+    }
+
+    #[test]
+    fn flow7_an_armed_portal_with_no_guard_reports_no_position() {
+        let (shared, rx) = shared_with_slot(ARMED, false);
+        shared.cursor_at_all(Point { x: 50.0, y: 50.0 });
+        assert_eq!(moves(&rx), 0);
+    }
 
     #[test]
     fn in18_the_scroll_ends_after_the_momentum() {

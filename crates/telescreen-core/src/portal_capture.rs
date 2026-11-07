@@ -1,7 +1,6 @@
 //! The capture rules of the portals on the source that all platforms share:
-//! the safety exit (IN-8), the portal of the hand back shortcut (IN-7,
-//! FLOW-25), and a change of the native keyboard focus (FLOW-22, FLOW-23,
-//! IN-13).
+//! the safety exit (IN-8) and a change of the native keyboard focus
+//! (FLOW-22, FLOW-23, IN-13).
 //!
 //! The input callback calls these inline (IN-2): they do not allocate, do not
 //! lock, and do not read a clock. The caller gives the time.
@@ -17,8 +16,8 @@ pub const SAFETY_PRESSES: usize = 10;
 /// IN-8: the time for [`SAFETY_PRESSES`].
 pub const SAFETY_WINDOW: Duration = Duration::from_secs(5);
 
-/// Counts the Escape presses of the safety exit (IN-8). The caller decides
-/// which presses count.
+/// Counts the Escape presses of the safety exit (IN-8). Give each Escape key
+/// down to [`SafetyExit::escape_down`]: it applies the rules of IN-8.
 #[derive(Debug, Clone)]
 pub struct SafetyExit {
     /// The times of the last presses, as a ring.
@@ -54,6 +53,19 @@ impl SafetyExit {
         false
     }
 
+    /// Records one Escape key down at `now` by the counting rules of IN-8.
+    /// Returns true if the safety exit fires. All capture code (the source
+    /// and the warning of the destination) uses this function.
+    ///
+    /// - `waits_or_forwards`: a portal waits for the confirmation (FLOW-21)
+    ///   or forwards. Only then does the source suppress input. An armed
+    ///   capture with no such portal does not count.
+    /// - `repeat`: the key down is an auto-repeat of a held key. It does not
+    ///   count, because a held key is not ten presses.
+    pub fn escape_down(&mut self, now: Instant, waits_or_forwards: bool, repeat: bool) -> bool {
+        waits_or_forwards && !repeat && self.press(now)
+    }
+
     /// Forgets all presses, for example when forwarding starts.
     pub fn reset(&mut self) {
         *self = Self::new();
@@ -64,28 +76,6 @@ impl Default for SafetyExit {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// The portal of the hand back shortcut (IN-7, FLOW-25): the forwarding portal
-/// with the keyboard focus, else the only forwarding portal. With more than one
-/// forwarding portal and none with the keyboard focus, no portal gets it.
-///
-/// `keyboard` is the portal with the keyboard focus. `forwarding` gives each
-/// portal that forwards.
-pub fn hand_back_portal(
-    keyboard: Option<PortalId>,
-    forwarding: impl IntoIterator<Item = PortalId>,
-) -> Option<PortalId> {
-    let mut only = None;
-    let mut count = 0_usize;
-    for portal in forwarding {
-        if Some(portal) == keyboard {
-            return keyboard;
-        }
-        only = Some(portal);
-        count += 1;
-    }
-    if count == 1 { only } else { None }
 }
 
 /// What the capture can see after a portal window loses the native keyboard

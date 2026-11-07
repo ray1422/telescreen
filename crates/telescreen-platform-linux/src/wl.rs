@@ -37,8 +37,8 @@ pub struct SeatInput {
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub pointer_on: Option<wl_surface::WlSurface>,
     pub keyboard_on: Option<wl_surface::WlSurface>,
-    /// A left click or Return on a surface.
-    pub presses: Vec<wl_surface::WlSurface>,
+    /// A left click, Return, or Escape on a surface.
+    pub presses: Vec<(wl_surface::WlSurface, telescreen_view::PromptPress)>,
 }
 
 /// One bound output: its registry name, its proxies, and its data.

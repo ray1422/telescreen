@@ -85,6 +85,39 @@ impl Controller {
         }
     }
 
+    /// True if `prompt` is the warning of FLOW-26 of an incoming session. The
+    /// warning takes no acknowledgement: its clicks and keys do nothing.
+    pub(super) fn is_portal_warning(&self, prompt: PromptId) -> bool {
+        self.incoming.values().any(|i| i.warning == Some(prompt))
+    }
+
+    /// An Escape key down in the prompt window `prompt` (IN-8, FLOW-26). It
+    /// counts only while that window shows the warning of FLOW-26. Ten in
+    /// five seconds end each session that shows the warning, with
+    /// `SafetyExit` and no hand back (HB-5).
+    pub fn prompt_escape(&mut self, prompt: PromptId, repeat: bool, now: Instant) {
+        let shows = self
+            .incoming
+            .values()
+            .any(|i| i.warning == Some(prompt) && i.target.shows_portal_warning());
+        if !self.warning_escapes.escape_down(now, shows, repeat) {
+            return;
+        }
+        let sessions: Vec<_> = self
+            .incoming
+            .iter()
+            .filter(|(_, i)| i.target.shows_portal_warning())
+            .map(|(session, i)| (*session, i.target.source().clone()))
+            .collect();
+        for (session, source) in sessions {
+            self.notice(format!(
+                "The session with {} ended: safety exit.",
+                self.label_of(&source)
+            ));
+            self.end_incoming(session, EndReason::SafetyExit);
+        }
+    }
+
     fn refuse(&mut self, peer: ComputerId, device: DeviceId, reason: RefuseReason) {
         self.ports.net.send(NetCommand::Send {
             peer,
@@ -356,7 +389,12 @@ impl Controller {
                     }
                 }
                 TargetAction::PortalCursor(at) => {
-                    if let Some(prompt) = self.portal_warning(session) {
+                    // FLOW-26: the warning while forwarding. FLOW-7: the prompt
+                    // of the session while it verifies.
+                    let prompt = self
+                        .portal_warning(session)
+                        .or_else(|| self.verifications.shown_prompt(&Owner::Session(session)));
+                    if let Some(prompt) = prompt {
                         self.ports.prompt.cursor(prompt, at);
                     }
                 }

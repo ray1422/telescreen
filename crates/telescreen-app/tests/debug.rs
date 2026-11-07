@@ -9,9 +9,10 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 use serde_json::{Value, json};
+use telescreen_app::controller::PortalState;
 use telescreen_app::debug::{self, Request, StateReport, WindowFacts, WindowRole, parse_request};
-use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
-use telescreen_view::{ControlScreen, Intent};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, PortalId, SessionId};
+use telescreen_view::{ControlScreen, Intent, PortalScreen, SessionPhase};
 
 fn parse(line: &str) -> Request {
     parse_request(line).unwrap_or_else(|e| panic!("{line}: {e}"))
@@ -126,7 +127,7 @@ fn report() -> StateReport {
             computer: "MacBook".into(),
             fingerprint: "sha256:00".into(),
             displays: vec![],
-            session: None,
+            sessions: vec![],
             devices: vec![],
             incoming: vec![],
             notices: vec!["a notice".into()],
@@ -134,6 +135,25 @@ fn report() -> StateReport {
             discovery: None,
         },
         portal: None,
+        portals: vec![
+            PortalState {
+                portal: PortalId(3),
+                display: DisplayToken::from("lg"),
+                session: Some(SessionId(7)),
+                state: Some(SessionPhase::Forwarding),
+                screen: PortalScreen {
+                    display: "LG".into(),
+                    ..PortalScreen::default()
+                },
+            },
+            PortalState {
+                portal: PortalId(4),
+                display: DisplayToken::from("dell"),
+                session: None,
+                state: None,
+                screen: PortalScreen::default(),
+            },
+        ],
         windows: vec![
             WindowFacts {
                 role: WindowRole::Control,
@@ -174,6 +194,23 @@ fn state_response() {
     assert_eq!(v["windows"][1]["role"], json!("portal"));
     assert_eq!(v["windows"][1]["monitor"], Value::Null);
     assert_eq!(v["windows"][1]["position"], Value::Null);
+}
+
+#[test]
+fn flow25_state_response_lists_each_portal() {
+    let v = line_json(&debug::state_response(&report()));
+    let portals = v["portals"].as_array().unwrap();
+    assert_eq!(portals.len(), 2);
+    assert_eq!(portals[0]["portal"], json!(3));
+    assert_eq!(portals[0]["display"], json!("lg"));
+    assert_eq!(portals[0]["session"], json!(7));
+    assert_eq!(portals[0]["state"], json!({"kind": "forwarding"}));
+    assert!(portals[0]["screen"].as_str().unwrap().contains("LG"));
+    assert_eq!(
+        portals[1],
+        json!({"portal": 4, "display": "dell", "session": null, "state": null,
+               "screen": format!("{:?}", PortalScreen::default())})
+    );
 }
 
 #[test]

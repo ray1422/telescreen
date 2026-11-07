@@ -1,7 +1,7 @@
 //! macOS backends of Telescreen (`docs/spec.md` section 8.1).
 //!
 //! - [`capture`]: the event tap that captures and suppresses input on the source,
-//!   with the safety exit and the watchdog (IN-7..IN-10, ADR 0003).
+//!   with the safety exit and the watchdog (IN-8..IN-10, ADR 0003).
 //! - [`inject`]: `CGEventPost` injection on the target.
 //! - [`displays`]: the display list.
 //! - [`window`]: AppKit adjustments of winit windows (portal level, input sources,

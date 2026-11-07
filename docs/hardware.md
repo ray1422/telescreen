@@ -68,6 +68,6 @@ Not measured by the computer: whether the display really showed the Linux comput
 
 Measured on 2026-10-27 over SSH, read-only:
 
-- The niri config has no bind for Control+Alt+Shift+Escape. Thus the portal can receive it as the Linux release shortcut (IN-7). The config binds `Mod+Shift+Escape` with `allow-inhibiting=false` to `toggle-keyboard-shortcuts-inhibit`. This bind always goes to niri, also while the portal inhibits shortcuts. It is an exit path when the portal does not respond.
+- The niri config has no bind for Control+Alt+Shift+Escape. Thus the portal could receive it as the Linux release shortcut (IN-7, removed on 2026-11-07). The config binds `Mod+Shift+Escape` with `allow-inhibiting=false` to `toggle-keyboard-shortcuts-inhibit`. This bind always goes to niri, also while the portal inhibits shortcuts. It is an exit path when the portal does not respond.
 - `ddcutil` is installed. A local script of the user sets the brightness with `ddcutil --mfg GSM --model "LG ULTRAWIDE" setvcp 10 <value>`. The `/dev/i2c-*` devices have an ACL.
 - Not tested: a video input switch with `ddcutil`. The LG alternate addressing that BetterDisplay calls `ddcAlt` is possibly `setvcp xF4 <value> --i2c-source-addr=x50`. Do not run it while the user works on the display: it switches the shared display.

@@ -229,7 +229,7 @@ fn flow11_ac7_ac10_a_failed_verification_ends() {
 }
 
 #[test]
-fn flow7_window_failure_ends_and_releases_lease() {
+fn ver5_flow11_window_failure_fails_the_verification_and_releases_lease() {
     let mut t = verifying();
     t.on_verifier(VerifierEvent::WantAck);
     let actions = t.on_verifier_shown(false);
@@ -239,12 +239,12 @@ fn flow7_window_failure_ends_and_releases_lease() {
             StopVerifier,
             Send(Message::End {
                 session: S,
-                reason: EndReason::PromptFailed
+                reason: EndReason::VerifyFailed
             }),
             ReleaseLease
         ]
     );
-    assert_eq!(t.phase(), TargetPhase::Ended(EndReason::PromptFailed));
+    assert_eq!(t.phase(), TargetPhase::Ended(EndReason::VerifyFailed));
 }
 
 #[test]
@@ -587,4 +587,41 @@ fn hb3_a_request_for_another_session_has_no_effect() {
         .is_empty()
     );
     assert_eq!(t.phase(), TargetPhase::Forwarding);
+}
+
+fn portal_cursor(x: f32) -> Message {
+    Message::PortalCursor {
+        session: S,
+        at: Some(Normalized { x, y: 0.5 }),
+    }
+}
+
+#[test]
+fn flow7_ac56_the_prompt_shows_the_cursor_while_verifying() {
+    let mut t = ack_wanted();
+    assert_eq!(
+        t.on_message(&portal_cursor(0.25)),
+        vec![TargetAction::PortalCursor(Some(Normalized {
+            x: 0.25,
+            y: 0.5
+        }))]
+    );
+    assert_eq!(
+        t.on_message(&Message::PortalCursor {
+            session: S,
+            at: None
+        }),
+        vec![TargetAction::PortalCursor(None)]
+    );
+}
+
+#[test]
+fn flow7_flow10_the_cursor_on_the_prompt_injects_nothing() {
+    for mut t in [new(), checking_display(), forwarding()] {
+        assert!(
+            t.on_message(&portal_cursor(0.25)).is_empty(),
+            "no prompt and no warning: {:?}",
+            t.phase()
+        );
+    }
 }

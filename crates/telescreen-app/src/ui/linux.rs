@@ -28,7 +28,7 @@ use telescreen_platform_linux::inject::LinuxInjector;
 use telescreen_platform_linux::prompt::LayerPrompt;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::EventLoopProxy;
-use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::monitor::MonitorHandle;
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::platform::wayland::WindowAttributesExtWayland;
@@ -57,6 +57,11 @@ struct PortalState {
     cursor: Option<Point>,
     /// The cursor is in the portal window (FLOW-20).
     inside: bool,
+    /// The portal waits for the confirmation (FLOW-21).
+    guarded: bool,
+    /// The portal is on screen: on Linux, the window is fullscreen (UI-3,
+    /// FLOW-26). While it is not, the input in the window stays local.
+    shown: bool,
     inhibitor: Option<ShortcutInhibitor>,
 }
 
@@ -68,6 +73,8 @@ impl PortalState {
             area: Rect::default(),
             cursor: None,
             inside: false,
+            guarded: false,
+            shown: true,
             inhibitor: None,
         }
     }
@@ -81,7 +88,15 @@ impl PortalState {
     }
 
     fn forward_now(&self) -> bool {
-        self.mode == Mode::Forwarding && self.inside
+        self.mode == Mode::Forwarding && self.inside && self.shown
+    }
+
+    /// The cursor position goes to the controller: while forwarding, and while
+    /// the portal waits for the confirmation, for the prompt on the target
+    /// (FLOW-7, FLOW-21).
+    fn reports_position(&self) -> bool {
+        self.forward_now()
+            || (self.mode == Mode::Armed && self.guarded && self.inside && self.shown)
     }
 
     /// Keeps the inhibitor across the guard and forwarding (FLOW-21, UI-6).
@@ -98,6 +113,7 @@ impl PortalState {
 
     fn stop(&mut self) {
         self.inhibitor = None;
+        self.guarded = false;
         self.mode = Mode::Off;
     }
 }
@@ -106,7 +122,6 @@ impl PortalState {
 /// it; keys go to the window with the native focus (FLOW-22, FLOW-25).
 struct CaptureState {
     portals: BTreeMap<PortalId, PortalState>,
-    modifiers: ModifiersState,
     /// IN-8: the Escape presses.
     escapes: SafetyExit,
     /// Where each key and button that is down went, for all portals (IN-3).
@@ -121,9 +136,17 @@ impl CaptureState {
             .is_some_and(|p| p.mode == Mode::Forwarding)
     }
 
-    /// Reports the latest cursor position while forwarding. Merges motions.
+    /// IN-8: a portal waits for the confirmation (FLOW-21) or forwards.
+    fn waits_or_forwards(&self) -> bool {
+        self.portals
+            .values()
+            .any(|p| p.mode == Mode::Forwarding || (p.mode != Mode::Off && p.guarded))
+    }
+
+    /// Reports the latest cursor position while forwarding or while the portal
+    /// waits for the confirmation. Merges motions.
     fn report_position(&mut self, portal: PortalId) {
-        let Some(state) = self.portals.get(&portal).filter(|p| p.forward_now()) else {
+        let Some(state) = self.portals.get(&portal).filter(|p| p.reports_position()) else {
             return;
         };
         let at = state.cursor_global();
@@ -203,15 +226,6 @@ impl CaptureState {
         self.events.extend(events);
     }
 
-    /// Stops one portal, for the hand back shortcut (IN-7).
-    fn stop_portal(&mut self, portal: PortalId) {
-        if let Some(state) = self.portals.get_mut(&portal) {
-            state.stop();
-        }
-        self.router.forget(portal);
-        self.events.push(CapturedEvent::HandBackShortcut { portal });
-    }
-
     /// Stops all portals, for the safety exit (IN-8).
     fn stop_all(&mut self, event: CapturedEvent) {
         for state in self.portals.values_mut() {
@@ -265,6 +279,7 @@ impl InputCapture for LinuxCapture {
             eprintln!("telescreen: shortcut inhibit: {error}");
         }
         state.mode = Mode::Forwarding;
+        state.guarded = false;
         s.escapes.reset();
         s.report_position(portal);
         Ok(())
@@ -272,6 +287,25 @@ impl InputCapture for LinuxCapture {
 
     fn set_portal_focus(&mut self, portal: PortalId, focused: bool) {
         self.0.borrow_mut().portal_focus(portal, focused);
+    }
+
+    /// FLOW-26: the controller reports a portal that is not fullscreen (UI-3).
+    /// A Wayland client does not know the global cursor position, so the
+    /// warning on the target shows no cursor of a Linux source.
+    fn set_portal_visible(&mut self, portal: PortalId, visible: bool) {
+        let mut s = self.0.borrow_mut();
+        let Some(state) = s.portals.get_mut(&portal) else {
+            return;
+        };
+        if state.shown == visible {
+            return;
+        }
+        state.shown = visible;
+        if visible && state.forward_now() {
+            // The controller sends the pointer position again.
+            let at = state.cursor_global();
+            s.events.push(CapturedEvent::PointerEntered { portal, at });
+        }
     }
 
     fn guard(&mut self, portal: PortalId, on: bool) -> Result<(), PlatformError> {
@@ -287,7 +321,9 @@ impl InputCapture for LinuxCapture {
         };
         if on {
             state.inhibit()?;
-        } else if state.mode != Mode::Forwarding {
+        }
+        state.guarded = on;
+        if !on && state.mode != Mode::Forwarding {
             state.inhibitor = None;
         }
         Ok(())
@@ -345,8 +381,8 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Resul
         Option<PromptQueue>,
     ) = match LayerPrompt::start({
         let proxy = proxy.clone();
-        move |prompt| {
-            let _ = proxy.send_event(UserEvent::PromptPressed(prompt));
+        move |prompt, press| {
+            let _ = proxy.send_event(UserEvent::PromptPressed(prompt, press));
         }
     }) {
         Ok(prompt) => (Box::new(prompt), None),
@@ -360,7 +396,6 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Resul
     };
     let capture = LinuxCapture(Rc::new(RefCell::new(CaptureState {
         portals: BTreeMap::new(),
-        modifiers: ModifiersState::empty(),
         escapes: SafetyExit::new(),
         router: InputRouter::new(),
         events: Vec::new(),
@@ -380,7 +415,6 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Resul
         capabilities,
         labels: Labels {
             confirm_key: "Return".into(),
-            hand_back_shortcut: "Control+Alt+Shift+Escape".into(),
         },
         hooks: Hooks { capture, prompts },
         notices,
@@ -404,9 +438,17 @@ pub(crate) fn window_attributes(attributes: WindowAttributes) -> WindowAttribute
 
 pub(crate) fn prompt_created(_: &Window) {}
 
-/// VER-4: the layer-shell prompt sets its input itself, and reports a press
-/// with `UserEvent::PromptPressed`. A normal window takes input.
-pub(crate) fn prompt_input(_: &Window, _: bool) {}
+/// A Wayland client cannot activate a different app (FLOW-26).
+pub(crate) type Frontmost = Option<()>;
+
+/// VER-4, FLOW-26: the layer-shell prompt sets its input itself, and reports a
+/// press with `UserEvent::PromptPressed`. A normal window takes input.
+pub(crate) fn prompt_input(_: &Window, _: bool) -> Frontmost {
+    None
+}
+
+/// The compositor gives the keyboard focus back when the prompt goes away.
+pub(crate) fn restore_frontmost(_: Frontmost) {}
 
 fn button(button: MouseButton) -> Option<Button> {
     Some(match button {
@@ -454,8 +496,9 @@ impl Hooks {
     /// Wayland client cannot take the focus (FLOW-21).
     pub(crate) fn focus_portal(&mut self, _: &Window) {}
 
-    /// FLOW-26: not specified on Linux. A Wayland client cannot reliably find out
-    /// whether its window is shown.
+    /// FLOW-26: occlusion is not specified on Linux. A Wayland client cannot
+    /// reliably find out whether its window is shown. The window layer still
+    /// reports the fullscreen state of the portal (UI-3).
     pub(crate) fn reports_portal_visibility(&self) -> bool {
         false
     }
@@ -478,10 +521,6 @@ impl Hooks {
     ) -> bool {
         let mut s = self.capture.0.borrow_mut();
         match event {
-            WindowEvent::ModifiersChanged(modifiers) => {
-                s.modifiers = modifiers.state();
-                false
-            }
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(state) = s.portals.get_mut(&portal) else {
                     return false;
@@ -509,12 +548,6 @@ impl Hooks {
             WindowEvent::KeyboardInput { event, .. } => {
                 let down = event.state == ElementState::Pressed;
                 let escape = event.physical_key == PhysicalKey::Code(KeyCode::Escape);
-                let release = ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SHIFT;
-                if s.forwarding(portal) && escape && down && s.modifiers.contains(release) {
-                    // IN-7: never forwarded. Only this portal stops.
-                    s.stop_portal(portal);
-                    return true;
-                }
                 let Some(code) = event
                     .physical_key
                     .to_scancode()
@@ -529,11 +562,15 @@ impl Hooks {
                         down,
                     },
                 );
-                // IN-8: count while the portal forwards or waits for the
-                // confirmation (FLOW-21).
-                let counts =
-                    forwarded || s.portals.get(&portal).is_some_and(|p| p.mode != Mode::Off);
-                if counts && escape && down && !event.repeat && s.escapes.press(Instant::now()) {
+                // IN-8: count only while a portal forwards or waits for the
+                // confirmation (FLOW-21). winit makes the key repeats on
+                // Wayland and marks them with `repeat`: they do not count.
+                let waits_or_forwards = s.waits_or_forwards();
+                if escape
+                    && down
+                    && s.escapes
+                        .escape_down(Instant::now(), waits_or_forwards, event.repeat)
+                {
                     s.stop_all(CapturedEvent::SafetyExit);
                 }
                 forwarded

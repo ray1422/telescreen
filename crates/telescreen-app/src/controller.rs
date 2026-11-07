@@ -24,6 +24,7 @@ use telescreen_core::platform::{
 };
 use telescreen_core::pointer::{Point, Rect};
 use telescreen_core::pointer_stats::{PointerStats, PointerSummary};
+use telescreen_core::portal_capture::SafetyExit;
 use telescreen_core::session::VideoInput;
 use telescreen_core::session::lease::LeaseTable;
 use telescreen_core::session::source::{HandoffResult, SourcePhase, SourceSession};
@@ -49,6 +50,7 @@ use actions::{ControlMatch, PendingStart};
 use menu::DisplayEvaluation;
 use portal_match::{MatchOwner, PortalMatches, Ticket};
 use verification::{Owner, Verifications};
+pub use view::PortalState;
 use view::{display_name, end_text, refuse_text, target_phase_text};
 
 /// Sends commands to the transport.
@@ -105,12 +107,14 @@ pub enum AckOrigin {
     /// on this computer gets it (VER-4).
     Portal(PortalId),
     /// A click in a prompt window on this computer. Only the hand back
-    /// verification of this prompt gets it (VER-4).
+    /// verification of this prompt gets it (VER-4). A click on the warning of
+    /// FLOW-26 does nothing.
     Prompt(PromptId),
     /// The acknowledgement key in a prompt window on this computer. The hand
     /// back verification of this prompt gets it; else the first hand back
     /// verification that waits gets it, because Return in each window of
-    /// Telescreen on the destination is an acknowledgement (VER-4).
+    /// Telescreen on the destination is an acknowledgement (VER-4). The key
+    /// on the warning of FLOW-26 does nothing.
     PromptKey(PromptId),
     /// Another window of this computer, or a debug request: the portal with
     /// the native focus, else the newest portal (FLOW-8). If it does not
@@ -186,7 +190,6 @@ pub struct Ports {
 #[derive(Debug, Clone)]
 pub struct Labels {
     pub confirm_key: String,
-    pub hand_back_shortcut: String,
 }
 
 enum Pending {
@@ -227,8 +230,10 @@ struct Portal {
     /// A click in the portal asks for the native focus, and the window layer has
     /// not asked the OS yet (FLOW-22).
     focus_wanted: bool,
-    /// The portal is on screen (FLOW-26).
+    /// The portal window is not occluded (FLOW-26).
     visible: bool,
+    /// The portal window is fullscreen (UI-3).
+    fullscreen: bool,
     guarded: bool,
     matching: Matching,
     /// The selected local device: its config alias and its config entry.
@@ -238,6 +243,14 @@ struct Portal {
     session: Option<SourceSession>,
     pointer: Point,
     notice: Option<String>,
+}
+
+impl Portal {
+    /// The portal is on screen: it is not occluded and it is fullscreen
+    /// (FLOW-26, UI-3).
+    fn shown(&self) -> bool {
+        self.visible && self.fullscreen
+    }
 }
 
 #[allow(missing_debug_implementations)] // Holds the ports.
@@ -272,6 +285,9 @@ pub struct Controller {
     now: Instant,
     leases: LeaseTable,
     incoming: BTreeMap<SessionId, Incoming>,
+    /// The Escape presses on the warnings of FLOW-26 (IN-8). One counter for
+    /// all warnings, because the exit ends each session that shows one.
+    warning_escapes: SafetyExit,
     last_pointer_summary: Option<PointerSummary>,
     /// Device state on this destination, independent of sessions (VER-6).
     /// A missing device is `Unchanged`: no handoff to this computer yet.
@@ -437,6 +453,7 @@ impl Controller {
             now: Instant::now(),
             leases: LeaseTable::new(first_generation),
             incoming: BTreeMap::new(),
+            warning_escapes: SafetyExit::new(),
             last_pointer_summary: None,
             device_states: HashMap::new(),
             injector_session: None,
@@ -988,16 +1005,17 @@ impl Controller {
             Intent::LetControl { peer, device } => self.let_control(peer, device),
             Intent::SourceHandBack { portal } => {
                 if let Some(id) = portal.or_else(|| self.main_portal()) {
-                    self.portal_left_fullscreen(id);
+                    self.request_hand_back(id);
                 }
             }
         }
     }
 
     /// The window layer could not show a prompt that the presenter accepted.
+    /// The verifier answers not ok (VER-5, FLOW-11).
     pub fn prompt_failed(&mut self, prompt: PromptId) {
         if let Some(session) = self.verify(|v, env| v.prompt_failed(prompt, env)) {
-            self.end_incoming(session, EndReason::PromptFailed);
+            self.end_incoming(session, EndReason::VerifyFailed);
         }
     }
 

@@ -65,18 +65,26 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
         {
             intents.push(Intent::SetClipboard { on });
         }
-        if let Some(session) = &screen.session {
-            ui.horizontal(|ui| {
-                ui.label(format!("Controlling {}", session.target));
-                ui.label(phase_text(&session.phase));
-                if !matches!(session.phase, SessionPhase::Ended { .. }) {
-                    if ui.button("Hand back").clicked() {
-                        intents.push(Intent::SourceHandBack { portal: None });
+        // One row for each portal, with the actions of that portal (FLOW-25).
+        for row in &screen.sessions {
+            let session = &row.session;
+            ui.push_id(row.portal, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Controlling {}", session.target));
+                    ui.label(phase_text(&session.phase));
+                    if !matches!(session.phase, SessionPhase::Ended { .. }) {
+                        if ui.button("Hand back").clicked() {
+                            intents.push(Intent::SourceHandBack {
+                                portal: Some(row.portal),
+                            });
+                        }
+                        if ui.button("End session").clicked() {
+                            intents.push(Intent::EndSession {
+                                portal: Some(row.portal),
+                            });
+                        }
                     }
-                    if ui.button("End session").clicked() {
-                        intents.push(Intent::EndSession { portal: None });
-                    }
-                }
+                });
             });
         }
         // ACT-1, ACT-5: each action names the display, the device, and the target.
@@ -282,10 +290,13 @@ pub(crate) fn prompt(ui: &mut egui::Ui, screen: &PromptScreen) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use telescreen_core::{ids::SessionId, session::VideoInput};
+    use telescreen_core::{
+        ids::{PortalId, SessionId},
+        session::VideoInput,
+    };
     use telescreen_view::{
         CandidateRow, DeviceChoice, DeviceRow, DiscoveryRow, IncomingRow, MenuCandidate,
-        MenuDevice, MenuDisplay, SessionRow,
+        MenuDevice, MenuDisplay, PortalSessionRow, SessionRow,
     };
 
     fn assert_idle_frame(
@@ -394,11 +405,26 @@ mod tests {
                         ],
                     },
                 ],
-                session: Some(SessionRow {
-                    target: "Target peer".into(),
-                    phase: SessionPhase::Forwarding,
-                    video_input: VideoInput::Confirmed,
-                }),
+                sessions: vec![
+                    PortalSessionRow {
+                        portal: PortalId(1),
+                        session: SessionRow {
+                            target: "Target peer".into(),
+                            phase: SessionPhase::Forwarding,
+                            video_input: VideoInput::Confirmed,
+                        },
+                    },
+                    PortalSessionRow {
+                        portal: PortalId(2),
+                        session: SessionRow {
+                            target: "Other peer".into(),
+                            phase: SessionPhase::Ended {
+                                reason: "handed back".into(),
+                            },
+                            video_input: VideoInput::Unknown,
+                        },
+                    },
+                ],
                 devices: vec![
                     DeviceRow {
                         alias: "Monitor".into(),

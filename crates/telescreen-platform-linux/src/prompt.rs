@@ -2,7 +2,9 @@
 //! (UI-5, FLOW-7). It runs on its own thread with its own Wayland connection.
 //! It takes no input while the user confirms on the source. When the
 //! acknowledgement is on this destination, it takes clicks and the keyboard, and
-//! a left click or Return acknowledges (VER-4).
+//! a left click or Return acknowledges (VER-4). The warning of FLOW-26 takes
+//! clicks and the keyboard too: Escape counts for the safety exit (IN-8), and
+//! clicks and other keys do nothing.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -14,7 +16,7 @@ use std::time::Duration;
 
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::pointer::Normalized;
-use telescreen_view::{PromptId, PromptPresenter, PromptScreen};
+use telescreen_view::{PromptId, PromptPresenter, PromptPress, PromptScreen};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_region, wl_seat, wl_shm, wl_shm_pool,
     wl_subcompositor, wl_subsurface, wl_surface,
@@ -96,6 +98,10 @@ impl Dispatch<wl_seat::WlSeat, PromptSeat> for State {
 const BTN_LEFT: u32 = 0x110;
 const KEY_ENTER: u32 = 28;
 const KEY_KPENTER: u32 = 96;
+/// The evdev code of Escape, for the safety exit on the warning (IN-8).
+/// wl_keyboard before version 10 sends no repeated keys, so each key down
+/// is a press.
+const KEY_ESC: u32 = 1;
 
 impl Dispatch<wl_pointer::WlPointer, ()> for State {
     fn event(
@@ -114,7 +120,12 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
                 button: BTN_LEFT,
                 state: WEnum::Value(wl_pointer::ButtonState::Pressed),
                 ..
-            } => input.presses.extend(input.pointer_on.clone()),
+            } => input.presses.extend(
+                input
+                    .pointer_on
+                    .clone()
+                    .map(|s| (s, PromptPress::Acknowledge)),
+            ),
             _ => {}
         }
     }
@@ -134,10 +145,19 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
             wl_keyboard::Event::Enter { surface, .. } => input.keyboard_on = Some(surface),
             wl_keyboard::Event::Leave { .. } => input.keyboard_on = None,
             wl_keyboard::Event::Key {
-                key: KEY_ENTER | KEY_KPENTER,
+                key,
                 state: WEnum::Value(wl_keyboard::KeyState::Pressed),
                 ..
-            } => input.presses.extend(input.keyboard_on.clone()),
+            } => {
+                let press = match key {
+                    KEY_ENTER | KEY_KPENTER => PromptPress::Acknowledge,
+                    KEY_ESC => PromptPress::Escape,
+                    _ => return,
+                };
+                input
+                    .presses
+                    .extend(input.keyboard_on.clone().map(|s| (s, press)));
+            }
             _ => {}
         }
     }
@@ -166,15 +186,18 @@ pub struct LayerPrompt {
 }
 
 impl LayerPrompt {
-    /// Starts the prompt thread. It calls `on_ack` with the prompt of a left
-    /// click or Return on a prompt that takes input (VER-4).
-    pub fn start(on_ack: impl Fn(PromptId) + Send + 'static) -> Result<Self, String> {
+    /// Starts the prompt thread. It calls `on_press` with the prompt of a left
+    /// click or Return on a prompt that waits for the acknowledgement here
+    /// (VER-4), and of an Escape on a prompt that takes input (IN-8).
+    pub fn start(
+        on_press: impl Fn(PromptId, PromptPress) + Send + 'static,
+    ) -> Result<Self, String> {
         let (commands, command_rx) = channel();
         let (result_tx, results) = channel();
         let (ready_tx, ready_rx) = channel();
         thread::Builder::new()
             .name("telescreen-prompt".into())
-            .spawn(move || match Overlay::connect(Box::new(on_ack)) {
+            .spawn(move || match Overlay::connect(Box::new(on_press)) {
                 Ok(overlay) => {
                     let _ = ready_tx.send(Ok(()));
                     overlay.run(command_rx, result_tx);
@@ -239,7 +262,7 @@ struct Surface {
     /// The size of the last configure.
     size: Option<(u32, u32)>,
     cursor: Option<Cursor>,
-    /// The surface takes clicks and the keyboard (VER-4).
+    /// The surface takes clicks and the keyboard (VER-4, FLOW-26).
     takes_input: bool,
 }
 
@@ -253,16 +276,21 @@ struct Overlay {
     /// The cursor image and its size, made at the first use.
     cursor_image: Option<(wl_buffer::WlBuffer, i32, i32)>,
     surfaces: HashMap<u64, Surface>,
-    on_ack: Box<dyn Fn(PromptId) + Send>,
+    on_press: Box<dyn Fn(PromptId, PromptPress) + Send>,
 }
 
-/// VER-4: the prompt takes input when the acknowledgement is on this destination.
-fn takes_input(screen: &PromptScreen) -> bool {
-    screen.ack_here
+/// The press to report for a surface that takes input. Only a prompt that
+/// waits for the acknowledgement here takes it: a click or Return on the
+/// warning does nothing (FLOW-26).
+fn reported(screen: &PromptScreen, press: PromptPress) -> bool {
+    match press {
+        PromptPress::Acknowledge => screen.ack_here,
+        PromptPress::Escape => true,
+    }
 }
 
 impl Overlay {
-    fn connect(on_ack: Box<dyn Fn(PromptId) + Send>) -> Result<Self, String> {
+    fn connect(on_press: Box<dyn Fn(PromptId, PromptPress) + Send>) -> Result<Self, String> {
         let globals = Globals::connect()?;
         let qh = globals.handle();
         let compositor = globals
@@ -288,7 +316,7 @@ impl Overlay {
             subcompositor,
             cursor_image: None,
             surfaces: HashMap::new(),
-            on_ack,
+            on_press,
         })
     }
 
@@ -339,7 +367,7 @@ impl Overlay {
             && surface.output == output
             && let Some((width, height)) = surface.size
         {
-            let input = takes_input(&screen);
+            let input = screen.takes_input();
             surface.screen = screen;
             self.set_input(id, input);
             return self.draw(Configure {
@@ -364,7 +392,7 @@ impl Overlay {
         use zwlr_layer_surface_v1::Anchor;
         layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
         layer.set_exclusive_zone(-1);
-        let input = takes_input(&screen);
+        let input = screen.takes_input();
         self.surfaces.insert(
             id,
             Surface {
@@ -391,8 +419,8 @@ impl Overlay {
         }
     }
 
-    /// VER-4: with input, the surface takes the pointer on all of its area and
-    /// takes the keyboard. Else pointer events go to the windows below, and the
+    /// VER-4, FLOW-26: with input, the surface takes the pointer on all of its
+    /// area and takes the keyboard. Else pointer events go to the windows below, and the
     /// surface never has the keyboard focus. The next commit applies it.
     fn set_input(&mut self, id: u64, input: bool) {
         use zwlr_layer_surface_v1::KeyboardInteractivity;
@@ -437,14 +465,14 @@ impl Overlay {
         for id in std::mem::take(&mut self.globals.state.closed) {
             self.hide(id);
         }
-        for pressed in std::mem::take(&mut self.globals.state.seat.presses) {
+        for (pressed, press) in std::mem::take(&mut self.globals.state.seat.presses) {
             let prompt = self
                 .surfaces
                 .iter()
-                .find(|(_, s)| s.takes_input && s.surface == pressed)
+                .find(|(_, s)| s.takes_input && s.surface == pressed && reported(&s.screen, press))
                 .map(|(id, _)| PromptId(*id));
             if let Some(prompt) = prompt {
-                (self.on_ack)(prompt);
+                (self.on_press)(prompt, press);
             }
         }
         for configure in std::mem::take(&mut self.globals.state.configures) {
@@ -641,6 +669,16 @@ fn shared_memory(size: usize) -> Result<File, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flow26_the_warning_reports_only_escape() {
+        let warning = PromptScreen::portal_hidden("MacBook".into());
+        assert!(warning.takes_input());
+        assert!(reported(&warning, PromptPress::Escape));
+        assert!(!reported(&warning, PromptPress::Acknowledge));
+        let blank = PromptScreen::portal_shown("MacBook".into());
+        assert!(!blank.takes_input());
+    }
 
     #[test]
     fn flow26_cursor_image_has_its_hot_spot_at_the_top_left() {

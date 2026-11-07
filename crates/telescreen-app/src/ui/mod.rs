@@ -62,9 +62,9 @@ pub enum UserEvent {
     Verifier(VerifierId, VerifierEvent),
     /// The input capture has events in its queue.
     Captured,
-    /// A left click or Return on the prompt that takes input (VER-4).
+    /// A press on the layer-shell prompt that takes input (VER-4, IN-8).
     #[cfg(target_os = "linux")]
-    PromptPressed(PromptId),
+    PromptPressed(PromptId, telescreen_view::PromptPress),
     /// A report of the discovery backend (NET-12).
     Discovery(telescreen_core::platform::DiscoveryEvent),
     /// A request of the debug protocol and the channel for its response line.
@@ -313,6 +313,7 @@ fn start_app(
         control: None,
         portals: BTreeMap::new(),
         prompts: HashMap::new(),
+        frontmost_before: None,
         last_display_check: Instant::now(),
         swallow_release: false,
         drawn_control: None,
@@ -424,6 +425,9 @@ struct App {
     /// One window for each portal of the controller (FLOW-25).
     portals: BTreeMap<PortalId, PortalSurface>,
     prompts: HashMap<PromptId, PromptSurface>,
+    /// The app that was frontmost before the first warning took the focus. It
+    /// is frontmost again when the last warning goes away (FLOW-26).
+    frontmost_before: platform::Frontmost,
     last_display_check: Instant,
     /// The release of an acknowledgement click must not go to the UI (FLOW-9).
     swallow_release: bool,
@@ -601,6 +605,10 @@ impl App {
             .collect();
         self.hooks.reclaim_focus(&windows);
         for portal in self.portals.values() {
+            // UI-3: the fullscreen state can change with no resize event after it.
+            let fullscreen = portal.surface.window.fullscreen().is_some();
+            self.controller
+                .set_portal_fullscreen(portal.portal, fullscreen);
             let hidden = self.controller.portal_hidden(portal.portal);
             let forwarding = self.controller.forwarding(portal.portal);
             self.hooks
@@ -709,23 +717,48 @@ impl App {
         }
     }
 
+    /// FLOW-26: when no warning takes input, the app that was frontmost before
+    /// the first warning is frontmost again. A second warning that still shows
+    /// keeps the focus, so that its safety exit works (IN-8).
+    fn restore_frontmost(&mut self) {
+        let warning = self
+            .prompts
+            .values()
+            .any(|surface| surface.screen.portal_hidden && surface.screen.takes_input());
+        if !warning {
+            platform::restore_frontmost(self.frontmost_before.take());
+        }
+    }
+
     fn prompt_request(&mut self, event_loop: &ActiveEventLoop, request: PromptRequest) {
         match request {
             PromptRequest::Hide { prompt } => {
-                self.prompts.remove(&prompt);
+                if self.prompts.remove(&prompt).is_some() {
+                    self.restore_frontmost();
+                }
             }
             PromptRequest::Show {
                 prompt,
                 display,
                 screen,
             } => {
-                let local_ack = screen.ack_here;
+                // VER-4, FLOW-26: the prompt takes input for the
+                // acknowledgement here, and the warning for the safety exit.
+                let input = screen.takes_input();
+                let warning = screen.portal_hidden;
                 if let Some(surface) = self.prompts.get_mut(&prompt) {
-                    if local_ack && !surface.screen.ack_here {
-                        platform::prompt_input(&surface.surface.window, true);
-                    }
+                    let changed = input != surface.screen.takes_input();
+                    let before = changed
+                        .then(|| platform::prompt_input(&surface.surface.window, input))
+                        .flatten();
                     surface.screen = screen;
                     surface.surface.window.request_redraw();
+                    if warning {
+                        self.frontmost_before = self.frontmost_before.take().or(before);
+                    }
+                    if changed && !input {
+                        self.restore_frontmost();
+                    }
                     return;
                 }
                 let Some(bounds) = display.bounds else {
@@ -742,10 +775,13 @@ impl App {
                 match event_loop.create_window(attributes) {
                     Ok(window) => {
                         platform::prompt_created(&window);
-                        platform::prompt_input(&window, local_ack);
+                        let before = platform::prompt_input(&window, input);
                         let (surface, error) = Surface::new(window, &mut self.gpu);
                         if let Some(error) = error {
                             self.controller.add_notice(error);
+                        }
+                        if warning {
+                            self.frontmost_before = self.frontmost_before.take().or(before);
                         }
                         self.prompts
                             .insert(prompt, PromptSurface { surface, screen });
@@ -805,6 +841,18 @@ impl App {
             (None, None) => AckOrigin::Computer,
         };
         match event {
+            // IN-8: Escape on the warning of FLOW-26 counts for the safety exit.
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
+                    && prompt.is_some() =>
+            {
+                if let Some(prompt) = prompt {
+                    self.controller
+                        .prompt_escape(prompt, event.repeat, Instant::now());
+                }
+                false
+            }
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed
                     && !event.repeat
@@ -880,9 +928,10 @@ impl App {
                 false
             }
             WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
-                if self.controller.forwarding(portal) && window.fullscreen().is_none() {
-                    self.controller.portal_left_fullscreen(portal);
-                }
+                // UI-3: a portal that is not fullscreen is not on screen
+                // (FLOW-26). The source does not hand back for it.
+                self.controller
+                    .set_portal_fullscreen(portal, window.fullscreen().is_some());
                 self.portal_monitor_changed(portal, &window);
                 false
             }
@@ -922,6 +971,7 @@ impl App {
                         .controller
                         .main_portal()
                         .and_then(|id| self.controller.portal_screen(id)),
+                    portals: self.controller.portal_states(),
                     windows,
                 })
             }
@@ -1096,9 +1146,14 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Verifier(id, event) => self.controller.on_verifier_event(id, event),
             UserEvent::Captured => {}
             #[cfg(target_os = "linux")]
-            UserEvent::PromptPressed(prompt) => {
-                self.controller.acknowledge(AckOrigin::Prompt(prompt));
-            }
+            UserEvent::PromptPressed(prompt, press) => match press {
+                telescreen_view::PromptPress::Acknowledge => {
+                    self.controller.acknowledge(AckOrigin::Prompt(prompt));
+                }
+                telescreen_view::PromptPress::Escape => {
+                    self.controller.prompt_escape(prompt, false, Instant::now());
+                }
+            },
             UserEvent::Discovery(event) => match event {
                 telescreen_core::platform::DiscoveryEvent::Found(found) => {
                     let trust = paths::trust_file().and_then(|path| {

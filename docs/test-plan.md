@@ -6,7 +6,7 @@ Rules:
 
 - The user does each step that injects keys, clicks, opens a window, or switches the display. Before such a step on the Linux computer, the user moves to a workspace that the step does not affect.
 - Each step names what it does. If a step does something that the plan does not say, stop and record it.
-- Keep a way back: the release shortcut, the safety exit (Escape 10 times in 5 seconds), and on niri `Mod+Shift+Escape` (toggles the shortcut inhibit; it always goes to niri).
+- Keep a way back: "Hand back" in the menu, the safety exit (Escape 10 times in 5 seconds), and on niri `Mod+Shift+Escape` (toggles the shortcut inhibit; it always goes to niri).
 
 ## 0. Build and install
 
@@ -64,7 +64,7 @@ Negative test (AC-21): before the trust step, start both apps (step 2). Each con
 | 3.10b | Copy text on the Mac, paste on Linux; copy on Linux, paste on the Mac | The text arrives in both directions. It does not come back | AC-30, AC-33 |
 | 3.10c | Turn off "Sync text clipboard" on one side, then copy | Nothing arrives | AC-32 |
 | 3.10d | Copy a password from a password manager that marks it as concealed | Nothing arrives | AC-34 |
-| 3.11 | Control+Option+Command+Escape | The session ends. Local keys come back | AC-15 |
+| 3.11 | On the Mac, select "Hand back" in the session row of the portal | The session ends. Local keys come back. Linux switches the LG back, and the Mac shows the prompt | AC-15 |
 | 3.12 | New session, then Escape 10 times in 5 s | The session ends; Escape went to Linux | AC-16 |
 | 3.13 | New session, then on Linux "Disconnect" | The session ends on both sides | AC-23 |
 | 3.13a | New session, then on Linux "Control from here" | The session ends. The LG switches to the Mac, and Linux is the source of a new session | AC-23, FLOW-17 |
@@ -78,9 +78,8 @@ Before this part: the Linux handoff command (`ddcutil` with `--i2c-source-addr=x
 
 Repeat the table of part 3 with the roles reversed: the portal on Linux (a fullscreen window on HDMI-A-2), the prompt on the Mac (an overlay window). Differences:
 
-- The release shortcut is Control+Alt+Shift+Escape.
 - While forwarding, niri shortcuts (Mod+…) go to the Mac, because the portal inhibits them. `Mod+Shift+Escape` always goes to niri.
-- Linux has only one output, the LG. The pointer cannot leave the portal, so the only way to give the input back to Linux is the release shortcut.
+- Linux has only one output, the LG. The pointer cannot leave the portal, so the ways to give the input back to Linux are "Hand back" in the Linux menu and the safety exit.
 - Not tested yet: the shortcut inhibit on niri.
 
 ## 5. Other criteria

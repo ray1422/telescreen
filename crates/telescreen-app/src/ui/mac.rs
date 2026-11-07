@@ -114,7 +114,6 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, _local: &Computer) -> Resu
         capabilities,
         labels: Labels {
             confirm_key: "Return".into(),
-            hand_back_shortcut: "Control+Option+Command+Escape".into(),
         },
         hooks: Hooks {
             capture,
@@ -143,17 +142,36 @@ pub(crate) fn prompt_created(prompt: &Window) {
     window::make_overlay(prompt);
 }
 
-/// VER-4: a prompt that waits for the acknowledgement on this computer takes
-/// clicks and the keyboard focus.
-pub(crate) fn prompt_input(prompt: &Window, local_ack: bool) {
-    window::set_prompt_input(prompt, local_ack);
-    if local_ack {
+/// The app that was frontmost before a prompt took the focus (FLOW-26).
+pub(crate) type Frontmost = Option<window::FrontmostApp>;
+
+/// VER-4, FLOW-26: a prompt that waits for the acknowledgement on this
+/// computer, and the warning, take clicks and the keyboard focus. Returns the
+/// app that was frontmost before, if it is not Telescreen.
+pub(crate) fn prompt_input(prompt: &Window, on: bool) -> Frontmost {
+    window::set_prompt_input(prompt, on);
+    if !on {
+        return None;
+    }
+    let before = window::frontmost_other_app();
+    eprintln!(
+        "telescreen: {}: the prompt takes the focus",
+        telescreen_platform_macos::clock()
+    );
+    prompt.focus_window();
+    window::make_frontmost(Some(prompt));
+    before
+}
+
+/// FLOW-26: when the warning goes away, the app that was frontmost before it
+/// is frontmost again, so that the forwarded input goes there.
+pub(crate) fn restore_frontmost(before: Frontmost) {
+    if let Some(app) = before {
         eprintln!(
-            "telescreen: {}: the prompt takes the focus",
+            "telescreen: {}: activate the app that was frontmost before the warning",
             telescreen_platform_macos::clock()
         );
-        prompt.focus_window();
-        window::make_frontmost(None::<&Window>);
+        window::activate(&app);
     }
 }
 
@@ -185,8 +203,9 @@ impl Hooks {
         true
     }
 
-    /// FLOW-26: after a Space change, show a hidden portal again. Opening Mission
-    /// Control is not a Space change, so this does not close Mission Control.
+    /// FLOW-26: after a Space change, show a hidden fullscreen portal again.
+    /// Opening Mission Control is not a Space change, so this does not close
+    /// Mission Control.
     /// The Space notification and the occlusion event can come in either order,
     /// so a Space change counts for a short time.
     pub(crate) fn portal_hidden(
@@ -224,7 +243,8 @@ impl Hooks {
         let recent = self
             .space_changed
             .is_some_and(|at| now.duration_since(at) < SPACE_CHANGE_TIME);
-        if hidden && recent {
+        // UI-3: a portal that left fullscreen stays where the user put it.
+        if hidden && recent && portal.fullscreen().is_some() {
             eprintln!(
                 "telescreen: {}: show the hidden portal after a Space change",
                 telescreen_platform_macos::clock()

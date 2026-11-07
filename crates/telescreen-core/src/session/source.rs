@@ -59,8 +59,12 @@ pub struct SourceSession {
     keyboard_in_portal: bool,
     /// The target knows that the portal is on screen (FLOW-26).
     portal_shown: bool,
-    /// The last cursor position that the target got while the portal is hidden.
+    /// The last cursor position that the target got for the warning (FLOW-26)
+    /// or for the prompt (FLOW-7).
     portal_cursor: Option<Normalized>,
+    /// The last cursor position in the portal before forwarding, for the
+    /// prompt (FLOW-7). `None`: the cursor is out of the portal area.
+    cursor_before: Option<Normalized>,
     /// An attach runs no handoff steps (ACT-3).
     attach: bool,
     held: HeldInputs,
@@ -88,6 +92,7 @@ impl SourceSession {
             keyboard_in_portal: true,
             portal_shown: true,
             portal_cursor: None,
+            cursor_before: None,
             attach: false,
             held: HeldInputs::default(),
             seq: 0,
@@ -180,6 +185,8 @@ impl SourceSession {
                 if self.session == Some(session) && self.phase == SourcePhase::Verifying =>
             {
                 self.ack_wanted = true;
+                // FLOW-7: the prompt shows the cursor at once.
+                return self.send_portal_cursor(self.cursor_before);
             }
             Message::Started { session, verified }
                 if self.session == Some(session) && self.phase == SourcePhase::Verifying =>
@@ -281,10 +288,29 @@ impl SourceSession {
         vec![SourceAction::Send(message)]
     }
 
-    /// The cursor of the source while the portal is not on screen (FLOW-26).
-    /// `None`: the cursor is out of the portal area. Sends only a change.
+    /// The cursor of the source in the portal area. `None`: the cursor is out
+    /// of the portal area. Sends only a change. The target draws it on the
+    /// warning while forwarding and the portal is not on screen (FLOW-26), and
+    /// on the prompt while the session waits for the acknowledgement (FLOW-7).
+    /// Before forwarding, the session keeps the last position for the next
+    /// `AckWanted`.
     pub fn portal_cursor(&mut self, at: Option<Normalized>) -> Vec<SourceAction> {
-        if self.phase != SourcePhase::Forwarding || self.portal_shown || self.portal_cursor == at {
+        match self.phase {
+            SourcePhase::Forwarding if !self.portal_shown => self.send_portal_cursor(at),
+            SourcePhase::Requesting | SourcePhase::HandingOff | SourcePhase::Verifying => {
+                self.cursor_before = at;
+                if self.ack_wanted {
+                    self.send_portal_cursor(at)
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn send_portal_cursor(&mut self, at: Option<Normalized>) -> Vec<SourceAction> {
+        if self.portal_cursor == at {
             return Vec::new();
         }
         let Some(session) = self.session else {
@@ -348,7 +374,7 @@ impl SourceSession {
         self.last_pointer = None;
     }
 
-    /// Requests a hand back after the handoff steps completed (HB-3, IN-7).
+    /// Requests a hand back after the handoff steps completed (HB-3).
     /// Stops forwarding and ends locally without sending `End`: the target ends
     /// its session before running the route back. Before the steps complete,
     /// only ends the session as `SourceClosed`, so the routes cannot race.

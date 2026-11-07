@@ -56,7 +56,7 @@ On Linux, the build needs the Wayland and xkbcommon development files. On macOS,
 To go back to the source, use one of these:
 
 - Move the pointer out of the portal to a different display. Forwarding pauses; the session continues.
-- Press the hand back shortcut: Control+Option+Command+Escape on macOS, Control+Alt+Shift+Escape on Linux. The target switches the display back with its route, and the source shows the prompt. Press Return or click on the source to confirm.
+- On the source, select "Hand back" in the session row of the portal, in the menu or in the main window. The target switches the display back with its route, and the source shows the prompt. Press Return or click on the source to confirm.
 - On the target, select "Hand back" in the control window.
 
 The safety exit (Escape 10 times in 5 seconds) only ends the session. It does not switch the display.

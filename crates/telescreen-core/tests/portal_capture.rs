@@ -1,4 +1,4 @@
-//! IN-7, IN-8, IN-13, FLOW-25: the capture rules of the portals that the macOS
+//! IN-8, IN-13: the capture rules of the portals that the macOS
 //! event tap and the Linux portal windows share.
 
 use std::time::{Duration, Instant};
@@ -9,7 +9,7 @@ use telescreen_core::key_route::{InputRouter, Route};
 use telescreen_core::keys::Key;
 use telescreen_core::platform::CapturedEvent;
 use telescreen_core::portal_capture::{
-    FocusLoss, SAFETY_PRESSES, SAFETY_WINDOW, SafetyExit, hand_back_portal, window_focus,
+    FocusLoss, SAFETY_PRESSES, SAFETY_WINDOW, SafetyExit, window_focus,
 };
 
 const A: PortalId = PortalId(1);
@@ -102,29 +102,69 @@ fn in8_default_is_new() {
     assert!(results[9]);
 }
 
-#[test]
-fn in7_the_forwarding_portal_with_the_keyboard_gets_the_hand_back() {
-    assert_eq!(hand_back_portal(Some(B), [A, B]), Some(B));
-    assert_eq!(hand_back_portal(Some(A), [A]), Some(A));
+/// Gives `count` Escape key downs to [`SafetyExit::escape_down`], `step`
+/// apart, from `start`. Returns the results.
+fn escape_downs(
+    exit: &mut SafetyExit,
+    start: Instant,
+    step: Duration,
+    count: usize,
+    waits_or_forwards: bool,
+    repeat: bool,
+) -> Vec<bool> {
+    (0..count)
+        .map(|i| exit.escape_down(start + step * i as u32, waits_or_forwards, repeat))
+        .collect()
 }
 
 #[test]
-fn in7_with_no_keyboard_portal_the_only_forwarding_portal_gets_it() {
-    assert_eq!(hand_back_portal(None, [A]), Some(A));
-    // The keyboard is on a portal that does not forward (FLOW-21).
-    assert_eq!(hand_back_portal(Some(B), [A]), Some(A));
+fn in8_escape_down_counts_while_a_portal_waits_or_forwards() {
+    let mut exit = SafetyExit::new();
+    let results = escape_downs(&mut exit, Instant::now(), ms(100), 10, true, false);
+    assert_eq!(results, [vec![false; 9], vec![true]].concat());
 }
 
 #[test]
-fn flow25_with_two_forwarding_portals_and_no_keyboard_no_portal_gets_it() {
-    assert_eq!(hand_back_portal(None, [A, B]), None);
-    assert_eq!(hand_back_portal(Some(PortalId(3)), [A, B]), None);
+fn in8_ac57_escape_down_does_not_count_while_only_armed() {
+    let mut exit = SafetyExit::new();
+    let start = Instant::now();
+    // No portal waits for the confirmation or forwards.
+    let results = escape_downs(&mut exit, start, ms(100), 20, false, false);
+    assert!(results.iter().all(|fired| !fired));
+    // The presses while armed are not recorded: nine presses later do not fire.
+    let results = escape_downs(&mut exit, start + ms(2100), ms(10), 9, true, false);
+    assert!(results.iter().all(|fired| !fired));
 }
 
 #[test]
-fn in7_with_no_forwarding_portal_no_portal_gets_it() {
-    assert_eq!(hand_back_portal(None, []), None);
-    assert_eq!(hand_back_portal(Some(A), []), None);
+fn in8_ac57_nine_presses_and_one_press_while_armed_do_not_fire() {
+    let mut exit = SafetyExit::new();
+    let start = Instant::now();
+    escape_downs(&mut exit, start, ms(100), 9, true, false);
+    assert!(!exit.escape_down(start + ms(1000), false, false));
+    // The next counted press is the tenth.
+    assert!(exit.escape_down(start + ms(1100), true, false));
+}
+
+#[test]
+fn in8_ac57_held_escape_does_not_fire() {
+    let mut exit = SafetyExit::new();
+    let start = Instant::now();
+    // Hold Escape for 5 s: one key down, then the auto-repeated key downs.
+    assert!(!exit.escape_down(start, true, false));
+    let results = escape_downs(&mut exit, start + ms(500), ms(33), 136, true, true);
+    assert!(results.iter().all(|fired| !fired));
+}
+
+#[test]
+fn in8_ac57_auto_repeat_does_not_add_to_the_presses() {
+    let mut exit = SafetyExit::new();
+    let start = Instant::now();
+    escape_downs(&mut exit, start, ms(100), 9, true, false);
+    let results = escape_downs(&mut exit, start + ms(1000), ms(30), 5, true, true);
+    assert!(results.iter().all(|fired| !fired));
+    // The next press that is not a repeat is the tenth.
+    assert!(exit.escape_down(start + ms(1200), true, false));
 }
 
 fn key(code: u16, down: bool) -> InputEvent {

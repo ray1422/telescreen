@@ -301,8 +301,6 @@ struct SessionCard: View {
                     Button("End session") { sendIntent(["kind": "end_session", "portal": portal]) }
                         .buttonStyle(CardButtonStyle())
                 }
-                Text("Hand back shortcut ⌃⌥⌘⎋ · works when no window here is visible")
-                    .font(.system(size: 11)).foregroundStyle(menuSecondary)
             } else {
                 let id = session.id.session ?? 0
                 Button("Hand back to \(session.peerLabel)") {

@@ -87,6 +87,7 @@ impl Controller {
                 focused: true,
                 focus_wanted: false,
                 visible: true,
+                fullscreen: true,
                 guarded: false,
                 matching: Matching::Evaluating,
                 device: None,
@@ -359,8 +360,8 @@ impl Controller {
         portal.focus_wanted &= !focused;
         // FLOW-26: a hidden portal can keep the native focus, for example
         // while Mission Control is open. Then the keys stay on the source.
-        let visible = portal.visible;
-        self.ports.capture.set_portal_focus(id, focused && visible);
+        let shown = portal.shown();
+        self.ports.capture.set_portal_focus(id, focused && shown);
     }
 
     /// At the start of forwarding, gives the capture and the session the native
@@ -371,7 +372,7 @@ impl Controller {
         let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
-        let (focused, visible) = (portal.focused && portal.visible, portal.visible);
+        let (focused, visible) = (portal.focused && portal.shown(), portal.shown());
         self.ports.capture.set_portal_focus(id, focused);
         self.ports.capture.set_portal_visible(id, visible);
         let actions = portal
@@ -386,23 +387,38 @@ impl Controller {
         self.run_source_actions(id, actions);
     }
 
-    /// The window layer reports whether the portal is on screen (FLOW-26). While
-    /// it is not, the capture forwards no pointer input, and the target shows a
-    /// warning.
+    /// The window layer reports whether the portal window is occluded (FLOW-26).
+    /// While the portal is not on screen, the capture forwards no input, and the
+    /// target shows a warning.
     pub fn set_portal_visible(&mut self, id: PortalId, visible: bool) {
+        self.set_portal_state(id, |portal| portal.visible = visible);
+    }
+
+    /// The window layer reports whether the portal window is fullscreen (UI-3).
+    /// A portal that is not fullscreen is not on screen (FLOW-26). The source
+    /// does not request a hand back for it.
+    pub fn set_portal_fullscreen(&mut self, id: PortalId, fullscreen: bool) {
+        self.set_portal_state(id, |portal| portal.fullscreen = fullscreen);
+    }
+
+    /// Changes one input of the on-screen state. Tells the capture and the
+    /// session only when the result changes (FLOW-26).
+    fn set_portal_state(&mut self, id: PortalId, change: impl FnOnce(&mut Portal)) {
         let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
-        if portal.visible == visible {
+        let was_shown = portal.shown();
+        change(portal);
+        let shown = portal.shown();
+        if shown == was_shown {
             return;
         }
-        portal.visible = visible;
         let focused = portal.focused;
-        self.ports.capture.set_portal_visible(id, visible);
-        self.ports.capture.set_portal_focus(id, focused && visible);
+        self.ports.capture.set_portal_visible(id, shown);
+        self.ports.capture.set_portal_focus(id, focused && shown);
         let actions = self
             .source_session_mut(id)
-            .map(|session| session.on_portal_visible(visible))
+            .map(|session| session.on_portal_visible(shown))
             .unwrap_or_default();
         self.run_source_actions(id, actions);
     }
@@ -411,6 +427,12 @@ impl Controller {
     /// when a verification accepted it: then the window layer must suppress
     /// the event (FLOW-9).
     pub fn acknowledge(&mut self, origin: AckOrigin) -> bool {
+        // FLOW-26: clicks and keys on the warning do nothing.
+        if let AckOrigin::Prompt(prompt) | AckOrigin::PromptKey(prompt) = origin
+            && self.is_portal_warning(prompt)
+        {
+            return false;
+        }
         let portal = match origin {
             AckOrigin::Prompt(prompt) => {
                 return self.verify(|v, env| v.acknowledge_prompt(prompt, env));
@@ -447,8 +469,9 @@ impl Controller {
             .any(SourceSession::ack_wanted)
     }
 
-    /// The portal left fullscreen: request a hand back as for the shortcut (UI-3).
-    pub fn portal_left_fullscreen(&mut self, id: PortalId) {
+    /// "Hand back" in the session row of a portal: request the hand back of
+    /// that portal only (HB-3).
+    pub fn request_hand_back(&mut self, id: PortalId) {
         let actions = self
             .source_session_mut(id)
             .map(SourceSession::request_hand_back)
@@ -714,8 +737,7 @@ impl Controller {
             | CapturedEvent::PointerLeft { portal }
             | CapturedEvent::FocusWanted { portal }
             | CapturedEvent::KeyboardEntered { portal }
-            | CapturedEvent::KeyboardLeft { portal }
-            | CapturedEvent::HandBackShortcut { portal } => portal,
+            | CapturedEvent::KeyboardLeft { portal } => portal,
             CapturedEvent::InputLost | CapturedEvent::SafetyExit | CapturedEvent::Overflow => {
                 return;
             }
@@ -723,40 +745,58 @@ impl Controller {
         let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
+        let shown = portal.shown();
         let Some(session) = portal.session.as_mut() else {
             return;
         };
         let actions = match event {
             CapturedEvent::Input { event, .. } => session.on_input(event),
             CapturedEvent::PointerMoved { at, .. } => {
-                if !portal.visible {
-                    // FLOW-26: the warning on the target shows the cursor.
-                    let cursor = portal
-                        .bounds
-                        .contains(at)
-                        .then(|| pointer::normalize(portal.bounds, at));
-                    let actions = session.portal_cursor(cursor);
-                    self.run_source_actions(id, actions);
+                let forwarding = session.phase() == SourcePhase::Forwarding;
+                if shown {
+                    portal.pointer = portal.bounds.clamp(at);
+                }
+                if forwarding && shown {
+                    self.send_pointer(id);
                     return;
                 }
-                portal.pointer = portal.bounds.clamp(at);
-                if session.phase() == SourcePhase::Forwarding {
-                    self.send_pointer(id);
-                }
-                return;
+                // FLOW-26: the warning on the target shows the cursor. FLOW-7:
+                // before forwarding, the prompt on the target shows it.
+                let cursor = portal
+                    .bounds
+                    .contains(at)
+                    .then(|| pointer::normalize(portal.bounds, at));
+                session.portal_cursor(cursor)
             }
             CapturedEvent::PointerEntered { at, .. } => {
-                portal.pointer = portal.bounds.clamp(at);
-                session.forget_pointer();
-                self.send_pointer(id);
-                return;
+                let forwarding = session.phase() == SourcePhase::Forwarding;
+                if forwarding && !shown {
+                    // FLOW-26, UI-3: a hidden portal forwards no pointer
+                    // position. The warning on the target shows the cursor.
+                    session.portal_cursor(Some(pointer::normalize(portal.bounds, at)))
+                } else {
+                    portal.pointer = portal.bounds.clamp(at);
+                    session.forget_pointer();
+                    let actions = if forwarding {
+                        Vec::new()
+                    } else {
+                        // FLOW-7: the prompt on the target shows the cursor.
+                        session.portal_cursor(Some(pointer::normalize(portal.bounds, at)))
+                    };
+                    self.run_source_actions(id, actions);
+                    self.send_pointer(id);
+                    return;
+                }
+            }
+            CapturedEvent::PointerLeft { .. } if session.phase() != SourcePhase::Forwarding => {
+                // FLOW-7: the cursor image on the prompt goes away.
+                session.portal_cursor(None)
             }
             CapturedEvent::FocusWanted { .. } => {
                 if portal.focused {
                     // The OS reported the focus, but the capture lost it, for
                     // example at a disarm (FLOW-22).
-                    let visible = portal.visible;
-                    self.ports.capture.set_portal_focus(id, visible);
+                    self.ports.capture.set_portal_focus(id, shown);
                 } else {
                     // FLOW-22: the window layer asks the OS for the native focus.
                     portal.focus_wanted = true;
@@ -765,7 +805,6 @@ impl Controller {
             }
             CapturedEvent::KeyboardEntered { .. } => session.on_keyboard(true),
             CapturedEvent::KeyboardLeft { .. } => session.on_keyboard(false),
-            CapturedEvent::HandBackShortcut { .. } => session.request_hand_back(),
             CapturedEvent::PointerLeft { .. }
             | CapturedEvent::InputLost
             | CapturedEvent::SafetyExit

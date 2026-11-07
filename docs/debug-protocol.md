@@ -15,7 +15,7 @@ Each request and each response is one line of JSON. One connection can send more
 
 | Request | Effect | Response |
 | --- | --- | --- |
-| `{"cmd":"state"}` | none | `{"ok":true,"control":<text>,"portal":<text or null>,"windows":[<window>...]}` |
+| `{"cmd":"state"}` | none | `{"ok":true,"control":<text>,"portal":<text or null>,"portals":[<portal>...],"windows":[<window>...]}` |
 | `{"cmd":"intent","intent":<intent>}` | the same as the click in the UI | `{"ok":true}` |
 | `{"cmd":"ack"}` | the same as the acknowledgement key in the focused portal (FLOW-8; the focus check applies, AC-6). If the portal does not accept it, the same as Return on the destination of a hand back (VER-4) | `{"ok":true}`, or an error if nothing waits for an acknowledgement |
 | `{"cmd":"pointer_stats"}` | none (NET-9) | `{"ok":true,"stats":<summary or null>}`: the pointer statistics of the current incoming session, else of the last one |
@@ -28,6 +28,10 @@ Each request and each response is one line of JSON. One connection can send more
 An invalid request gets `{"ok":false,"error":<text>}`.
 
 `control` and `portal` are the Rust `Debug` text of the view models. They are for people, not for parsers.
+
+`portal` is the main portal: the portal with the window focus, else the newest portal. `scripts/hw-clipboard-test.sh` reads it.
+
+A portal is `{"portal":<portal id>,"display":<display token>,"session":<session id or null>,"state":<phase or null>,"screen":<text>}`. `portals` has one entry for each portal, in the sequence of the portal ids (FLOW-25). `session` is null until the target grants the lease. `state` is the JSON form of the session phase of the native UI (UI-18), for example `{"kind":"forwarding"}` or `{"kind":"ended","reason":<text>}`. It is null if the portal has no session. `screen` is the Rust `Debug` text of the portal view model.
 
 A window is `{"role":"control"|"portal"|"prompt","monitor":<display token or null>,"fullscreen":<bool>,"focused":<bool>,"position":[x,y] or null,"size":[w,h]}`. Position and size are logical pixels. Wayland does not report the position.
 

@@ -15,7 +15,7 @@ Switching the controlled computer and ending the session are different (user, 20
   - Each key and button up goes where its down went (IN-3). For example, Shift pressed on a different display and released in the portal goes to the source, not to the target.
   - The cursor shows normally (user, 2026-10-27). The source never hides it. The portal display shows the target, so the source cursor is not in that video signal.
 - **End the session.** One of these:
-  - Press the release shortcut (macOS: Control+Option+Command+Escape; Linux: Control+Alt+Shift+Escape, user, 2026-10-27; fixed in v0.1.0).
+  - Press the release shortcut (macOS: Control+Option+Command+Escape; Linux: Control+Alt+Shift+Escape, user, 2026-10-27; fixed in v0.1.0). Amendment (user, 2026-11-07): the shortcut is removed (spec IN-7). "Hand back" in the menu replaces it (spec HB-3).
   - The source computer detects that the target computer is disconnected (heartbeat timeout or a closed connection).
   - On the target computer, the user selects "disconnect". The target computer ends the session.
   - The target computer requests control back: it ends the session, and then it can be the source computer in the reverse direction (ADR 0006).

@@ -10,8 +10,9 @@ use objc2::rc::Retained;
 use objc2::runtime::NSObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAllRomanInputSourcesLocaleIdentifier, NSScreen, NSView, NSWindow, NSWindowCollectionBehavior,
-    NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
+    NSAllRomanInputSourcesLocaleIdentifier, NSApplicationActivationOptions, NSRunningApplication,
+    NSScreen, NSView, NSWindow, NSWindowCollectionBehavior, NSWorkspace,
+    NSWorkspaceActiveSpaceDidChangeNotification,
 };
 use objc2_foundation::{NSArray, NSNotification, NSNumber, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -74,10 +75,36 @@ pub fn make_overlay(window: &impl HasWindowHandle) {
 
 /// VER-4: the prompt of a hand back takes the acknowledgement on this computer,
 /// so it takes mouse events and the keyboard focus. The portal of the session
-/// can be closed at this time (ACT-5), so no other window takes them.
+/// can be closed at this time (ACT-5), so no other window takes them. The
+/// warning of FLOW-26 takes them too, for the safety exit (IN-8).
 pub fn set_prompt_input(window: &impl HasWindowHandle, on: bool) {
     if let Some(window) = ns_window(window) {
         window.setIgnoresMouseEvents(!on);
+    }
+}
+
+/// An app that was frontmost before the warning of FLOW-26 took the focus.
+#[derive(Debug)]
+pub struct FrontmostApp(Retained<NSRunningApplication>);
+
+/// The frontmost app, if it is not Telescreen (FLOW-26).
+pub fn frontmost_other_app() -> Option<FrontmostApp> {
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .filter(|app| app.processIdentifier() != std::process::id() as i32)
+        .map(FrontmostApp)
+}
+
+/// Makes `app` the frontmost app again, if it still runs (FLOW-26).
+pub fn activate(app: &FrontmostApp) {
+    if app.0.isTerminated() {
+        return;
+    }
+    if !app
+        .0
+        .activateWithOptions(NSApplicationActivationOptions::empty())
+    {
+        eprintln!("telescreen: cannot activate the app that was frontmost");
     }
 }
 

@@ -17,7 +17,7 @@ use telescreen_core::driver::{DeviceRef, Request};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::session::VideoInput;
-use telescreen_core::verification::{Verification, VerificationAction, VerificationResult};
+use telescreen_core::verification::{Verification, VerificationAction};
 use telescreen_core::verifier::{PromptVerifier, VerifierEvent};
 use telescreen_view::{PromptId, PromptPresenter, PromptScreen};
 
@@ -148,6 +148,14 @@ impl Verifications {
         self.entries.get(owner).is_some_and(|e| e.prompt == prompt)
     }
 
+    /// The prompt of the verification of `owner`, while the presenter shows it.
+    pub(super) fn shown_prompt(&self, owner: &Owner) -> Option<PromptId> {
+        self.entries
+            .get(owner)
+            .filter(|e| e.visible)
+            .map(|e| e.prompt)
+    }
+
     /// Starts the verifier of `verify` for `owner` (VER-1, VER-3, VER-5).
     pub(super) fn start(
         &mut self,
@@ -269,7 +277,9 @@ impl Verifications {
 
     /// Shows the prompt on the input-target display, or updates it in place.
     /// First it stops each other verification with a visible prompt on the same
-    /// display (VER-8). Returns true if the presenter shows the prompt.
+    /// display (VER-8). Returns true if the presenter shows the prompt. A prompt
+    /// that cannot show is a verifier that answers not ok: the device state is
+    /// unknown (VER-5, FLOW-11).
     pub(super) fn show(
         &mut self,
         owner: &Owner,
@@ -310,10 +320,16 @@ impl Verifications {
                     entry.visible = true;
                 }
             }
-            Err(e) => env.notice(match owner {
-                Owner::Session(_) => format!("Cannot show the prompt: {e}"),
-                Owner::HandBack(_) => format!("Cannot show the hand back prompt: {e}"),
-            }),
+            Err(e) => {
+                env.notice(match owner {
+                    Owner::Session(_) => format!("Cannot show the prompt: {e}"),
+                    Owner::HandBack(_) => format!("Cannot show the hand back prompt: {e}"),
+                });
+                if let Some(entry) = self.entries.get(owner) {
+                    env.states()
+                        .insert(entry.device.clone(), VideoInput::Unknown);
+                }
+            }
         }
         shown.is_ok()
     }
@@ -358,7 +374,8 @@ impl Verifications {
     }
 
     /// The window layer could not show `prompt`. The device state is unknown.
-    /// Returns the session to end with `PromptFailed`; a hand back stops here.
+    /// Returns the session to end with `VerifyFailed` (VER-5); a hand back stops
+    /// here.
     pub(super) fn prompt_failed(
         &mut self,
         prompt: PromptId,
@@ -369,14 +386,12 @@ impl Verifications {
             .iter()
             .find_map(|(owner, entry)| (entry.prompt == prompt).then(|| owner.clone()))?;
         env.notice("Cannot show the prompt window.".into());
+        if let Some(entry) = self.entries.get(&owner) {
+            env.states()
+                .insert(entry.device.clone(), VideoInput::Unknown);
+        }
         match owner {
-            Owner::Session(session) => {
-                if let Some(entry) = self.entries.get(&owner) {
-                    env.states()
-                        .insert(entry.device.clone(), VideoInput::Unknown);
-                }
-                Some(session)
-            }
+            Owner::Session(session) => Some(session),
             Owner::HandBack(_) => {
                 let actions = self
                     .rules(&owner)
@@ -502,8 +517,8 @@ impl Verifications {
                 }
                 // The prompt shows `ack_here` (VER-4); the window layer reports the press.
                 VerificationAction::AckWanted => None,
-                VerificationAction::Finished(result) => {
-                    self.finish(owner, result, env);
+                VerificationAction::Finished(_) => {
+                    self.finish(owner, env);
                     None
                 }
             };
@@ -513,9 +528,9 @@ impl Verifications {
         }
     }
 
-    /// Ends a hand back verification. The final answer of the verifier already
-    /// set the device state; a prompt that failed makes it unknown (VER-6).
-    fn finish(&mut self, owner: &Owner, result: VerificationResult, env: &mut dyn Env) {
+    /// Ends a hand back verification. The final answer of the verifier or the
+    /// failed prompt already set the device state (VER-6).
+    fn finish(&mut self, owner: &Owner, env: &mut dyn Env) {
         let Some(mut entry) = self.entries.remove(owner) else {
             return;
         };
@@ -525,9 +540,6 @@ impl Verifications {
             .is_some_and(|rules| !rules.hide().is_empty())
         {
             env.prompt().hide(entry.prompt);
-        }
-        if result == VerificationResult::WindowFailed {
-            env.states().insert(entry.device, VideoInput::Unknown);
         }
     }
 }
@@ -896,6 +908,20 @@ mod tests {
         assert_eq!(state(&env, "dell"), Some(VideoInput::Unverified));
         assert_eq!(v.hand_backs(), [DeviceId::from("tv")]);
         assert!(v.is_current(&owner, PromptId(3)));
+    }
+
+    #[test]
+    fn ver5_a_session_prompt_that_cannot_show_is_unknown() {
+        let mut v = verifications();
+        let mut env = env();
+        let owner = session(&mut v, &mut env, 1, "lg", "A");
+        env.show_fails = true;
+        assert!(!v.show(&owner, None, true, &mut env));
+        assert_eq!(state(&env, "lg"), Some(VideoInput::Unknown), "FLOW-11");
+        assert_eq!(env.notices, ["Cannot show the prompt: no window"]);
+        let gone = session(&mut v, &mut env, 2, "dell", "gone");
+        assert!(!v.show(&gone, None, true, &mut env));
+        assert_eq!(state(&env, "dell"), Some(VideoInput::Unknown));
     }
 
     #[test]
