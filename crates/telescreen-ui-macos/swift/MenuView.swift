@@ -6,8 +6,11 @@ import SwiftUI
 
 private let corner: CGFloat = 22
 /// Smoked glass: a neutral black tint (user, 2026-11-07; the mockup color
-/// has a blue cast).
-private let glassTint = Color.black.opacity(0.4)
+/// has a blue cast). 20 % (user, 2026-11-07: a test of less tint than 40 %).
+private let glassTint = Color.black.opacity(0.2)
+/// The fill of a row under the pointer. 10 % was too dim on the glass (user,
+/// 2026-11-07).
+let menuHover = Color.primary.opacity(0.22)
 /// Text levels on the glass. The system levels (`.secondary`, `.tertiary`)
 /// are too dim on the dark glass (user, 2026-11-07); these follow the gray
 /// levels of the mockup.
@@ -160,7 +163,7 @@ private struct MenuRow: View {
         .buttonStyle(.plain)
         .background {
             if hover.on {
-                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.primary.opacity(0.10))
+                RoundedRectangle(cornerRadius: 8, style: .continuous).fill(menuHover)
             }
         }
         .onHover { hover.on = $0 }
@@ -431,7 +434,7 @@ struct RefreshButton: View {
                 .background {
                     if hover.on && display.canRefresh {
                         RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .fill(.primary.opacity(0.12))
+                            .fill(menuHover)
                     }
                 }
                 .contentShape(Rectangle())
@@ -584,7 +587,7 @@ struct CandidateRow: View {
                         .background {
                             if hover.on && style == .menu {
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(.primary.opacity(0.18))
+                                    .fill(.primary.opacity(0.30))
                             }
                         }
                         .contentShape(Rectangle())
@@ -601,7 +604,7 @@ struct CandidateRow: View {
             if hover.on {
                 if style == .menu {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(.primary.opacity(0.10))
+                        .fill(menuHover)
                 } else {
                     Rectangle().fill(.primary.opacity(0.05))
                 }

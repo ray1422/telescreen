@@ -216,7 +216,8 @@ impl Controller {
             return Vec::new();
         }
         let devices = self.local_devices();
-        self.display_cache
+        let mut displays: Vec<MenuDisplay> = self
+            .display_cache
             .iter()
             .filter_map(|display| {
                 let result = self
@@ -275,7 +276,18 @@ impl Controller {
                         .any(|peer| self.peer_status(peer) == "offline"),
                 })
             })
-            .collect()
+            .collect();
+        // UI-18: the displays are in the order of their devices in the config.
+        // A display with no device is last.
+        let order = |display: &MenuDisplay| {
+            display
+                .devices
+                .first()
+                .and_then(|first| devices.iter().position(|(alias, _)| *alias == first.alias))
+                .unwrap_or(usize::MAX)
+        };
+        displays.sort_by_key(order);
+        displays
     }
 
     /// One row for each local device and each peer whose config has a route to

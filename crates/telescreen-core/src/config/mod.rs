@@ -14,6 +14,8 @@ pub mod semantic;
 pub mod yaml;
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -86,7 +88,9 @@ pub struct Computer {
     pub disabled_quirks: BTreeSet<Quirk>,
     pub endpoint: Endpoint,
     /// Keys are local aliases. They have no OS meaning.
-    pub devices: BTreeMap<String, Device>,
+    /// In the order of the config file (UI-18: the menu lists the displays
+    /// in this order).
+    pub devices: IndexMap<String, Device>,
 }
 
 /// The `clipboard` key of a computer (CLIP-1).

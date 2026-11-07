@@ -4281,8 +4281,9 @@ fn ui18_each_display_shows_its_matching_devices_and_candidates() {
     let w = evaluated();
     let menu = w.mac.controller.menu_screen();
     let tokens: Vec<_> = menu.displays.iter().map(|d| d.token.0.as_str()).collect();
-    assert_eq!(tokens, ["builtin", "lg"], "stable ids: the display tokens");
-    let builtin = &menu.displays[0];
+    // The display with no device is last (UI-18).
+    assert_eq!(tokens, ["lg", "builtin"], "stable ids: the display tokens");
+    let builtin = &menu.displays[1];
     assert_eq!(builtin.matching, telescreen_view::DisplayMatching::Done);
     assert!(builtin.devices.is_empty());
     let lg = lg_row(&w.mac);
@@ -4346,8 +4347,9 @@ fn ui18_a_stale_portal_match_result_is_dropped() {
         .controller
         .on_job_done(old, JobOutput::Operation(Ok(Outcome::Matched(true))));
     let menu = w.mac.controller.menu_screen();
+    let builtin = menu.displays.iter().find(|d| d.token.0 == "builtin");
     assert!(
-        menu.displays[0].devices.is_empty(),
+        builtin.unwrap().devices.is_empty(),
         "the old result has no effect"
     );
 }
@@ -4690,6 +4692,44 @@ impl World {
         let b = self.forward_on(dell_display(), "pc2");
         (a, b)
     }
+}
+
+#[test]
+fn ui18_the_menu_lists_the_displays_in_the_config_order() {
+    // "Side" (dell) comes before "Desktop" (lg) in this config, against the
+    // order of the names and of the platform list. The built-in display has
+    // no device.
+    let mut config = config_two_displays();
+    let mac = config.computers.get_mut(&ComputerId::from("mac")).unwrap();
+    mac.devices.reverse();
+    let capabilities = InputCapabilities {
+        capture: Capability::Available,
+        suppress: Capability::Available,
+        inject: Capability::Available,
+    };
+    let mut w = World::two_displays();
+    w.mac = peer_config(
+        "mac",
+        vec![
+            display("builtin", -1500.0, 1500.0),
+            display("lg", 0.0, 3400.0),
+            dell_display(),
+        ],
+        capabilities,
+        true,
+        config,
+    );
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    let order: Vec<String> = w
+        .mac
+        .controller
+        .menu_screen()
+        .displays
+        .iter()
+        .map(|d| d.token.0.clone())
+        .collect();
+    assert_eq!(order, ["dell", "lg", "builtin"]);
 }
 
 #[test]

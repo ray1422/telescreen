@@ -11,7 +11,7 @@ use telescreen_view::{PromptId, PromptPresenter, PromptScreen};
 pub enum PromptRequest {
     Show {
         prompt: PromptId,
-        display: DisplayInfo,
+        display: Box<DisplayInfo>,
         screen: PromptScreen,
     },
     Hide {
@@ -39,7 +39,7 @@ impl PromptPresenter for PromptQueue {
     ) -> Result<(), String> {
         self.0.borrow_mut().push(PromptRequest::Show {
             prompt,
-            display: display.clone(),
+            display: Box::new(display.clone()),
             screen: screen.clone(),
         });
         Ok(())

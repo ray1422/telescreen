@@ -188,6 +188,7 @@ Menu and entry points:
 - **UI-18** The view model of the menu (Claude decides, 2026-11-07):
   - It is one serializable value (`MenuScreen`), the same on all platforms. The KDE applet reads it over D-Bus as JSON. Intents come back as JSON too.
   - Each row has a stable id: a display has its token, a candidate has its computer id, a session has `Portal` or the session id of an incoming session, and a control request row has the computer id and the device id.
+  - The displays are in the order of their devices in the config file: a display comes before a different display when its first matching device comes first. A display with no matching device is last. Displays with the same order keep the order of the platform (user, 2026-11-07: the order of the config shows the real arrangement; the platform list had the built-in display first).
   - Each local display shows its own `portal-match` result. Telescreen evaluates `portal-match` for each display at the start and when the displays change. This evaluation dials the candidates of each matching device, as a portal does (NET-10). "Refresh" does not evaluate `portal-match` again: it only dials (NET-10, user, 2026-11-07).
   - Each display section has the "Refresh" button of NET-10 at the right of its title, as an icon button with the tooltip "Refresh" (user, 2026-11-07, mockup version 81). The button always shows.
   - Each candidate has the actions of ACT-1. "Switch display only" needs only the route. "Switch & control" and "Control only" need the conditions of FLOW-3.
