@@ -79,7 +79,7 @@ export QMAKE=$QT/bin/qmake
 export LD_LIBRARY_PATH=$LIBDIR:$QT/lib
 export QML_SOURCES_PATHS=$ROOT/crates/telescreen-ui-linux/qml
 export QML_MODULES_PATHS=$LIBDIR/qml
-export EXTRA_PLATFORM_PLUGINS="libqwayland-generic.so;libqwayland-egl.so;libqwayland.so;libqoffscreen.so"
+export EXTRA_PLATFORM_PLUGINS="libqwayland-generic.so;libqwayland-egl.so;libqoffscreen.so"
 export EXTRA_QT_MODULES="waylandclient;svg"
 export LDAI_OUTPUT=$OUT/Telescreen-preview-x86_64.AppImage
 ./linuxdeploy-x86_64.AppImage --appdir AppDir \
