@@ -19,7 +19,7 @@ jobs:
       - run: |
           dnf -y install epel-release dnf-plugins-core
           dnf config-manager --set-enabled crb
-          dnf -y install git gcc-c++ cmake ninja-build python3-pip gettext xz bzip2 file findutils which binutils \
+          dnf -y --setopt=install_weak_deps=False install git gcc-c++ cmake ninja-build python3-pip gettext xz bzip2 file findutils which binutils \
             zlib-devel bzip2-devel xz-devel libzstd-devel mesa-libGL-devel mesa-libEGL-devel \
             libxkbcommon-devel libxkbcommon-x11-devel wayland-devel fontconfig-devel freetype-devel dbus-devel \
             libX11-devel libxcb-devel xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-cursor \
@@ -44,12 +44,18 @@ jobs:
         image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "fedora:43"]
     container: ${{ matrix.image }}
     steps:
-      - name: Install the base libraries of a desktop
+      # Only the libraries that the AppImage expects from the host, each one by
+      # name, with no recommended or weak dependencies. A missing one then
+      # shows as a load error, and the list is the dependency list of the AppImage.
+      - name: Install the host libraries that the AppImage does not bundle
         run: |
           if command -v apt-get >/dev/null; then
-            apt-get update && apt-get install -y libgl1 libegl1 libfontconfig1 fonts-dejavu-core libxkbcommon0 libdbus-1-3 libglib2.0-0 file
+            apt-get update
+            apt-get install -y --no-install-recommends libgl1 libegl1 libopengl0 libfontconfig1 libfreetype6 \
+              fonts-dejavu-core libxkbcommon0 libdbus-1-3 libglib2.0-0
           else
-            dnf -y install mesa-libGL mesa-libEGL fontconfig dejavu-sans-fonts libxkbcommon dbus-libs glib2 file
+            dnf -y --setopt=install_weak_deps=False install mesa-libGL mesa-libEGL libglvnd-opengl fontconfig \
+              freetype dejavu-sans-fonts libxkbcommon dbus-libs glib2
           fi
           ldd --version | head -1
       - uses: actions/download-artifact@v4
