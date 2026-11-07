@@ -122,3 +122,19 @@ Code: `spikes/swiftui-host/`. `build.rs` compiles one Swift file into a static l
 | Active controls | A borderless `NSPanel` cannot become key by default, and then SwiftUI draws the buttons as inactive. A subclass with `canBecomeKeyWindow = true` (as `focus.rs`) fixes it. |
 | Glass | `glassEffect` in the panel shows the desktop behind it (screenshot of the screen region). A screenshot of the window only (`screencapture -l`) shows no backdrop. |
 | Not tested | A click on the status item, the Control Center extension (WidgetKit) in a bundle with a Rust main, and an app bundle build. |
+
+## Spike 8: a Control Center button with no Xcode (2026-11-07, macOS 27, Command Line Tools only)
+
+Code: `spikes/control-center/`. `build.sh` compiles one Swift file with `swiftc` into a WidgetKit extension, puts it into `Contents/PlugIns/` of the dev `Telescreen.app`, and signs it with the sandbox entitlement.
+
+| Question | Result |
+| --- | --- |
+| Build with no Xcode | Works. `swiftc -parse-as-library -application-extension` with `-Xlinker -e -Xlinker _NSExtensionMain`. Without the entry point, the extension stopped at once in `_EXRunningExtension._shared` (ExtensionFoundation): `ExtensionMain.shared` had no extension type. Xcode adds this entry point. An installed widget (Tailscale) has it too. |
+| Registration | `pluginkit` registers the extension after `lsregister -f -R` of the app. chronod reads the control descriptor (`kind`, `OpenURLIntent`, `isLauncher: YES`). |
+| Signing | The self-signed "Telescreen Dev" identity is sufficient. The extension has no team identifier and no provisioning profile. An ad-hoc signature also stopped in the same place before the entry point fix, so the signature was not the cause. |
+| Control Center gallery | The control shows in "Add a Control" (user, 2026-11-07). |
+| Button action, system intent | Fail. With the system `OpenURLIntent`, a press fails: `Failed to create LinkAction`, then `Encountered action intent without linkAction` (CHSErrorDomain 1107). The extension needs App Intents metadata (`Metadata.appintents`) also for a system intent. Only Xcode has the tool that makes it (`appintentsmetadataprocessor`). |
+| Button action, own intent | Works with metadata written by hand (a test only, user, 2026-11-07). `OpenMenuIntent` in the extension opens `telescreen://menu` with `NSWorkspace`. `Metadata.appintents/extract.actionsdata` has one action, copied from the format of an installed widget (Tailscale); `mangledTypeName` must match the module name (`-module-name TelescreenControl`). chronod: `Successfully ran action`; Control Center: `Button control action succeeded`. The intent runs in the extension (`requiredLaunch: NO`). The sandboxed extension can open the URL: Telescreen was not running, and LaunchServices started it. The format of the metadata is not public, so a release build must not depend on a hand-written file. |
+| Refetch | chronod reads the descriptors again only when `CFBundleVersion` changes, and an extension process that still runs answers with the old code. After a change: stop the extension process, increase the version, and run `lsregister` again. |
+| Custom SF Symbol | Not tested. It needs an asset catalog, and only Xcode has `actool`. |
+| Result | The Control Center button works: an extension with an own intent, the self-signed signature, and an app with a Rust main. A release build needs the Xcode tools for the App Intents metadata and for the asset catalog of the custom glyph (a macOS CI runner has Xcode). The app does not handle `telescreen://menu` yet (step f2). |
