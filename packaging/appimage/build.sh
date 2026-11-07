@@ -51,19 +51,19 @@ install_qt() {
 build_frameworks() {
     series=${KF_VERSION%.*}
     mkdir -p "$kf" "$work/src"
-    for name in $FRAMEWORKS; do
-        [ -f "$kf/.done-$name" ] && continue
-        tarball=$work/src/$name-$KF_VERSION.tar.xz
-        [ -f "$tarball" ] || curl -fsSL -o "$tarball" "https://download.kde.org/stable/frameworks/$series/$name-$KF_VERSION.tar.xz"
-        rm -rf "$work/src/$name-$KF_VERSION" "$work/build-$name"
+    for framework in $FRAMEWORKS; do
+        [ -f "$kf/.done-$framework" ] && continue
+        tarball=$work/src/$framework-$KF_VERSION.tar.xz
+        [ -f "$tarball" ] || curl -fsSL -o "$tarball" "https://download.kde.org/stable/frameworks/$series/$framework-$KF_VERSION.tar.xz"
+        rm -rf "$work/src/$framework-$KF_VERSION" "$work/build-$framework"
         tar -xJf "$tarball" -C "$work/src"
-        cmake -S "$work/src/$name-$KF_VERSION" -B "$work/build-$name" -G Ninja \
+        cmake -S "$work/src/$framework-$KF_VERSION" -B "$work/build-$framework" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$kf" -DCMAKE_PREFIX_PATH="$qt;$kf" \
             -DBUILD_TESTING=OFF -DBUILD_QCH=OFF -DBUILD_PYTHON_BINDINGS=OFF -DBUILD_DESIGNERPLUGIN=OFF \
             -DWITH_WAYLAND=OFF -DWITH_X11=OFF -DUSE_BreezeIcons=OFF
-        cmake --build "$work/build-$name"
-        cmake --install "$work/build-$name"
-        touch "$kf/.done-$name"
+        cmake --build "$work/build-$framework"
+        cmake --install "$work/build-$framework"
+        touch "$kf/.done-$framework"
     done
 }
 
@@ -106,8 +106,8 @@ copy_qt_runtime_parts() {
     cp -R "$lib/plugins/"* "$appdir/usr/plugins/"
     cp -R "$qt/plugins/wayland-graphics-integration-client" "$appdir/usr/plugins/"
     # The license texts of the bundled frameworks. Their source is the tarballs above.
-    for name in $FRAMEWORKS; do
-        [ -d "$work/src/$name-$KF_VERSION/LICENSES" ] && cp -R "$work/src/$name-$KF_VERSION/LICENSES" "$appdir/usr/share/licenses/$name"
+    for framework in $FRAMEWORKS; do
+        [ -d "$work/src/$framework-$KF_VERSION/LICENSES" ] && cp -R "$work/src/$framework-$KF_VERSION/LICENSES" "$appdir/usr/share/licenses/$framework"
     done
     cat > "$appdir/usr/share/licenses/README" <<NOTICE
 This AppImage bundles Qt $QT_VERSION (LGPL-3.0, https://download.qt.io/archive/qt/)
@@ -153,7 +153,7 @@ run_linuxdeploy() {
 
 install_qt
 if $preview; then
-    name=Telescreen-preview-x86_64.AppImage
+    appimage=Telescreen-preview-x86_64.AppImage
     with_qt=true
     build_frameworks
     make_appdir
@@ -161,9 +161,9 @@ if $preview; then
     cp -R "$root/crates/telescreen-ui-linux/qml" "$root/crates/telescreen-ui-linux/fixtures" "$appdir/usr/share/telescreen/"
     cp "$qt/bin/qml" "$appdir/usr/bin/qml"
     copy_qt_runtime_parts
-    run_linuxdeploy "$name" "$appdir/usr/bin/qml"
+    run_linuxdeploy "$appimage" "$appdir/usr/bin/qml"
 else
-    name=Telescreen-x86_64.AppImage
+    appimage=Telescreen-x86_64.AppImage
     make_appdir
     build_telescreen
     if links_qt "$appdir/usr/bin/telescreen"; then
@@ -173,9 +173,9 @@ else
     else
         with_qt=false
     fi
-    run_linuxdeploy "$name" "$appdir/usr/bin/telescreen"
+    run_linuxdeploy "$appimage" "$appdir/usr/bin/telescreen"
 fi
 
-echo "made $out/$name"
+echo "made $out/$appimage"
 echo "glibc needed: $(find "$appdir" -type f \( -name '*.so*' -o -perm -u+x \) -exec objdump -T {} \; 2>/dev/null \
     | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
