@@ -1,0 +1,9 @@
+#!/bin/sh
+# Spike 9: runs the preview QML with the bundled Qt, Kirigami, and KDE style.
+#   Telescreen-preview-x86_64.AppImage [fixtures/main-idle.json] [out.png]
+HERE=$(dirname "$(readlink -f "$0")")
+export QT_QUICK_CONTROLS_STYLE=${QT_QUICK_CONTROLS_STYLE:-org.kde.desktop}
+export QML_XHR_ALLOW_FILE_READ=1
+# The icon themes and the fonts of the host.
+export XDG_DATA_DIRS="$HERE/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+exec "$HERE/usr/bin/qml" -a widget "$HERE/usr/share/telescreen/qml/preview/Preview.qml" -- "$@"
