@@ -5,6 +5,20 @@
 import SwiftUI
 
 private let corner: CGFloat = 22
+/// Smoked glass: a neutral black tint (user, 2026-11-07; the mockup color
+/// has a blue cast).
+private let glassTint = Color.black.opacity(0.4)
+/// Text levels on the glass. The system levels (`.secondary`, `.tertiary`)
+/// are too dim on the dark glass (user, 2026-11-07); these follow the gray
+/// levels of the mockup.
+let menuSecondary = Color.primary.opacity(0.75)
+let menuTertiary = Color.primary.opacity(0.6)
+/// The transparent margin for the shadow (mockup: 0 18px 50px, 45 % black).
+/// The system shadow follows the rectangle of the panel, not the glass, so
+/// SwiftUI draws it. src/mac.rs has the same values (SHADOW_*).
+private let shadowTop: CGFloat = 32
+private let shadowSide: CGFloat = 50
+private let shadowBottom: CGFloat = 68
 
 struct MenuView: View {
     let model: MenuModel
@@ -23,7 +37,15 @@ struct MenuView: View {
                         .fill(Color(nsColor: .windowBackgroundColor))
                 }
             }
-            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
+            .glassEffect(.regular.tint(glassTint),
+                         in: RoundedRectangle(cornerRadius: corner, style: .continuous))
+            .background {
+                RoundedRectangle(cornerRadius: corner, style: .continuous)
+                    .fill(.black.opacity(0.001))
+                    .shadow(color: .black.opacity(0.45), radius: 25, y: 18)
+            }
+            .padding(EdgeInsets(top: shadowTop, leading: shadowSide,
+                                bottom: shadowBottom, trailing: shadowSide))
             .onGeometryChange(for: CGSize.self) { $0.size } action: { size in
                 send(["ui": "menu_size", "width": size.width, "height": size.height])
             }
@@ -39,7 +61,7 @@ struct MenuContent: View {
             HStack {
                 Text("Telescreen").font(.system(size: 15, weight: .bold))
                 Spacer()
-                Text(screen.computer).font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(screen.computer).font(.system(size: 12)).foregroundStyle(menuSecondary)
             }
             .padding(.top, 2)
             .padding(.horizontal, 6)
@@ -254,7 +276,7 @@ struct SessionCard: View {
                     Text(source ? "Controlling \(session.peerLabel)"
                                 : "Controlled by \(session.peerLabel)")
                         .font(.system(size: 14, weight: .semibold))
-                    Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text(subtitle).font(.system(size: 12)).foregroundStyle(menuSecondary)
                 }
                 Spacer(minLength: 0)
             }
@@ -277,7 +299,7 @@ struct SessionCard: View {
                         .buttonStyle(CardButtonStyle())
                 }
                 Text("Hand back shortcut ⌃⌥⌘⎋ · works when no window here is visible")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(.system(size: 11)).foregroundStyle(menuSecondary)
             } else {
                 let id = session.id.session ?? 0
                 Button("Hand back to \(session.peerLabel)") {
@@ -295,7 +317,7 @@ struct SessionCard: View {
                         .buttonStyle(CardButtonStyle())
                 }
                 if let cause = session.role.handBack {
-                    Text(cause).font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(cause).font(.system(size: 11)).foregroundStyle(menuSecondary)
                 }
             }
         }
@@ -333,7 +355,7 @@ private struct DisplaySection: View {
     }
 
     private func note(_ text: String) -> some View {
-        Text(text).font(.system(size: 13)).foregroundStyle(.tertiary)
+        Text(text).font(.system(size: 13)).foregroundStyle(menuTertiary)
             .padding(.top, 4)
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
@@ -344,7 +366,7 @@ private struct DisplaySection: View {
             device.candidates.map { (device, $0) }
         }
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(menuSecondary)
                 .padding(.top, first ? 6 : 10)
                 .padding(.horizontal, 8)
                 .padding(.bottom, candidates.isEmpty ? 2 : 4)
@@ -459,6 +481,15 @@ struct CandidateRow: View {
     let style: Style
     @StateObject private var hover = Hover()
 
+    private func subtitleStyle(online: Bool) -> Color {
+        switch (style, online) {
+        case (.menu, true): return menuSecondary
+        case (.menu, false): return menuTertiary
+        case (.window, true): return Color.secondary
+        case (.window, false): return Color(nsColor: .tertiaryLabelColor)
+        }
+    }
+
     private var model: CandidateActions {
         CandidateActions(display: display, device: device, candidate: candidate, request: request)
     }
@@ -482,9 +513,9 @@ struct CandidateRow: View {
                     VStack(alignment: .leading, spacing: style == .menu ? 0 : 2) {
                         Text(candidate.label)
                             .font(.system(size: style == .menu ? 14 : 13))
-                            .foregroundStyle(model.online ? .primary : .secondary)
+                            .foregroundStyle(model.online ? Color.primary : style == .menu ? menuSecondary : Color.secondary)
                         Text(model.subtitle).font(.system(size: 12))
-                            .foregroundStyle(model.online ? .secondary : .tertiary)
+                            .foregroundStyle(subtitleStyle(online: model.online))
                     }
                     Spacer(minLength: 0)
                 }

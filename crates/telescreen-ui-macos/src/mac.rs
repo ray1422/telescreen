@@ -329,9 +329,20 @@ extern "C" fn on_event(json: *const c_char) {
     }
 }
 
-/// Puts the panel at its anchor, at the size that SwiftUI wants (UI-10).
+/// The transparent margin of the menu view for its shadow, in points
+/// (MenuView.swift has the same values).
+const SHADOW_TOP: f64 = 32.0;
+const SHADOW_SIDE: f64 = 50.0;
+const SHADOW_BOTTOM: f64 = 68.0;
+
+/// Puts the panel at its anchor, at the size that SwiftUI wants (UI-10). The
+/// anchor applies to the glass; the shadow margin is outside it.
 fn place() {
-    let Some(size) = SIZE.get() else { return };
+    let Some(full) = SIZE.get() else { return };
+    let size = NSSize::new(
+        full.width - 2.0 * SHADOW_SIDE,
+        full.height - SHADOW_TOP - SHADOW_BOTTOM,
+    );
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
@@ -362,7 +373,9 @@ fn place() {
                         && pointer.y >= f.origin.y
                         && pointer.y < f.origin.y + f.size.height
                 });
-                let Some(visible) = screen.or_else(|| screens.firstObject()).map(|s| s.visibleFrame())
+                let Some(visible) = screen
+                    .or_else(|| screens.firstObject())
+                    .map(|s| s.visibleFrame())
                 else {
                     return;
                 };
@@ -376,8 +389,10 @@ fn place() {
                 x = right - size.width;
             }
         }
-        let frame = NSRect::new(NSPoint::new(x, top - size.height), size);
-        state.panel.setFrame_display(frame, true);
+        let origin = NSPoint::new(x - SHADOW_SIDE, top - size.height - SHADOW_BOTTOM);
+        state
+            .panel
+            .setFrame_display(NSRect::new(origin, full), true);
     });
 }
 
@@ -508,7 +523,9 @@ impl MacUi {
         };
         panel.setOpaque(false);
         panel.setBackgroundColor(Some(&NSColor::clearColor()));
-        panel.setHasShadow(true);
+        // The system shadow follows the rectangle of the panel, and it shows
+        // square corners around the round glass. SwiftUI draws the shadow.
+        panel.setHasShadow(false);
         // UI-13: the menu shows on each Space and over the fullscreen portal, so
         // that macOS does not change the Space of a portal display for it.
         panel.setCollectionBehavior(
