@@ -17,6 +17,9 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     container: almalinux:9
+    env:
+      CARGO_HOME: /usr/local/cargo
+      RUSTUP_HOME: /usr/local/rustup
     strategy:
       fail-fast: false
       matrix:
@@ -33,10 +36,12 @@ jobs:
             fontconfig-devel freetype-devel dbus-devel libX11-devel libxcb-devel \
             xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-cursor
       - uses: actions/checkout@v4
+      # In the container, $HOME is not the home directory of root, and rustup
+      # refuses to install there. Give it fixed directories instead.
       - if: matrix.mode == 'app'
         run: |
-          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       # Qt, the KDE Frameworks, and linuxdeploy. Save them also after a
       # failure, so that the next run continues from the first part that failed.
       - uses: actions/cache/restore@v4

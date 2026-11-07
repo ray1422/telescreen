@@ -81,10 +81,12 @@ make_appdir() {
     rm -rf "$appdir"
     mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" "$appdir/usr/share/icons/hicolor/256x256/apps" \
         "$appdir/usr/share/plasma/plasmoids" "$appdir/usr/share/licenses/telescreen"
-    sed 's/^Exec=.*/Exec=telescreen/' "$root/packaging/linux/dev.telescreen.Telescreen.desktop" \
-        > "$appdir/usr/share/applications/dev.telescreen.Telescreen.desktop"
+    # linuxdeploy needs an Icon entry; the launcher entry of the archive has none (DIST-4).
+    desktop=$appdir/usr/share/applications/dev.telescreen.Telescreen.desktop
+    sed 's/^Exec=.*/Exec=telescreen/' "$root/packaging/linux/dev.telescreen.Telescreen.desktop" > "$desktop"
+    echo 'Icon=dev.telescreen.Telescreen' >> "$desktop"
     if $preview; then
-        sed -i 's/^Name=Telescreen$/Name=Telescreen preview/' "$appdir/usr/share/applications/dev.telescreen.Telescreen.desktop"
+        sed -i 's/^Name=Telescreen$/Name=Telescreen preview/' "$desktop"
     fi
     cp "$root/assets/linux/telescreen.png" "$appdir/usr/share/icons/hicolor/256x256/apps/dev.telescreen.Telescreen.png"
     # The applet package for a later install into the home directory (UI-11).
