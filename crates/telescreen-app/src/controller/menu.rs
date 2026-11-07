@@ -1,13 +1,12 @@
 //! The view models of the menu and the main window (UI-9, UI-13, UI-18).
 //!
-//! The menu shows the `portal-match` result of each local display. This module
-//! runs that evaluation with its own jobs, apart from the portal.
+//! The menu shows the `portal-match` result of each local display. Each display
+//! has its own evaluation in `portal_match`, apart from the portal.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use telescreen_core::config::Device;
-use telescreen_core::driver::{DeviceRef, OperationKind, Outcome, PortalInfo, Request};
-use telescreen_core::ids::{ComputerId, DisplayToken};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken};
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::routes;
 use telescreen_core::session::VideoInput;
@@ -16,24 +15,19 @@ use telescreen_view::{
     MenuDevice, MenuDisplay, MenuRole, MenuScreen, MenuSession, MenuSessionId,
 };
 
-use super::{Controller, Job, JobOutput, Pending, display_name, target_phase_text};
+use super::portal_match::{Candidate, MatchOwner};
+use super::{Controller, Pending, display_name, target_phase_text};
 
-/// `portal-match` of each local display for the menu.
+/// `portal-match` of each local display for the menu. The evaluation of each
+/// display is in [`PortalMatches`](super::portal_match::PortalMatches), with the
+/// owner [`MatchOwner::Display`].
 pub(super) struct DisplayEvaluation {
-    /// Drops results of an older evaluation (`displays_changed`, "Refresh").
+    /// The number in the `portal.id` of the requests. Each evaluation
+    /// (`displays_changed`, "Refresh") gets a new number.
     generation: u64,
     /// The display list of this evaluation. `displays_changed` evaluates again
     /// only when the list is different.
     snapshot: Vec<DisplayInfo>,
-    displays: HashMap<DisplayToken, DisplayResult>,
-}
-
-#[derive(Default)]
-struct DisplayResult {
-    pending: usize,
-    /// The aliases of the local devices that match.
-    matched: Vec<String>,
-    error: Option<String>,
 }
 
 impl Controller {
@@ -47,54 +41,33 @@ impl Controller {
             .map_or(1, |e| e.generation + 1);
         let all = self.displays();
         let devices = self.local_devices();
-        let mut evaluation = DisplayEvaluation {
+        self.display_evaluation = Some(DisplayEvaluation {
             generation,
             snapshot: all.clone(),
-            displays: HashMap::new(),
-        };
+        });
+        // The results of an older evaluation do not apply.
+        self.matches
+            .retain(|owner| !matches!(owner, MatchOwner::Display(_)));
         let mut jobs = Vec::new();
         for display in all.iter().filter(|d| d.bounds.is_some()) {
-            let mut result = DisplayResult::default();
-            for (alias, device) in &devices {
-                let Some(operation) = device.portal_match.clone() else {
-                    continue;
-                };
-                result.pending += 1;
-                let request = Request {
-                    computer_id: self.local.clone(),
-                    device: DeviceRef {
-                        id: device.id.clone(),
-                        alias: alias.clone(),
-                    },
-                    source_computer_id: self.local.clone(),
-                    target_computer_id: None,
-                    session_id: None,
-                    portal: Some(PortalInfo {
-                        id: format!("menu-{generation}"),
-                        bounds: display.bounds,
-                        coordinate_space: "local-desktop-logical",
-                        display_token: Some(display.token.clone()),
-                    }),
-                    displays: all.clone(),
-                };
-                jobs.push((
-                    Pending::DisplayMatch {
-                        generation,
-                        token: display.token.clone(),
-                        alias: alias.clone(),
-                    },
-                    Job::Operation {
-                        operation,
-                        kind: OperationKind::PortalMatch,
-                        request,
-                    },
-                ));
-            }
-            evaluation.displays.insert(display.token.clone(), result);
+            let candidates = devices
+                .iter()
+                .map(|(alias, device)| Candidate {
+                    alias: alias.clone(),
+                    device: device.clone(),
+                    display: display.clone(),
+                })
+                .collect();
+            jobs.extend(self.matches.start(
+                MatchOwner::Display(display.token.clone()),
+                &format!("menu-{generation}"),
+                candidates,
+                &self.local,
+                &all,
+            ));
         }
-        self.display_evaluation = Some(evaluation);
-        for (pending, job) in jobs {
-            self.spawn(pending, job);
+        for (ticket, job) in jobs {
+            self.spawn(Pending::PortalMatch(ticket), job);
         }
     }
 
@@ -105,34 +78,16 @@ impl Controller {
             .is_some_and(|e| e.snapshot != displays)
     }
 
-    pub(super) fn display_match_done(
-        &mut self,
-        generation: u64,
-        token: DisplayToken,
-        alias: String,
-        output: JobOutput,
-    ) {
-        let Some(evaluation) = self
-            .display_evaluation
-            .as_mut()
-            .filter(|e| e.generation == generation)
-        else {
+    /// A `portal-match` job of the display finished. A display with an error
+    /// dials no candidate.
+    pub(super) fn display_match_done(&mut self, token: &DisplayToken) {
+        let Some(evaluation) = self.matches.get(&MatchOwner::Display(token.clone())) else {
             return;
         };
-        let Some(result) = evaluation.displays.get_mut(&token) else {
-            return;
-        };
-        result.pending = result.pending.saturating_sub(1);
-        match output {
-            JobOutput::Operation(Ok(Outcome::Matched(true))) => result.matched.push(alias),
-            JobOutput::Operation(Ok(Outcome::Matched(false))) => {}
-            JobOutput::Operation(Err(e)) => result.error = Some(format!("{alias}: {e}")),
-            other => result.error = Some(format!("{alias}: unexpected {other:?}")),
-        }
-        if result.pending > 0 || result.error.is_some() {
+        if evaluation.is_pending() || evaluation.error().is_some() {
             return;
         }
-        let matched = result.matched.clone();
+        let matched: Vec<String> = evaluation.matched().map(|c| c.alias.clone()).collect();
         // NET-10: dial the candidates of each matching device.
         let devices = self.local_devices();
         let mut peers = BTreeSet::new();
@@ -153,25 +108,21 @@ impl Controller {
     pub(super) fn display_peers(&self, token: &DisplayToken) -> BTreeSet<ComputerId> {
         let mut devices: Vec<Device> = Vec::new();
         if let Some(result) = self
-            .display_evaluation
-            .as_ref()
-            .and_then(|e| e.displays.get(token))
-            .filter(|r| r.pending == 0 && r.error.is_none())
+            .matches
+            .get(&MatchOwner::Display(token.clone()))
+            .filter(|e| !e.is_pending() && e.error().is_none())
         {
             devices.extend(
                 self.local_devices()
                     .into_iter()
-                    .filter(|(alias, _)| result.matched.contains(alias))
+                    .filter(|(alias, _)| result.matched().any(|c| &c.alias == alias))
                     .map(|(_, device)| device),
             );
         }
-        if self
-            .portal
-            .as_ref()
-            .is_some_and(|p| &p.display.token == token)
-            && let Some(device) = self.portal_device()
+        if let Some(id) = self.portal_on(token)
+            && let Some(device) = self.portal_device(id)
         {
-            devices.push(device);
+            devices.push(device.clone());
         }
         devices
             .iter()
@@ -212,13 +163,13 @@ impl Controller {
 
     fn glyph(&self) -> Glyph {
         let source = self
-            .portal
-            .as_ref()
-            .and_then(|p| p.session.as_ref())
-            .is_some_and(|s| !s.is_finished());
+            .portals
+            .values()
+            .filter_map(|p| p.session.as_ref())
+            .any(|s| !s.is_finished());
         if source {
             Glyph::Controlling
-        } else if self.incoming.values().any(|t| !t.is_finished()) {
+        } else if self.targets().any(|(_, t)| !t.is_finished()) {
             Glyph::Controlled
         } else {
             Glyph::Idle
@@ -227,61 +178,80 @@ impl Controller {
 
     fn menu_sessions(&self) -> Vec<MenuSession> {
         let mut rows = Vec::new();
-        if let Some(session) = self
-            .portal
-            .as_ref()
-            .and_then(|p| p.session.as_ref())
-            .filter(|s| !s.is_finished())
-        {
+        // One row for each portal with a session (FLOW-25).
+        for (portal, session) in self.portals.iter().filter_map(|(id, p)| {
+            p.session
+                .as_ref()
+                .filter(|s| !s.is_finished())
+                .map(|s| (*id, s))
+        }) {
             rows.push(MenuSession {
-                id: MenuSessionId::Portal,
+                id: MenuSessionId::Portal { portal },
                 peer: session.target().clone(),
                 peer_label: self.label_of(session.target()),
                 device: session.device().clone(),
+                device_label: self.device_label(session.device()),
                 role: MenuRole::Source {
                     phase: self.phase_view(session),
                     video_input: session.video_input(),
                 },
             });
         }
-        for (id, target) in self.incoming.iter().filter(|(_, t)| !t.is_finished()) {
+        for (id, target) in self.targets().filter(|(_, t)| !t.is_finished()) {
             rows.push(MenuSession {
-                id: MenuSessionId::Incoming { session: *id },
+                id: MenuSessionId::Incoming { session: id },
                 peer: target.source().clone(),
                 peer_label: self.label_of(target.source()),
                 device: target.device().clone(),
+                device_label: self.device_label(target.device()),
                 role: MenuRole::Target {
                     state: target_phase_text(target.phase()).into(),
                     hand_back: self.hand_back_cause(target),
+                    video_input: self.device_states.get(target.device()).copied(),
                 },
             });
         }
         rows
     }
 
+    /// The label of a local device, else its alias, else its id.
+    fn device_label(&self, id: &DeviceId) -> String {
+        match self.local_device(id) {
+            Some((alias, device)) => device.label.unwrap_or(alias),
+            None => id.0.clone(),
+        }
+    }
+
     fn menu_displays(&self) -> Vec<MenuDisplay> {
-        let Some(evaluation) = &self.display_evaluation else {
+        if self.display_evaluation.is_none() {
             return Vec::new();
-        };
+        }
         let devices = self.local_devices();
-        self.display_cache
+        let mut displays: Vec<MenuDisplay> = self
+            .display_cache
             .iter()
             .filter_map(|display| {
-                let result = evaluation.displays.get(&display.token)?;
-                let (matching, matched) = match &result.error {
+                let result = self
+                    .matches
+                    .get(&MatchOwner::Display(display.token.clone()))?;
+                let (matching, matched) = match result.error() {
                     Some(error) => (
                         DisplayMatching::Failed {
-                            error: error.clone(),
+                            error: error.to_owned(),
                         },
                         Vec::new(),
                     ),
-                    None if result.pending > 0 => (DisplayMatching::Evaluating, Vec::new()),
-                    None => (DisplayMatching::Done, result.matched.clone()),
+                    None if result.is_pending() => (DisplayMatching::Evaluating, Vec::new()),
+                    None => (
+                        DisplayMatching::Done,
+                        result.matched().map(|c| c.alias.clone()).collect(),
+                    ),
                 };
                 let devices = devices
                     .iter()
                     .filter(|(alias, _)| matched.contains(alias))
                     .map(|(alias, device)| MenuDevice {
+                        in_session: false,
                         device: device.id.clone(),
                         alias: alias.clone(),
                         label: device.label.clone().unwrap_or_else(|| alias.clone()),
@@ -318,7 +288,18 @@ impl Controller {
                         .any(|peer| self.peer_status(peer) == "offline"),
                 })
             })
-            .collect()
+            .collect();
+        // UI-18: the displays are in the order of their devices in the config.
+        // A display with no device is last.
+        let order = |display: &MenuDisplay| {
+            display
+                .devices
+                .first()
+                .and_then(|first| devices.iter().position(|(alias, _)| *alias == first.alias))
+                .unwrap_or(usize::MAX)
+        };
+        displays.sort_by_key(order);
+        displays
     }
 
     /// One row for each local device and each peer whose config has a route to
@@ -349,11 +330,39 @@ impl Controller {
 
     /// The menu (UI-9). A UI draws it when it changes (UI-18).
     pub fn menu_screen(&self) -> MenuScreen {
+        let sessions = self.menu_sessions();
+        let mut displays = self.menu_displays();
+        // UI-9, the mockups: a session as the target hides its device, and a
+        // display with no other device goes away. A session as the source
+        // marks its device, and its target is not a candidate.
+        let mut hidden = Vec::new();
+        for session in &sessions {
+            let target = matches!(session.role, MenuRole::Target { .. });
+            for display in &mut displays {
+                if target {
+                    let before = display.devices.len();
+                    display.devices.retain(|d| d.device != session.device);
+                    if before > 0 && display.devices.is_empty() {
+                        hidden.push(display.token.clone());
+                    }
+                } else {
+                    for device in display
+                        .devices
+                        .iter_mut()
+                        .filter(|d| d.device == session.device)
+                    {
+                        device.in_session = true;
+                        device.candidates.retain(|c| c.target != session.peer);
+                    }
+                }
+            }
+        }
+        displays.retain(|d| !hidden.contains(&d.token));
         MenuScreen {
             computer: self.label_of(&self.local),
             glyph: self.glyph(),
-            sessions: self.menu_sessions(),
-            displays: self.menu_displays(),
+            sessions,
+            displays,
             control_requests: self.control_request_rows(),
             clipboard: self
                 .ports

@@ -49,7 +49,7 @@ Windows low-level hooks have a time limit. SendInput allows injection only into 
 
 Wayland requires capability negotiation. The activation of InputCapture uses barriers that the compositor manages. This is not the same as hover events on an arbitrary window. The full portal hover mode needs a separate verification. When capabilities are missing, you must show the reason. [InputCapture protocol](https://github.com/flatpak/xdg-desktop-portal/blob/main/data/org.freedesktop.portal.InputCapture.xml), [RemoteDesktop](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.RemoteDesktop.html), [libei](https://libinput.pages.freedesktop.org/libei/)
 
-Input events are mainly physical key identity + down/up. Text input/IME is a separate topic. At first, use the input method of the remote computer. By default, do not translate macOS Command into Ctrl. Keep at least one local release shortcut that is never forwarded. Suppression is permitted only while a session is active and has input focus. At all other times, send input to the OS normally.
+Input events are mainly physical key identity + down/up. Text input/IME is a separate topic. At first, use the input method of the remote computer. By default, do not translate macOS Command into Ctrl. Keep the local safety exit (spec IN-8). The release shortcut is removed (spec IN-7, user, 2026-11-07). Suppression is permitted only while a session is active and has input focus. At all other times, send input to the OS normally.
 
 ## Cursor, Focus, Clipboard
 

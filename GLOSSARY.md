@@ -121,7 +121,7 @@ The state in which the source captures, suppresses, and sends its input to the t
 _Avoid_: streaming, sharing
 
 **Hand back shortcut**:
-The key combination on the source that starts a hand back. It is never forwarded.
+Removed (spec IN-7, user, 2026-11-07). Telescreen has no key combination that starts a hand back. On the source, "Hand back" in the session row of a portal starts it (HB-3).
 _Avoid_: release shortcut, release chord, hotkey
 
 **Safety exit**:

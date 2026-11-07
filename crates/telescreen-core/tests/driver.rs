@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use telescreen_core::config::{Driver, Operation, Program};
 use telescreen_core::driver::{
-    Context, DeviceRef, DriverError, OperationKind, Outcome, Request, SearchPath, run,
+    Context, DeviceRef, DriverError, OperationKind, Outcome, PortalInfo, Request, SearchPath, run,
 };
-use telescreen_core::ids::{ComputerId, DisplayToken};
+use telescreen_core::ids::{ComputerId, DisplayToken, SessionId};
 use telescreen_core::platform::DisplayInfo;
 
 fn dir() -> PathBuf {
@@ -454,4 +454,39 @@ fn a_failed_login_shell_is_an_error() {
     let start = Instant::now();
     assert!(SearchPath::from_shell(&slow, Duration::from_millis(200)).is_err());
     assert!(start.elapsed() < Duration::from_secs(5));
+}
+
+/// The request fields of `docs/config.md`: the source fills `source-computer-id`
+/// with itself, the destination fills `target-computer-id` with itself.
+#[test]
+fn request_constructors_fill_the_computer_ids() {
+    let local = ComputerId::from("pc1");
+    let device = || DeviceRef {
+        id: "shared-lg".into(),
+        alias: "Desktop".into(),
+    };
+    let source = Request::on_source(&local, device(), Some(ComputerId::from("mac")), vec![]);
+    assert_eq!(source.computer_id, local);
+    assert_eq!(source.source_computer_id, local);
+    assert_eq!(source.target_computer_id, Some(ComputerId::from("mac")));
+    assert_eq!(source.session_id, None);
+    assert!(source.portal.is_none());
+
+    let destination = Request::on_destination(&local, device(), ComputerId::from("mac"), vec![])
+        .with_session(Some(SessionId(7)));
+    assert_eq!(destination.computer_id, local);
+    assert_eq!(destination.source_computer_id, ComputerId::from("mac"));
+    assert_eq!(destination.target_computer_id, Some(local.clone()));
+    assert_eq!(destination.session_id, Some(SessionId(7)));
+    assert!(destination.portal.is_none());
+
+    let portal = PortalInfo {
+        id: "portal-1".into(),
+        bounds: None,
+        coordinate_space: "local-desktop-logical",
+        display_token: None,
+    };
+    let matched = Request::on_source(&local, device(), None, vec![]).with_portal(portal);
+    assert_eq!(matched.target_computer_id, None);
+    assert_eq!(matched.portal.unwrap().id, "portal-1");
 }

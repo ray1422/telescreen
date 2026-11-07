@@ -1,10 +1,10 @@
 # Contributed helpers
 
-Telescreen does not identify displays or switch video inputs itself. Drivers do it (`docs/config.md`). These files help you write a config for the `command` driver (protocol 2).
+Telescreen does not switch video inputs itself. Drivers do it (`docs/config.md`). To identify a display, use the built-in `display` driver: it needs no helper (`docs/config.md`, "The `display` Driver"). `telescreen displays` prints the metadata of each display.
 
 ## display-helper
 
-A protocol 2 helper in Python 3 (standard library only). Copy it to a directory in the search path (`docs/config.md`), for example `/usr/local/bin/telescreen-display-helper`, and make it executable.
+An example of the `command` driver (protocol 2). The built-in `display` driver replaces its `match` and `target` commands. A protocol 2 helper in Python 3 (standard library only). Copy it to a directory in the search path (`docs/config.md`), for example `/usr/local/bin/telescreen-display-helper`, and make it executable.
 
 - `display-helper match KEY=VALUE...`: for `portal-match`. The result is true if the portal display has all the metadata values.
 - `display-helper target KEY=VALUE...`: for `input-target`. It selects the one display that has all the metadata values. No match or more than one match is an error.

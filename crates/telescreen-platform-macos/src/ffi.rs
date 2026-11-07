@@ -54,6 +54,8 @@ pub const TAP_DISABLED_BY_USER: u32 = 0xFFFF_FFFF;
 // Event fields (CGEventField).
 pub const FIELD_CLICK_STATE: u32 = 1;
 pub const FIELD_BUTTON_NUMBER: u32 = 3;
+/// kCGKeyboardEventAutorepeat: non-zero for an auto-repeated key down.
+pub const FIELD_KEYBOARD_AUTOREPEAT: u32 = 8;
 pub const FIELD_KEYCODE: u32 = 9;
 pub const FIELD_SCROLL_POINT_DELTA_1: u32 = 96;
 pub const FIELD_SCROLL_POINT_DELTA_2: u32 = 97;

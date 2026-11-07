@@ -10,8 +10,9 @@ use objc2::rc::Retained;
 use objc2::runtime::NSObject;
 use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSAllRomanInputSourcesLocaleIdentifier, NSScreen, NSView, NSWindow, NSWindowCollectionBehavior,
-    NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
+    NSAllRomanInputSourcesLocaleIdentifier, NSApplicationActivationOptions, NSRunningApplication,
+    NSScreen, NSView, NSWindow, NSWindowCollectionBehavior, NSWorkspace,
+    NSWorkspaceActiveSpaceDidChangeNotification,
 };
 use objc2_foundation::{NSArray, NSNotification, NSNumber, NSString};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -74,10 +75,36 @@ pub fn make_overlay(window: &impl HasWindowHandle) {
 
 /// VER-4: the prompt of a hand back takes the acknowledgement on this computer,
 /// so it takes mouse events and the keyboard focus. The portal of the session
-/// can be closed at this time (ACT-5), so no other window takes them.
+/// can be closed at this time (ACT-5), so no other window takes them. The
+/// warning of FLOW-26 takes them too, for the safety exit (IN-8).
 pub fn set_prompt_input(window: &impl HasWindowHandle, on: bool) {
     if let Some(window) = ns_window(window) {
         window.setIgnoresMouseEvents(!on);
+    }
+}
+
+/// An app that was frontmost before the warning of FLOW-26 took the focus.
+#[derive(Debug)]
+pub struct FrontmostApp(Retained<NSRunningApplication>);
+
+/// The frontmost app, if it is not Telescreen (FLOW-26).
+pub fn frontmost_other_app() -> Option<FrontmostApp> {
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()
+        .filter(|app| app.processIdentifier() != std::process::id() as i32)
+        .map(FrontmostApp)
+}
+
+/// Makes `app` the frontmost app again, if it still runs (FLOW-26).
+pub fn activate(app: &FrontmostApp) {
+    if app.0.isTerminated() {
+        return;
+    }
+    if !app
+        .0
+        .activateWithOptions(NSApplicationActivationOptions::empty())
+    {
+        eprintln!("telescreen: cannot activate the app that was frontmost");
     }
 }
 
@@ -152,6 +179,15 @@ pub fn is_frontmost() -> bool {
 /// call does not wait. AppKit windows change only on the main thread: an
 /// in-process `AXMain` request on a different thread stopped the app.
 pub fn make_frontmost(window: Option<&impl HasWindowHandle>) {
+    // One request at a time: the Accessibility request waits for the main
+    // thread, so a request for each focus event made thousands of threads, and
+    // the focus changed in a loop (hardware test, 2026-11-07). The caller made
+    // the window the key window already; a later call does it again.
+    static IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+    if IN_FLIGHT.swap(true, SeqCst) {
+        eprintln!("telescreen: frontmost: a request is running; skip this one");
+        return;
+    }
     let window = window
         .and_then(ns_window)
         .map(|w| MainWindow(Retained::into_raw(w)));
@@ -173,6 +209,7 @@ pub fn make_frontmost(window: Option<&impl HasWindowHandle>) {
             if error != 0 {
                 eprintln!("telescreen: Accessibility: frontmost failed ({error})");
             }
+            IN_FLIGHT.store(false, SeqCst);
             if let Some(MainWindow(window)) = window {
                 // SAFETY: the main queue runs `focus_on_main` once, which takes
                 // the reference of `into_raw`.
@@ -186,8 +223,16 @@ pub fn make_frontmost(window: Option<&impl HasWindowHandle>) {
             }
         });
     if let Err(e) = spawned {
+        IN_FLIGHT.store(false, SeqCst);
         eprintln!("telescreen: frontmost: {e}");
     }
+}
+
+/// The title of the key window of this app, for the focus log.
+pub fn key_window_title() -> Option<String> {
+    let mtm = MainThreadMarker::new()?;
+    let window = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow()?;
+    Some(window.title().to_string())
 }
 
 /// A retained window that only the main thread uses.

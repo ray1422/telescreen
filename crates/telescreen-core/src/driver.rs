@@ -1,4 +1,5 @@
-//! The `exec` and `command` drivers and the program search path (`docs/config.md`).
+//! The `exec`, `command`, and `display` drivers and the program search path
+//! (`docs/config.md`).
 //!
 //! Run operations only on a worker thread: never from an input callback or for a
 //! pointer motion (IN-2).
@@ -10,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::config::{Driver, Operation, Program};
 use crate::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
@@ -129,6 +130,58 @@ pub struct Request {
     pub displays: Vec<DisplayInfo>,
 }
 
+impl Request {
+    /// A request on the source computer `local`. `target` is the target of the
+    /// handoff, or `None` for `portal-match`.
+    pub fn on_source(
+        local: &ComputerId,
+        device: DeviceRef,
+        target: Option<ComputerId>,
+        displays: Vec<DisplayInfo>,
+    ) -> Request {
+        Request {
+            computer_id: local.clone(),
+            device,
+            source_computer_id: local.clone(),
+            target_computer_id: target,
+            session_id: None,
+            portal: None,
+            displays,
+        }
+    }
+
+    /// A request on the destination computer `local` of a handoff from
+    /// `source`: `input-target` and `verify`.
+    pub fn on_destination(
+        local: &ComputerId,
+        device: DeviceRef,
+        source: ComputerId,
+        displays: Vec<DisplayInfo>,
+    ) -> Request {
+        Request {
+            computer_id: local.clone(),
+            device,
+            source_computer_id: source,
+            target_computer_id: Some(local.clone()),
+            session_id: None,
+            portal: None,
+            displays,
+        }
+    }
+
+    /// Sets the session of the request. A hand back has no session.
+    pub fn with_session(mut self, session: Option<SessionId>) -> Request {
+        self.session_id = session;
+        self
+    }
+
+    /// Sets the portal of the request.
+    pub fn with_portal(mut self, portal: PortalInfo) -> Request {
+        self.portal = Some(portal);
+        self
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct Envelope<'a> {
     pub(crate) protocol: u32,
@@ -173,6 +226,44 @@ pub enum DriverError {
 }
 
 /// Runs one operation and checks the result shape.
+/// The built-in `display` driver: it compares the metadata of the request
+/// displays and runs no program.
+fn display(
+    matches: &Map<String, Value>,
+    kind: OperationKind,
+    request: &Request,
+) -> Result<Outcome, DriverError> {
+    let fits = |display: &DisplayInfo| {
+        matches
+            .iter()
+            .all(|(key, value)| display.metadata.get(key) == Some(value))
+    };
+    match kind {
+        OperationKind::PortalMatch => {
+            let token = request
+                .portal
+                .as_ref()
+                .and_then(|p| p.display_token.as_ref());
+            let display = request.displays.iter().find(|d| Some(&d.token) == token);
+            Ok(Outcome::Matched(display.is_some_and(fits)))
+        }
+        OperationKind::InputTarget => {
+            let found: Vec<&DisplayInfo> = request.displays.iter().filter(|d| fits(d)).collect();
+            match found.as_slice() {
+                [one] => Ok(Outcome::Display(one.token.clone())),
+                _ => Err(DriverError::BadResult(format!(
+                    "{} displays match {}; need exactly 1",
+                    found.len(),
+                    Value::Object(matches.clone())
+                ))),
+            }
+        }
+        OperationKind::Handoff | OperationKind::Verify => Err(DriverError::BadResult(
+            "the display driver is only for portal-match and input-target".into(),
+        )),
+    }
+}
+
 pub fn run(
     operation: &Operation,
     kind: OperationKind,
@@ -187,6 +278,7 @@ pub fn run(
         }
         Driver::Exec(program) | Driver::Command(program) => program,
         Driver::Prompt => return Err(DriverError::Unsupported("prompt".into())),
+        Driver::Display { matches } => return display(matches, kind, request),
         Driver::Extension { name, .. } => return Err(DriverError::Unsupported(name.clone())),
     };
     let mut command = program_command(options, context)?;

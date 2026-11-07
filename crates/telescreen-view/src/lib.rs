@@ -6,7 +6,7 @@
 //! `telescreen-render-egui` (`docs/plan.md`, "View boundary").
 
 use serde::{Deserialize, Serialize};
-use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, PortalId, SessionId};
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::pointer::Normalized;
 use telescreen_core::session::VideoInput;
@@ -22,8 +22,9 @@ pub struct ControlScreen {
     pub fingerprint: String,
     /// The displays with the actions of each candidate (ACT-1, ACT-5).
     pub displays: Vec<MenuDisplay>,
-    /// The session of the portal on this source.
-    pub session: Option<SessionRow>,
+    /// The session of each portal on this source, in the sequence of the
+    /// portal ids (FLOW-25).
+    pub sessions: Vec<PortalSessionRow>,
     pub devices: Vec<DeviceRow>,
     pub incoming: Vec<IncomingRow>,
     /// The text clipboard switch, or `None` without a backend (CLIP-1, CLIP-8).
@@ -32,6 +33,14 @@ pub struct ControlScreen {
     pub discovery: Option<DiscoveryRow>,
     /// Problems and limits that the user must know (IN-12), newest last.
     pub notices: Vec<String>,
+}
+
+/// The session of one portal on this source (FLOW-25). The actions of the row
+/// name this portal: `SourceHandBack` and `EndSession` (HB-3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PortalSessionRow {
+    pub portal: PortalId,
+    pub session: SessionRow,
 }
 
 /// "Allow discovery" (NET-14).
@@ -136,7 +145,13 @@ pub struct PromptScreen {
     /// Verifier text; for the built-in prompt, the `hint` of this computer.
     pub text: Option<String>,
     pub ack_wanted: bool,
-    /// The warning of FLOW-26: the source does not show its portal.
+    /// The user acknowledges in this prompt window, on this computer (VER-4).
+    /// Then the window takes clicks and the keyboard. The controller sets it;
+    /// a shell does not derive it from the other fields.
+    pub ack_here: bool,
+    /// The warning of FLOW-26: the source does not show its portal. A warning
+    /// that is not blank takes clicks and the keyboard (see
+    /// [`PromptScreen::takes_input`]), but it takes no acknowledgement.
     pub portal_hidden: bool,
     /// The prompt shows nothing. A presenter that keeps blank prompts
     /// ([`PromptPresenter::keeps_blank`]) keeps the window, so that the next
@@ -150,8 +165,9 @@ impl PromptScreen {
         Self {
             source: Some(source),
             confirm_key: String::new(),
-            text: Some("Input is paused".into()),
+            text: Some("Input is paused\nPress Escape 10 times to end the session".into()),
             ack_wanted: false,
+            ack_here: false,
             portal_hidden: true,
             blank: false,
         }
@@ -163,6 +179,13 @@ impl PromptScreen {
             blank: true,
             ..Self::portal_hidden(source)
         }
+    }
+
+    /// The window takes clicks and the keyboard: for the acknowledgement on
+    /// this computer (VER-4), or for the safety exit on the warning (FLOW-26,
+    /// IN-8). A blank prompt takes no input.
+    pub fn takes_input(&self) -> bool {
+        !self.blank && (self.ack_here || self.portal_hidden)
     }
 
     pub fn title(&self) -> Option<String> {
@@ -228,8 +251,12 @@ pub enum Intent {
     AllowDiscovery,
     /// Stop "Allow discovery" before the end (NET-14).
     StopDiscovery,
-    /// End the session of the portal (on the source).
-    EndSession,
+    /// End the session of the portal (on the source). `None`: the portal with
+    /// the native focus, else the newest portal (FLOW-25).
+    EndSession {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        portal: Option<PortalId>,
+    },
     /// End the incoming session and hand its device back to the source (HB-2).
     HandBack { session: SessionId },
     /// End the incoming session on the target (FLOW-17).
@@ -258,7 +285,11 @@ pub enum Intent {
     /// "Let <peer> control this display": send a control request (ACT-4).
     LetControl { peer: ComputerId, device: DeviceId },
     /// "Hand back" in the session part of the menu, on the source (UI-9, HB-3).
-    SourceHandBack,
+    /// `None`: as for `EndSession`.
+    SourceHandBack {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        portal: Option<PortalId>,
+    },
 }
 
 impl VideoInputText for VideoInput {
@@ -277,6 +308,15 @@ pub trait VideoInputText {
     fn text(&self) -> &'static str;
 }
 
+/// A press in a prompt window that takes input ([`PromptScreen::takes_input`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptPress {
+    /// A left click, Return, or keypad Enter (VER-4).
+    Acknowledge,
+    /// An Escape key down that is not an auto-repeat (IN-8, FLOW-26).
+    Escape,
+}
+
 /// Shows or updates the verifier window on a display of the destination (UI-5).
 /// The macOS backend and the Linux layer-shell backend implement it.
 pub trait PromptPresenter {
@@ -293,7 +333,7 @@ pub trait PromptPresenter {
         false
     }
     /// Draws the cursor of the source on a shown prompt at a position in the
-    /// display, or removes it (FLOW-26). It takes no input.
+    /// display, or removes it (FLOW-7, FLOW-26).
     fn cursor(&mut self, _prompt: PromptId, _at: Option<Normalized>) {}
 }
 
@@ -330,8 +370,8 @@ pub enum Glyph {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MenuSessionId {
-    /// The session of the portal on this source.
-    Portal,
+    /// The session of a portal on this source (FLOW-25).
+    Portal { portal: PortalId },
     /// A session where this peer is the target.
     Incoming { session: SessionId },
 }
@@ -343,6 +383,10 @@ pub struct MenuSession {
     pub peer: ComputerId,
     pub peer_label: String,
     pub device: DeviceId,
+    /// The name of the device on this computer, for the session card: the
+    /// display of a session as the target is not in the list (UI-9).
+    #[serde(default)]
+    pub device_label: String,
     pub role: MenuRole,
 }
 
@@ -359,6 +403,9 @@ pub enum MenuRole {
         state: String,
         /// `None` if "Hand back" is available, else the cause (HB-2).
         hand_back: Option<String>,
+        /// The device state on this computer (VER-6), if it has one.
+        #[serde(default)]
+        video_input: Option<VideoInput>,
     },
 }
 
@@ -396,6 +443,11 @@ pub struct MenuDevice {
     pub state: VideoInput,
     /// Empty: the menu shows "No handoff routes in the config".
     pub candidates: Vec<MenuCandidate>,
+    /// A session of this computer as the source uses the device (UI-9). Its
+    /// target is not in `candidates`. A session as the target hides the
+    /// device: the session card stands for it.
+    #[serde(default)]
+    pub in_session: bool,
 }
 
 /// A candidate with the actions of ACT-1. `None` is available; else the reason.

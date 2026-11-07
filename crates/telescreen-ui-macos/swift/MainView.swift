@@ -55,6 +55,11 @@ struct MainView: View {
                 .padding(.horizontal, 28 + inset)
                 .padding(.bottom, 22)
                 .frame(maxWidth: .infinity)
+                // The whole header moves the window, as a title bar does. The
+                // buttons keep their clicks.
+                .contentShape(Rectangle())
+                .gesture(WindowDragGesture())
+                .allowsWindowActivationEvents(true)
                 .background(.primary.opacity(0.05), ignoresSafeAreaEdges: .top)
                 .overlay(alignment: .bottom) {
                     Rectangle().fill(.primary.opacity(0.07)).frame(height: 1)

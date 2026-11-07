@@ -1,5 +1,8 @@
 """Render the app icon (concept G, "CRT glass") to assets/macos/Telescreen.icns,
 and the status glyph (UI-17) to assets/macos/glyph-<state>.tiff.
+With --linux, it writes the Linux assets instead: the glyph as plain SVG files
+(assets/linux/glyph-<state>.svg) and the icon as a 256 px PNG
+(assets/linux/telescreen.png).
 
 The shapes and the effects come from the "Icon concepts" artboard of the UI
 mockup canvas. Each size has its own variant, as on the artboard: the CRT
@@ -10,6 +13,7 @@ Usage (macOS; needs Google Chrome and iconutil). It renders with Chrome,
 because the artboard effects were checked in Chrome:
 
     uv run python tools/make_icon.py
+    uv run python tools/make_icon.py --linux
 
 The glyph comes from the "Glyph at real size" artboard: 18 x 16 pt, black
 with alpha, for a template image. Each TIFF has a 1x and a 2x image.
@@ -306,6 +310,47 @@ def glyph_svg(state: str, scale: int) -> str:
     )
 
 
+def linux_glyph_svg(state: str) -> str:
+    """The glyph for the Plasma tray, which colors it with the text color (a
+    mask icon). Qt SVG has no `mask` element, thus the keys of the remote
+    control are holes of an even-odd path."""
+    lens, cursor, remote = GLYPH_STATES[state]
+    inside = ""
+    if cursor:
+        inside += f'<path d="{GLYPH_CURSOR}" fill="#000"/>'
+    if remote:
+        body = "M10.6 3.6H12.4A2.2 2.2 0 0 1 14.6 5.8V13.4A2.2 2.2 0 0 1 12.4 15.6H10.6A2.2 2.2 0 0 1 8.4 13.4V5.8A2.2 2.2 0 0 1 10.6 3.6Z"
+        holes = "".join(f"M{x} {y}h1.2v1.2h-1.2Z" for x, y in ((9.9, 5.1), (11.9, 5.1), (9.9, 7.1), (11.9, 7.1)))
+        inside += f'<path d="{body}{holes}" fill="#000" fill-rule="evenodd" transform="rotate(-35 11.5 10)"/>'
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="16" viewBox="0 0 18 16">'
+        f'<defs><clipPath id="visor"><path d="{GLYPH_VISOR}"/></clipPath></defs>'
+        f'<path d="{GLYPH_SHELL}" fill="#000" fill-rule="evenodd"/>'
+        f'<circle cx="9" cy="6.6" r="2.5" fill="#000" fill-opacity="{lens:g}"/>'
+        f'<g clip-path="url(#visor)">{inside}</g>'
+        f'<path d="{GLYPH_CRADLE}" fill="#000" stroke="#000" stroke-width="1.4" stroke-linejoin="round"/>'
+        "</svg>\n"
+    )
+
+
+def linux_assets() -> int:
+    out = ROOT / "assets" / "linux"
+    out.mkdir(parents=True, exist_ok=True)
+    for state in GLYPH_STATES:
+        path = out / f"glyph-{state}.svg"
+        path.write_text(linux_glyph_svg(state))
+        print(f"make_icon: wrote {path.relative_to(ROOT)}")
+    if not CHROME.exists():
+        print("make_icon: the PNG icon needs Google Chrome", file=sys.stderr)
+        return 1
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp) / "icon.svg"
+        source.write_text(svg(256))
+        render(source, out / "telescreen.png", 256)
+    print(f"make_icon: wrote {(out / 'telescreen.png').relative_to(ROOT)}")
+    return 0
+
+
 def render_glyphs(work: Path) -> None:
     for state in GLYPH_STATES:
         images = []
@@ -322,6 +367,8 @@ def render_glyphs(work: Path) -> None:
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--linux"]:
+        return linux_assets()
     if not CHROME.exists() or shutil.which("iconutil") is None:
         print("make_icon: needs Google Chrome and iconutil (macOS)", file=sys.stderr)
         return 1

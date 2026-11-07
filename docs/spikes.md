@@ -153,3 +153,34 @@ The arguments come from the swift-build sources (swiftlang/swift-build, read 202
 Checked with no Xcode: `swiftc -wmo -emit-const-values-path` with the protocol list writes a `.swiftconstvalues` file that names `TelescreenControl.OpenMenuIntent`. The call of `appintentsmetadataprocessor` itself is not tested here (no Xcode); the first CI run of the macOS job tests it. The script compares the `actions` of the generated file with the fallback and warns when they differ.
 
 `actool` for the custom SF Symbol: not done. Read its arguments from swift-build in the same way before the CI step.
+
+## Spike 9: an AppImage of the Linux UI (2026-11-07, AlmaLinux 9, Qt 6.12.0 and 6.8.3, KDE Frameworks 6.20.0, KDE Plasma 6.8)
+
+Question: can one AppImage with its own Qt and Kirigami run on most distributions and follow the KDE color scheme? `packaging/appimage/build.sh --preview` makes it with the QML preview of `telescreen-ui-linux` (no Rust). `.github/workflows/appimage.yml` builds it on AlmaLinux 9 and starts it in other containers.
+
+| Point | Result |
+| --- | --- |
+| Build | Qt from the official binaries (aqtinstall, `-m qtshadertools qt5compat`; the Wayland client is a default archive). 11 KDE Frameworks from the release tarballs (ECM to qqc2-desktop-style). KArchive needs OpenSSL; Sonnet needs one spell checker backend (Hunspell). About 2 minutes with the cache. |
+| Size | Qt 6.12.0: 53.9 MiB AppImage, 176 MiB unpacked. The largest part is the ICU data (30.6 MiB). Qt 6.8.3: 49.4 MiB. |
+| glibc | 2.34 with Qt 6.8.3 and with Qt 6.12.0. |
+| Other distributions | Starts offscreen in ubuntu:22.04, ubuntu:24.04, debian:12, and fedora:43 with only these host libraries: OpenGL and EGL (libglvnd), fontconfig, freetype, a font, libxkbcommon, libdbus, glib (no recommended or weak packages). |
+| KDE Plasma 6.8, Breeze Dark | The window follows the color scheme, the accent color, the Breeze icons, and the fonts of the host, with no plasma-integration in the AppImage. The direct start (FUSE) works. Difference: the buttons show the mnemonic underlines; the KDE platform theme normally hides them. |
+| linuxdeploy-plugin-qt | It does not deploy `plugins/wayland-graphics-integration-client`: with no EGL integration, Qt Quick has no OpenGL context on Wayland. It does not find the KDE style, because Kirigami selects it at runtime. Copied plugins need `--deploy-deps-only` for each file (not recursive); else they load the KDE Frameworks of the host, which need the Qt of the host (6.12), and fail. |
+| Qt Shape | The curve renderer of Qt 6.8.3 keeps a stale outline after a resize (wrong card sizes). Qt 6.12.0 is correct. Thus the AppImage has Qt 6.12. |
+| Result | Feasible for the release (user, 2026-11-07: a new Qt in the AppImage). Not tested: the `telescreen` binary with the Qt UI (the app does not link Qt yet), the applet install from the AppImage, GNOME and niri. |
+
+## Spike 10: a virtual touchpad and the trackpad fingers of macOS (2026-11-08, KWin 6.8.2, libinput 1.32.0, Chrome on Wayland, macOS 27)
+
+Question: can a uinput touchpad on Linux replace the button scroll of spike 5, so that a scroll in Chromium does not stay on one pane? The code is not kept. The test code made a uinput multitouch touchpad, and then forwarded the trackpad fingers from the portal of the Mac.
+
+| Question | Result |
+| --- | --- |
+| Device | libinput takes a uinput device with `ABS_MT_SLOT`, `ABS_MT_TRACKING_ID`, `ABS_MT_POSITION_X/Y` with a resolution, `BTN_TOUCH`, `BTN_TOOL_FINGER` to `BTN_TOOL_QUINTTAP`, and `INPUT_PROP_POINTER` as a touchpad. Do not set `INPUT_PROP_BUTTONPAD`: a finger that starts in its software button area does not scroll. `BUS_VIRTUAL` keeps the device from the KDE setting that turns off a touchpad when a mouse is present. |
+| Two panes in Chromium | Each two-finger gesture scrolls the pane below the pointer: the lift of the fingers ends the scroll. |
+| libinput scroll | No acceleration: Chrome scrolls about 105 CSS pixels for each mm. libinput does not scroll the first 0.7 mm. A short contact with little motion is a two-finger tap (a right click); 250 ms of contact gave no tap. |
+| KWin settings of the device | `org.kde.KWin.InputDevice` on D-Bus: `scrollFactor` and `naturalScroll` are writable, and KWin stores them in `kcminputrc` for the name, vendor, and product of the device only. |
+| Scroll deltas of macOS to finger motion | Fails. The point deltas of macOS have acceleration, and most of the distance is in the momentum. A normal scroll moved the fingers less than 1 mm: the scroll needed a large motion and often was a right click. |
+| Trackpad fingers on macOS | `NSTouch` (public AppKit API): a view sets `allowedTouchTypes` to the indirect mask (`1 << 1`; the value 1 is direct touches) and gets `touchesBegan/Moved/Ended/Cancelled`. Each touch has an identity, a normalized position (0 to 1, from the bottom-left), and `deviceSize` in points (this trackpad: 343 x 210, about 121 mm x 74 mm). Updates come about each 16 ms. AppKit gives them only to the key window under the cursor. One change of two fingers comes as two events, about 0.1 ms apart, each with one moved finger. |
+| Event tap and touches | An `NSEvent` made from a gesture event (type 29) in the event tap has no touches. Gesture field 110: 0 is a plain touch event, 6 a scroll, 23 the Dock swipe between Spaces. The touches reach the view only if the tap passes the events with field 110 = 0. |
+| Fingers forwarded 1:1 in mm | It worked, but the user found it much worse than the button scroll of spike 5: too fast also with a KWin scroll factor of 0.2, not smooth (network jitter on the reliable channel, p99 71 ms that day), and the feel is that of a Linux touchpad, not of the Mac. Three fingers drag on the Mac, so Linux gestures with three fingers conflict. |
+| Result | Not used (user, 2026-11-08). The button scroll stays (IN-15). |

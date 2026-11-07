@@ -45,6 +45,10 @@ class ConfigContract(unittest.TestCase):
                 discovery='mdns'),
             'discovery with no host': lambda c: c['computers']['pc1'].update(
                 endpoint={'port': 24800, 'discovery': 'mdns'}),
+            'display portal-match': lambda c: device(c).update(
+                {'portal-match': {'driver': 'display', 'match': {'vendor': 7789, 'builtin': False}}}),
+            'display input-target': lambda c: device(c).update(
+                {'input-target': {'driver': 'display', 'match': {'name': 'HDMI-A-2'}}}),
         }.items():
             with self.subTest(name=name):
                 config = copy.deepcopy(self.example)
@@ -108,6 +112,18 @@ class ConfigContract(unittest.TestCase):
             'verify on a route': lambda c: device(c)['handoff']['pc1'].update(
                 verify={'driver': 'prompt'}),
             'unknown built-in driver': lambda c: device(c)['portal-match'].update(driver='shell'),
+            'display with no match': lambda c: device(c).update(
+                {'portal-match': {'driver': 'display'}}),
+            'display with an empty match': lambda c: device(c).update(
+                {'portal-match': {'driver': 'display', 'match': {}}}),
+            'display match with a list value': lambda c: device(c).update(
+                {'portal-match': {'driver': 'display', 'match': {'name': ['a']}}}),
+            'display with a command': lambda c: device(c).update(
+                {'portal-match': {'driver': 'display', 'match': {'name': 'a'}, 'command': 'x'}}),
+            'display as a handoff step': lambda c: device(c)['handoff']['pc1'].update(
+                steps=[{'driver': 'display', 'match': {'name': 'a'}}]),
+            'display as a verifier': lambda c: device(c).update(
+                verify={'driver': 'display', 'match': {'name': 'a'}}),
         }
         for name, mutation in mutations.items():
             with self.subTest(name=name):

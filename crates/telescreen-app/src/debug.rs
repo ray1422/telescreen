@@ -19,6 +19,8 @@ use serde_json::{Value, json};
 use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, SessionId};
 use telescreen_view::{ControlScreen, Intent, PortalScreen};
 
+use crate::controller::PortalState;
+
 /// One request line.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
@@ -28,7 +30,7 @@ pub enum Request {
     PointerStats,
     /// `{"cmd":"intent","intent":<intent>}`: the same as a click in the UI.
     Intent(Intent),
-    /// `{"cmd":"ack"}`: acknowledges the portal session, else a local verification.
+    /// `{"cmd":"ack"}`: `AckOrigin::Computer`: the portal session, else a local verification.
     Ack,
     /// `{"cmd":"hold_keyboard","display":"<token>"}`: takes keyboard focus (UI-7).
     HoldKeyboard { display: DisplayToken },
@@ -39,14 +41,16 @@ pub enum Request {
     /// `{"cmd":"choose_computer","computer":"<id>"}`: the same as the click in the
     /// start window (UI-8).
     ChooseComputer { computer: ComputerId },
-    /// `{"cmd":"move_control","x":<x>,"y":<y>}`: moves the control window, in
-    /// logical pixels. The portal opens on the display of this window.
+    /// `{"cmd":"move_control","x":<x>,"y":<y>}`: an error. The native main
+    /// window replaced the control window (UI-13).
     MoveControl { x: f64, y: f64 },
     /// `{"cmd":"menu","show":<bool>}`: opens or closes the native menu (UI-9), and
     /// returns the last view model and the panel frame. `show` is optional.
     Menu { show: Option<bool> },
     /// `{"cmd":"main_window","show":<bool>}`: opens or closes the native main
     /// window (UI-13), and returns its state and the Dock icon state (UI-14).
+    /// On Linux the Qt thread opens or closes the window later, so `visible` is
+    /// the state before the request, and the Dock icon state is not there.
     MainWindow { show: Option<bool> },
 }
 
@@ -85,7 +89,11 @@ pub struct WindowFacts {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StateReport {
     pub control: ControlScreen,
+    /// The main portal: the portal with the native focus, else the newest
+    /// portal. Scripts read this field.
     pub portal: Option<PortalScreen>,
+    /// Each portal, in the sequence of the portal ids (FLOW-25).
+    pub portals: Vec<PortalState>,
     pub windows: Vec<WindowFacts>,
 }
 
@@ -149,7 +157,7 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
         return match name {
             "AllowDiscovery" => Ok(Intent::AllowDiscovery),
             "StopDiscovery" => Ok(Intent::StopDiscovery),
-            "EndSession" => Ok(Intent::EndSession),
+            "EndSession" => Ok(Intent::EndSession { portal: None }),
             _ => Err(DebugError::Request(format!("unknown intent: {name}"))),
         };
     }
@@ -191,7 +199,7 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
     }
 }
 
-/// `{"ok":true,"control":"<Debug text>","portal":"<Debug text>"|null,"windows":[...]}`
+/// `{"ok":true,"control":"<Debug text>","portal":"<Debug text>"|null,"portals":[...],"windows":[...]}`
 pub fn state_response(report: &StateReport) -> String {
     let windows: Vec<Value> = report
         .windows
@@ -212,10 +220,24 @@ pub fn state_response(report: &StateReport) -> String {
             })
         })
         .collect();
+    let portals: Vec<Value> = report
+        .portals
+        .iter()
+        .map(|portal| {
+            json!({
+                "portal": portal.portal.0,
+                "display": portal.display.0.as_str(),
+                "session": portal.session.map(|session| session.0),
+                "state": portal.state,
+                "screen": format!("{:?}", portal.screen),
+            })
+        })
+        .collect();
     json!({
         "ok": true,
         "control": format!("{:?}", report.control),
         "portal": report.portal.as_ref().map(|portal| format!("{portal:?}")),
+        "portals": portals,
         "windows": windows,
     })
     .to_string()

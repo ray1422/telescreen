@@ -11,7 +11,7 @@ The default file is `$XDG_CONFIG_HOME/telescreen/config.yaml`, else `~/.config/t
 - `version: 1`: the config format version. Reject unknown versions at load time.
 - `computers`: the keys are stable computer IDs. The user selects the local ID (spec PEER-3). You must not guess it from the hostname.
 - `hint`: optional plain text, 1 to 500 characters. The `prompt` verifier of this computer shows it after a handoff to this computer (spec VER-5). Example: the copy/paste shortcuts of this computer. It is not a template and not markup.
-- `clipboard`: optional. `clipboard.text` (boolean, default `true`) is the start value of the text clipboard switch of this computer (CLIP-1). The control window can change the switch while the app runs; the change is not saved. No other key is permitted in `clipboard`.
+- `clipboard`: optional. `clipboard.text` (boolean, default `true`) is the start value of the text clipboard switch of this computer (CLIP-1). The menu and the main window can change the switch while the app runs; the change is not saved. No other key is permitted in `clipboard`.
 - `scroll-speed`: optional number, larger than 0 and not larger than 10 (default `1`). This computer multiplies each scroll that it receives from a source by this number (spec IN-14). Example: `0.4` on the Linux computer makes the scroll from the Mac slower.
 - `disabled-quirks`: optional list of workaround names, with no duplicates (default: an empty list). This computer uses each platform workaround, unless this list has its name (spec IN-16). An unknown name is an error. The change takes effect when the app starts. The names:
   - `kwin-button-scroll`: on KWin, a forwarded scroll is a button scroll (spec IN-15). If this list has the name, a forwarded scroll on KWin is a wheel scroll, and applications can animate it.
@@ -33,7 +33,7 @@ There is one exception to "no execution for another computer" (ADR 0010): the so
 
 ## Operations and Drivers
 
-An operation is a mapping with a `driver`. The driver defines how Telescreen reads the result of a program. It does not define which program runs: the user writes the whole command, also the program (user, 2026-10-27).
+An operation is a mapping with a `driver`. The driver defines how Telescreen reads the result of a program. It does not define which program runs: the user writes the whole command, also the program (user, 2026-10-27). The built-in drivers `prompt` and `display` run no program.
 
 ```yaml
 portal-match:
@@ -46,7 +46,8 @@ verify:
 
 Fields:
 
-- `driver`: required. A built-in driver (`exec`, `command`, `prompt`) or a namespaced extension driver.
+- `driver`: required. A built-in driver (`exec`, `command`, `prompt`, `display`) or a namespaced extension driver.
+- `match`: required for `display`, and only for `display`. See "The `display` Driver".
 - `command`: required for `exec` and `command`. A string or a list, as in Docker Compose. Telescreen splits a string into arguments by POSIX shell rules (quotes and backslashes), but no shell runs it: there is no variable expansion, no glob, no `~` expansion, no pipe, and no `&&`. A list is used as it is. For shell features, write the shell explicitly, for example `[/bin/sh, -c, "a | b"]`. Thus the config is trusted executable configuration.
 - `cwd`: optional absolute directory. The default is the directory that contains the config file.
 - `env`: optional string map. It is a layer on top of the environment of the app.
@@ -59,6 +60,7 @@ Built-in drivers:
 | `exec` | `portal-match`, handoff steps, `verify` | Only the exit code. 0 is success or true. A non-zero exit is failure or false: `portal-match` does not match, a step fails, `verify` is not ok. stdin is empty, and stdout is not read. A program that cannot start is an error |
 | `command` | all | Protocol 2 (below): JSON on stdin and stdout. Each non-zero exit is an error |
 | `prompt` | `verify` only | The built-in verifier (spec VER-5). It has no other field |
+| `display` | `portal-match`, `input-target` | The built-in display matcher (below). It runs no program |
 
 Drivers for the output format of one tool (for example `betterDisplay` or `ddcutil`, with `expect`) come in a later version (user, 2026-10-27).
 
@@ -71,7 +73,7 @@ Each operation has its own timer. On timeout, you must stop the child process tr
 - A program with a `/` must be an absolute path. Telescreen does not find it in the search path.
 - A program name with no `/` is found in the search path (user, 2026-10-27). If the computer section has `path`, use it. Else read `PATH` from the login shell of the user one time at the start: `$SHELL -l -c` with a command that prints `PATH`. Reason: an app that macOS starts from Finder or `open` has only the system directories in its own `PATH`.
 - The program gets the search path as its `PATH`, so that a script finds the same programs. `env` can replace it (Claude decides, 2026-10-27).
-- If Telescreen cannot read the `PATH` of the login shell, it uses its own `PATH` and shows a notice in the control window (Claude decides, 2026-10-27).
+- If Telescreen cannot read the `PATH` of the login shell, it uses its own `PATH` and shows a notice in the main window (Claude decides, 2026-10-27).
 - `open` on macOS starts an app through Launch Services and returns at once. The output of the app does not come back, and the exit code is the exit code of `open`. Use the executable in the app bundle, or `open --stdout`.
 
 ## The `command` Driver (protocol 2)
@@ -136,6 +138,25 @@ Each line is one UTF-8 JSON object and ends with `\n`. The verifier talks with t
 The window opens at the first `show` or `want`. With no `show`, it shows only how to acknowledge (Claude decides, 2026-10-27). The core sends one `ack` for each `want`, after the user acknowledges. `show` and `want` need an `input-target` of the device on the destination, because the window shows on that display. Without it, they are errors. Each other line, a missing result, a non-zero exit, and a timeout are errors. An error, `{"ok":false}`, and a timeout all make the device state unknown (spec VER-6). The protocol has no other user input (spec VER-7).
 
 The built-in `prompt` verifier does the same as this verifier: `{"show":"<hint>"}`, `{"want":"ack"}`, then `{"ok":true}` after the acknowledgement, or `{"ok":false}` after 60 seconds.
+
+### The `display` Driver
+
+The `display` driver compares the metadata of the displays (user, 2026-11-07). Telescreen reads this metadata itself, so the driver needs no helper program and does not depend on the install location. Only the handoff steps need an external tool, for example to switch the video input.
+
+```yaml
+portal-match:
+  driver: display
+  match: {vendor: 7789, model: 30457}
+input-target:
+  driver: display
+  match: {name: HDMI-A-2}
+```
+
+- `match`: a map with one key or more. Each value is a string, a number, or a boolean. A display matches when its metadata has each key with an equal value of the same JSON type: `7789` and `"7789"` are different.
+- `portal-match`: true if the display of the portal matches.
+- `input-target`: the token of the one display that matches. No match, or more than one match, is an error (AC-9).
+- No other field is permitted: the driver runs no program, so it has no `command`, `cwd`, `env`, or `timeout-ms`.
+- The metadata keys come from the platform. macOS: `vendor`, `model`, `serial` (numbers), `builtin` (a boolean), `rotation`, and `name`. Linux (Wayland): `name` (the output name, for example `HDMI-A-2`), `description`, `make`, and `model` (strings). `telescreen displays` prints the displays with their metadata.
 
 ## Runtime Resolution and Handoff
 

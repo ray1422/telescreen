@@ -219,7 +219,8 @@ pub enum RefuseReason {
 pub enum EndReason {
     /// The session ended for a hand back (HB-1).
     HandBack,
-    /// The safety exit on the source (IN-8).
+    /// The safety exit on the source, or on the warning of the destination
+    /// (IN-8, FLOW-26).
     SafetyExit,
     /// The user ended the session in the UI of the source.
     SourceClosed,
@@ -233,7 +234,9 @@ pub enum EndReason {
     VerifyFailed,
     /// A handoff step failed with no completed step (FLOW-12).
     HandoffFailed,
-    /// The window of the verifier could not show on the target.
+    /// The window of the verifier could not show on the target. A peer does
+    /// not send it: a window that cannot show is `VerifyFailed` (VER-5). The
+    /// variant stays, so that the wire format does not change.
     PromptFailed,
     /// The input-target display is no longer valid (FLOW-10).
     DisplayGone,

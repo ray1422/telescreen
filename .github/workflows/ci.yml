@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config
+      - run: sudo apt-get update && sudo apt-get install -y libwayland-dev libxkbcommon-dev pkg-config qt6-base-dev qt6-declarative-dev qmake6
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       # A pull request restores only its own caches and the caches of the
       # base branch. The release workflow saves the same key on that branch.

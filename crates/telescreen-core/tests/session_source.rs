@@ -743,3 +743,70 @@ fn act3_hb3_a_hand_back_request_while_an_attach_verifies() {
     );
     assert_eq!(s.phase(), SourcePhase::Ended(EndReason::HandBack));
 }
+
+fn cursor(x: f32) -> Option<Normalized> {
+    Some(Normalized { x, y: 0.5 })
+}
+
+fn portal_cursor(at: Option<Normalized>) -> SourceAction {
+    Send(Message::PortalCursor { session: S, at })
+}
+
+#[test]
+fn flow7_ac56_the_cursor_goes_to_the_prompt_while_the_ack_is_wanted() {
+    let now = Instant::now();
+    let mut s = ack_wanted(now);
+    assert_eq!(
+        s.portal_cursor(cursor(0.25)),
+        vec![portal_cursor(cursor(0.25))]
+    );
+    assert!(s.portal_cursor(cursor(0.25)).is_empty(), "only a change");
+    assert_eq!(s.portal_cursor(None), vec![portal_cursor(None)]);
+    assert!(s.portal_cursor(None).is_empty(), "only a change");
+    assert_eq!(
+        s.portal_cursor(cursor(0.5)),
+        vec![portal_cursor(cursor(0.5))]
+    );
+    // After the acknowledgement, the source sends no more positions.
+    assert!(s.acknowledge(true).is_some());
+    assert!(s.portal_cursor(cursor(0.75)).is_empty());
+}
+
+#[test]
+fn flow7_ac56_ack_wanted_sends_the_last_cursor_position() {
+    let now = Instant::now();
+    let mut s = granted(now);
+    // The portal waits for the confirmation from the handoff (FLOW-21), but the
+    // target shows no prompt yet.
+    assert!(s.portal_cursor(cursor(0.1)).is_empty());
+    s.on_handoff_finished(HandoffResult::Done);
+    assert!(s.portal_cursor(cursor(0.2)).is_empty(), "no prompt yet");
+    assert_eq!(
+        s.on_message(&Message::AckWanted { session: S }, now),
+        vec![portal_cursor(cursor(0.2))]
+    );
+}
+
+#[test]
+fn flow7_ack_wanted_with_the_cursor_out_of_the_portal_sends_nothing() {
+    let now = Instant::now();
+    let mut s = verifying(now);
+    assert!(s.portal_cursor(cursor(0.2)).is_empty());
+    assert!(s.portal_cursor(None).is_empty());
+    assert!(
+        s.on_message(&Message::AckWanted { session: S }, now)
+            .is_empty()
+    );
+}
+
+#[test]
+fn flow7_flow26_forwarding_sends_the_cursor_only_while_the_portal_is_hidden() {
+    let now = Instant::now();
+    let mut s = forwarding(now);
+    assert!(s.portal_cursor(cursor(0.3)).is_empty(), "the portal shows");
+    s.on_portal_visible(false);
+    assert_eq!(
+        s.portal_cursor(cursor(0.3)),
+        vec![portal_cursor(cursor(0.3))]
+    );
+}

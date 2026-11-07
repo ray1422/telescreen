@@ -52,9 +52,10 @@ pub enum TargetAction {
     /// Removes the focus holder (FLOW-23, UI-7).
     ReleaseKeyboard,
     /// Shows or removes the warning that the source does not show its portal
-    /// (FLOW-26). It takes no input.
+    /// (FLOW-26). It takes the keyboard and the clicks.
     PortalWarning(bool),
-    /// Draws the cursor of the source on the warning, or removes it (FLOW-26).
+    /// Draws the cursor of the source on the warning (FLOW-26), or on the
+    /// prompt while verifying (FLOW-7), or removes it.
     PortalCursor(Option<Normalized>),
     /// Release the device lease of this session.
     ReleaseLease,
@@ -132,6 +133,11 @@ impl TargetSession {
         matches!(self.phase, TargetPhase::Ended(_))
     }
 
+    /// The warning of FLOW-26 shows: the source does not show its portal.
+    pub fn shows_portal_warning(&self) -> bool {
+        self.portal_warning
+    }
+
     /// Handles a message from the source. A message with a different session ID is
     /// stale: no effect, no actions. A message that does not match the phase has
     /// no effect and returns no actions.
@@ -204,7 +210,11 @@ impl TargetSession {
                 self.portal_warning = false;
                 vec![TargetAction::PortalWarning(false)]
             }
-            Message::PortalCursor { at, .. } if self.portal_warning => {
+            // FLOW-7: while verifying, the cursor goes to the prompt. It moves
+            // no pointer (FLOW-10).
+            Message::PortalCursor { at, .. }
+                if self.portal_warning || self.phase == TargetPhase::Verifying =>
+            {
                 vec![TargetAction::PortalCursor(*at)]
             }
             Message::End { reason, .. } => self.finish(*reason, false),
@@ -348,7 +358,8 @@ impl TargetSession {
                 VerificationAction::Finished(result) => target_actions.extend(match result {
                     VerificationResult::Ok => self.check_display(true),
                     VerificationResult::NotOk => self.end(EndReason::VerifyFailed),
-                    VerificationResult::WindowFailed => self.end(EndReason::PromptFailed),
+                    // VER-5: a window that cannot show is a verifier that answers not ok.
+                    VerificationResult::WindowFailed => self.end(EndReason::VerifyFailed),
                 }),
             }
         }

@@ -7,15 +7,16 @@
 use std::time::{Duration, Instant};
 
 use telescreen_core::config::Device;
-use telescreen_core::driver::{DeviceRef, OperationKind, Outcome, PortalInfo, Request};
-use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken};
-use telescreen_core::platform::{Capability, DisplayInfo};
+use telescreen_core::driver::{DeviceRef, Request};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, PortalId};
+use telescreen_core::platform::Capability;
 use telescreen_core::session::VideoInput;
 use telescreen_core::session::source::{HandoffResult, SourcePhase, SourceSession};
 use telescreen_core::wire::{ControlRefuseReason, EndReason, Message};
 use telescreen_transport::NetCommand;
 use telescreen_view::{DeviceChoice, Matching};
 
+use super::portal_match::{Candidate, MatchOwner, MatchResult, portal_info};
 use super::{Controller, Job, JobOutput, Pending};
 
 /// How long the asking peer waits for an answer to a control request (ACT-6).
@@ -31,44 +32,32 @@ pub(super) struct PendingStart {
     pub(super) attach: bool,
 }
 
-/// `portal-match` of each display for one received control request (ACT-4).
+/// A received control request while `portal-match` of its device runs on
+/// each display (ACT-4).
 pub(super) struct ControlMatch {
     peer: ComputerId,
     device: DeviceId,
-    pending: usize,
-    matched: Vec<DisplayInfo>,
-    /// A `portal-match` error: the receiver cannot exclude that display (AC-9).
-    failed: bool,
 }
 
 impl Controller {
-    fn local_device(&self, id: &DeviceId) -> Option<(String, Device)> {
+    pub(super) fn local_device(&self, id: &DeviceId) -> Option<(String, Device)> {
         self.config
             .computer(&self.local)?
             .device_by_id(id)
             .map(|(alias, device)| (alias.to_owned(), device.clone()))
     }
 
-    fn display_portal_info(id: String, display: &DisplayInfo) -> PortalInfo {
-        PortalInfo {
-            id,
-            bounds: display.bounds,
-            coordinate_space: "local-desktop-logical",
-            display_token: Some(display.token.clone()),
-        }
-    }
-
     /// ACT-5: the portal exists only with its session. Closes the portal of a
     /// session that ended or did not start. An end that the user did not make
     /// on this computer gets a notice, because the portal and its status line
     /// go away (FLOW-16).
-    pub(super) fn close_session_portal(&mut self) {
-        let Some(portal) = self.portal.as_ref() else {
+    pub(super) fn close_session_portal(&mut self, id: PortalId) {
+        let Some(portal) = self.portals.get(&id) else {
             return;
         };
         if portal.session.as_ref().is_some_and(|s| !s.is_finished()) {
             // The end runs `run_source_actions`, which calls this function again.
-            self.close_portal(EndReason::SourceClosed);
+            self.close_portal(id, EndReason::SourceClosed);
             return;
         }
         if let Some(session) = &portal.session
@@ -85,11 +74,7 @@ impl Controller {
             }
             self.notice(text);
         }
-        self.stop_search();
-        self.portal_window_request = None;
-        if self.portal.take().is_some() {
-            self.ports.capture.disarm();
-        }
+        self.remove_portal(id);
     }
 
     // ----- "Switch & control" and "Control only" (ACT-1, ACT-3, ACT-5) -----
@@ -107,8 +92,10 @@ impl Controller {
             self.notice(format!("Cannot start: the display {token} is gone."));
             return;
         };
-        self.open_portal(display);
-        let Some(portal) = self.portal.as_mut() else {
+        let Some(id) = self.open_portal(display) else {
+            return;
+        };
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         portal.pending_start = Some(PendingStart {
@@ -116,14 +103,14 @@ impl Controller {
             device: Some(device),
             attach,
         });
-        self.portal_window_request = Some(token.clone());
+        self.portal_window_requests.push_back((id, token.clone()));
         // A portal with no `portal-match` job is already finished.
-        self.start_pending_handoff();
+        self.start_pending_handoff_in(id);
     }
 
     /// Starts the session of the portal after `portal-match` finished.
-    pub(super) fn start_pending(&mut self, pending: PendingStart) {
-        let Some(portal) = self.portal.as_ref() else {
+    pub(super) fn start_pending(&mut self, id: PortalId, pending: PendingStart) {
+        let Some(portal) = self.portals.get(&id) else {
             return;
         };
         match &pending.device {
@@ -137,93 +124,95 @@ impl Controller {
             }
             Some(device) => {
                 let local = self.local_device(device);
-                let matched = portal.match_error.is_none()
-                    && local
-                        .as_ref()
-                        .is_some_and(|(alias, _)| portal.matched.contains(alias));
+                let matched = local.as_ref().is_some_and(|(alias, _)| {
+                    self.matches
+                        .get(&MatchOwner::Portal(id))
+                        .is_some_and(|e| e.found(alias))
+                });
                 let Some((alias, local)) = local.filter(|_| matched) else {
                     let display = super::display_name(&portal.display);
                     self.notice(format!(
                         "Cannot start: the display {display} does not match the device {device}."
                     ));
-                    self.close_session_portal();
+                    self.close_session_portal(id);
                     return;
                 };
                 let label = local.label.clone().unwrap_or_else(|| alias.clone());
-                if let Some(portal) = self.portal.as_mut() {
-                    portal.device = Some(alias.clone());
+                if let Some(portal) = self.portals.get_mut(&id) {
+                    portal.device = Some((alias.clone(), local));
                     portal.matching = Matching::Matched(DeviceChoice { alias, label });
                 }
             }
         }
         // `portal-match` dials the candidates only when it selects one device.
         let route = self
-            .portal_device()
+            .portal_device(id)
             .is_some_and(|d| d.handoff.contains_key(&pending.target));
         if route && !self.connected.contains(&pending.target) {
             self.dial_peer(pending.target.clone());
         }
         // Wait for the dial.
         if self.dialing.contains(&pending.target) && !self.connected.contains(&pending.target) {
-            if let Some(portal) = self.portal.as_mut() {
+            if let Some(portal) = self.portals.get_mut(&id) {
                 portal.pending_start = Some(pending);
             }
             return;
         }
         if pending.attach {
-            self.start_attach(pending.target);
+            self.start_attach(id, pending.target);
         } else {
-            self.start_handoff(pending.target);
+            self.start_handoff(id, pending.target);
         }
-        if self.portal.as_ref().is_some_and(|p| p.session.is_none()) {
-            self.close_session_portal();
+        if self.portals.get(&id).is_some_and(|p| p.session.is_none()) {
+            self.close_session_portal(id);
         }
     }
 
     /// A session with no handoff steps (ACT-3).
-    fn start_attach(&mut self, target: ComputerId) {
-        if let Some(reason) = self.candidate_unavailable(&target) {
+    fn start_attach(&mut self, id: PortalId, target: ComputerId) {
+        if let Some(reason) = self.candidate_unavailable(id, &target) {
             self.notice(format!(
                 "Cannot control {}: {reason}",
                 self.label_of(&target)
             ));
             return;
         }
-        let Some(device) = self.portal_device() else {
+        let Some(device) = self.portal_device(id).map(|d| d.id.clone()) else {
             return;
         };
         // FLOW-6: stop each old input stream of this device first, in both roles.
-        self.end_device_sessions(&device.id);
-        let (session, actions) = SourceSession::attach(target, device.id);
-        let Some(portal) = self.portal.as_mut() else {
+        self.end_device_sessions(&device);
+        let (session, actions) = SourceSession::attach(target, device);
+        let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
         portal.session = Some(session);
         portal.notice = None;
         let (bounds, focused) = (portal.bounds, portal.focused);
         // FLOW-21 applies from the start, because no steps run (ACT-5).
-        if let Err(e) = self.ports.capture.arm(bounds) {
+        if let Err(e) = self.ports.capture.arm(id, bounds) {
             self.notice(format!("Input capture failed: {e}"));
-            self.end_portal_session(EndReason::PermissionLost);
+            self.end_portal_session(id, EndReason::PermissionLost);
             return;
         }
-        self.ports.capture.set_portal_focus(focused);
-        self.set_guard(true);
-        self.run_source_actions(actions);
+        self.ports.capture.set_portal_focus(id, focused);
+        self.set_guard(id, true);
+        self.run_source_actions(id, actions);
     }
 
     /// The dial of a pending start failed: its session cannot start.
     pub(super) fn dial_failed(&mut self, peer: &ComputerId) {
-        let waits = self
-            .portal
-            .as_ref()
-            .and_then(|p| p.pending_start.as_ref())
-            .is_some_and(|s| &s.target == peer);
-        if waits {
-            if let Some(portal) = self.portal.as_mut() {
+        let waiting: Vec<_> = self
+            .portals
+            .iter()
+            .filter(|(_, p)| p.pending_start.as_ref().is_some_and(|s| &s.target == peer))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in waiting {
+            if let Some(portal) = self.portals.get_mut(&id) {
                 portal.pending_start = None;
             }
-            self.close_session_portal();
+            self.close_session_portal(id);
         }
     }
 
@@ -256,21 +245,16 @@ impl Controller {
         };
         // FLOW-6: the display does not show the old sessions after the steps.
         self.end_device_sessions(&device_id);
-        let request = Request {
-            computer_id: self.local.clone(),
-            device: DeviceRef {
+        let request = Request::on_source(
+            &self.local,
+            DeviceRef {
                 id: device_id.clone(),
                 alias,
             },
-            source_computer_id: self.local.clone(),
-            target_computer_id: Some(target.clone()),
-            session_id: None,
-            portal: Some(Self::display_portal_info(
-                "switch-display-only".into(),
-                &display,
-            )),
+            Some(target.clone()),
             displays,
-        };
+        )
+        .with_portal(portal_info("switch-display-only".into(), &display));
         self.spawn(
             Pending::SwitchOnly {
                 target,
@@ -328,7 +312,7 @@ impl Controller {
     }
 
     /// The destination of "Switch display only" (ACT-6).
-    pub(super) fn display_switched(&mut self, peer: ComputerId, device: DeviceId, now: Instant) {
+    pub(super) fn display_switched(&mut self, peer: ComputerId, device: DeviceId) {
         // NET-4: the sender needs a route to this computer for the device.
         let route = self
             .config
@@ -340,7 +324,7 @@ impl Controller {
             return;
         }
         self.end_device_sessions(&device);
-        self.verify_as_destination(peer, device, now);
+        self.verify_as_destination(peer, device);
     }
 
     // ----- Control request, asking peer (ACT-4, ACT-6) -----
@@ -423,10 +407,10 @@ impl Controller {
         });
     }
 
-    fn source_session_active(&self) -> bool {
-        self.portal
-            .as_ref()
-            .and_then(|p| p.session.as_ref())
+    /// True if the portal on the display has an unfinished session (ACT-6).
+    fn source_session_on(&self, display: &DisplayToken) -> bool {
+        self.portal_on(display)
+            .and_then(|id| self.source_session(id))
             .is_some_and(|s| !s.is_finished())
     }
 
@@ -444,98 +428,69 @@ impl Controller {
         {
             return self.refuse_control(peer, device, ControlRefuseReason::NoCapture);
         }
-        // One portal at a time: a session on any display counts (ACT-6).
-        if self.source_session_active() {
-            return self.refuse_control(peer, device, ControlRefuseReason::Busy);
-        }
-        let Some(operation) = local.portal_match.clone() else {
+        if local.portal_match.is_none() {
             return self.refuse_control(peer, device, ControlRefuseReason::NoDisplay);
-        };
+        }
         let all = self.displays();
-        let displays: Vec<_> = all.iter().filter(|d| d.bounds.is_some()).cloned().collect();
-        if displays.is_empty() {
+        let candidates: Vec<_> = all
+            .iter()
+            .filter(|d| d.bounds.is_some())
+            .map(|display| Candidate {
+                alias: alias.clone(),
+                device: local.clone(),
+                display: display.clone(),
+            })
+            .collect();
+        if candidates.is_empty() {
             return self.refuse_control(peer, device, ControlRefuseReason::NoDisplay);
         }
         let request_id = self.next_control_match;
         self.next_control_match += 1;
-        self.control_matches.insert(
-            request_id,
-            ControlMatch {
-                peer,
-                device: device.clone(),
-                pending: displays.len(),
-                matched: Vec::new(),
-                failed: false,
-            },
+        self.control_matches
+            .insert(request_id, ControlMatch { peer, device });
+        let jobs = self.matches.start(
+            MatchOwner::Control(request_id),
+            &format!("control-request-{request_id}"),
+            candidates,
+            &self.local,
+            &all,
         );
-        for display in displays {
-            let request = Request {
-                computer_id: self.local.clone(),
-                device: DeviceRef {
-                    id: device.clone(),
-                    alias: alias.clone(),
-                },
-                source_computer_id: self.local.clone(),
-                target_computer_id: None,
-                session_id: None,
-                portal: Some(Self::display_portal_info(
-                    format!("control-request-{request_id}"),
-                    &display,
-                )),
-                displays: all.clone(),
-            };
-            self.spawn(
-                Pending::ControlMatch {
-                    request: request_id,
-                    display,
-                },
-                Job::Operation {
-                    operation: operation.clone(),
-                    kind: OperationKind::PortalMatch,
-                    request,
-                },
-            );
+        for (ticket, job) in jobs {
+            self.spawn(Pending::PortalMatch(ticket), job);
         }
     }
 
     /// AC-9: an error or more than one match never selects a display.
-    pub(super) fn control_match_done(
-        &mut self,
-        request: u64,
-        display: DisplayInfo,
-        output: JobOutput,
-    ) {
-        let Some(m) = self.control_matches.get_mut(&request) else {
+    pub(super) fn control_match_done(&mut self, request: u64) {
+        let owner = MatchOwner::Control(request);
+        if self.matches.get(&owner).is_none_or(|e| e.is_pending()) {
+            return;
+        }
+        let (Some(evaluation), Some(m)) = (
+            self.matches.remove(&owner),
+            self.control_matches.remove(&request),
+        ) else {
             return;
         };
-        m.pending = m.pending.saturating_sub(1);
-        match output {
-            JobOutput::Operation(Ok(Outcome::Matched(true))) => m.matched.push(display),
-            JobOutput::Operation(Ok(Outcome::Matched(false))) => {}
-            other => {
-                eprintln!("telescreen: portal-match for a control request: {other:?}");
-                m.failed = true;
+        // A `portal-match` error: the receiver cannot exclude that display.
+        match evaluation.result() {
+            None | Some(MatchResult::Failed(_)) => {
+                self.refuse_control(m.peer, m.device, ControlRefuseReason::MatchFailed)
             }
-        }
-        if m.pending > 0 {
-            return;
-        }
-        let Some(m) = self.control_matches.remove(&request) else {
-            return;
-        };
-        if m.failed {
-            return self.refuse_control(m.peer, m.device, ControlRefuseReason::MatchFailed);
-        }
-        match m.matched.as_slice() {
-            [] => self.refuse_control(m.peer, m.device, ControlRefuseReason::NoDisplay),
-            [display] => {
-                if self.source_session_active() {
+            Some(MatchResult::NoMatch) => {
+                self.refuse_control(m.peer, m.device, ControlRefuseReason::NoDisplay)
+            }
+            Some(MatchResult::One(candidate)) => {
+                // ACT-6: only a session on the matching display counts (FLOW-25).
+                if self.source_session_on(&candidate.display.token) {
                     return self.refuse_control(m.peer, m.device, ControlRefuseReason::Busy);
                 }
-                let token = display.token.clone();
+                let token = candidate.display.token.clone();
                 self.start_on_display(&token, m.device, m.peer, true);
             }
-            _ => self.refuse_control(m.peer, m.device, ControlRefuseReason::AmbiguousDisplay),
+            Some(MatchResult::Many(_)) => {
+                self.refuse_control(m.peer, m.device, ControlRefuseReason::AmbiguousDisplay)
+            }
         }
     }
 }

@@ -1,0 +1,24 @@
+[package]
+name = "telescreen-ui-linux"
+description = "The native Linux UI of Telescreen: QML views through cxx-qt (ADR 0012)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+telescreen-view.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib = { workspace = true, features = ["qt_gui", "qt_qml"] }
+zbus.workspace = true
+
+[target.'cfg(target_os = "linux")'.build-dependencies]
+cxx-qt-build.workspace = true

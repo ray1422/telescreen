@@ -31,8 +31,8 @@ computers:
       BuiltIn:
         id: mac-internal               # Connects only to the Mac. It has no switchable targets.
         portal-match:
-          driver: command
-          command: [/Users/me/bin/internal-helper, portal-match]
+          driver: display              # built in: compares the display metadata, runs no program
+          match: {builtin: true}
       USB:
         id: shared-usb                 # Generic device. It needs no display-identification fields.
         verify:

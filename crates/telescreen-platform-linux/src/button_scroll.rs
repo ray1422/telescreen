@@ -222,14 +222,6 @@ impl ButtonScroll {
         self.poll()
     }
 
-    /// Ends the scroll (IN-18). The counts that wait are lost: they are less than
-    /// one count, or the button is not armed and no scroll started.
-    pub(crate) fn end_scroll(&mut self) -> io::Result<()> {
-        let steps = self.button.end_scroll();
-        self.rest = (0.0, 0.0);
-        self.run(&steps)
-    }
-
     pub(crate) fn end_session(&mut self) -> io::Result<()> {
         let steps = self.button.end_session();
         self.rest = (0.0, 0.0);

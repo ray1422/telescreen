@@ -71,6 +71,13 @@ else
   mkdir -p "$apps"
   sed "s|^Exec=.*|Exec=\"$bin/telescreen\"|" "$work/telescreen/dev.telescreen.Telescreen.desktop" \
     >"$apps/dev.telescreen.Telescreen.desktop"
+  # The icon of the launcher entry and of the windows (DIST-4). Archives before
+  # v0.502.0 have none.
+  if [ -f "$work/telescreen/dev.telescreen.Telescreen.png" ]; then
+    icons=$prefix/.local/share/icons/hicolor/256x256/apps
+    mkdir -p "$icons"
+    cp "$work/telescreen/dev.telescreen.Telescreen.png" "$icons/dev.telescreen.Telescreen.png"
+  fi
   echo "Installed $bin/telescreen and $apps/dev.telescreen.Telescreen.desktop."
   if [ ! -w /dev/uinput ]; then
     echo "You cannot write to /dev/uinput. Add your user to its group, then log in again."

@@ -15,6 +15,8 @@ struct MenuScreen: Decodable, Equatable {
 struct Tagged: Decodable, Equatable {
     let kind: String
     var session: UInt64?
+    /// The portal of a source session row (FLOW-25).
+    var portal: UInt64?
     var key: String?
     var reason: String?
     var error: String?

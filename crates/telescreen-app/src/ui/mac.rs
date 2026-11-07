@@ -1,11 +1,12 @@
 //! macOS parts of the window layer: the event tap, the injector, the portal window
 //! adjustments, and the prompt windows (ADR 0003, ADR 0006).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use telescreen_core::config::Computer;
-use telescreen_core::ids::DisplayToken;
+use telescreen_core::ids::{DisplayToken, PortalId};
 use telescreen_core::platform::{CapturedEvent, InputCapture};
 use telescreen_platform_macos::capture::MacCapture;
 use telescreen_platform_macos::clipboard::MacClipboard;
@@ -26,9 +27,15 @@ use crate::controller::Labels;
 pub(crate) struct Hooks {
     capture: Option<MacCapture>,
     prompts: PromptQueue,
-    raised: bool,
+    /// The state of each portal window (FLOW-25).
+    portals: HashMap<PortalId, PortalWindow>,
     /// The time of the last Space change (FLOW-26).
     space_changed: Option<Instant>,
+}
+
+#[derive(Default)]
+struct PortalWindow {
+    raised: bool,
     /// The portal was hidden at the last sync while forwarding (FLOW-26).
     hidden: bool,
     /// The portal had the focus when it went off screen (FLOW-26).
@@ -36,6 +43,9 @@ pub(crate) struct Hooks {
     /// When the portal lost the focus. macOS takes the focus just before the
     /// occlusion event.
     focus_lost: Option<Instant>,
+    /// The portal is guarded and lost the focus: it takes the focus back if
+    /// no portal window has it (FLOW-21, FLOW-25).
+    reclaim: Option<Instant>,
 }
 
 /// A capture that is not available (no permission): every call reports it.
@@ -44,18 +54,22 @@ struct NoCapture(String);
 impl InputCapture for NoCapture {
     fn arm(
         &mut self,
+        _: telescreen_core::ids::PortalId,
         _: telescreen_core::pointer::Rect,
     ) -> Result<(), telescreen_core::platform::PlatformError> {
         Err(telescreen_core::platform::PlatformError::Permission(
             self.0.clone(),
         ))
     }
-    fn forward(&mut self) -> Result<(), telescreen_core::platform::PlatformError> {
+    fn forward(
+        &mut self,
+        _: telescreen_core::ids::PortalId,
+    ) -> Result<(), telescreen_core::platform::PlatformError> {
         Err(telescreen_core::platform::PlatformError::Permission(
             self.0.clone(),
         ))
     }
-    fn disarm(&mut self) {}
+    fn disarm(&mut self, _: telescreen_core::ids::PortalId) {}
 }
 
 pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, _local: &Computer) -> Result<Parts, String> {
@@ -100,16 +114,12 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, _local: &Computer) -> Resu
         capabilities,
         labels: Labels {
             confirm_key: "Return".into(),
-            hand_back_shortcut: "Control+Option+Command+Escape".into(),
         },
         hooks: Hooks {
             capture,
             prompts,
-            raised: false,
+            portals: HashMap::new(),
             space_changed: None,
-            hidden: false,
-            focused_at_hide: false,
-            focus_lost: None,
         },
         notices,
     })
@@ -132,13 +142,40 @@ pub(crate) fn prompt_created(prompt: &Window) {
     window::make_overlay(prompt);
 }
 
-/// VER-4: a prompt that waits for the acknowledgement on this computer takes
-/// clicks and the keyboard focus.
-pub(crate) fn prompt_input(prompt: &Window, local_ack: bool) {
-    window::set_prompt_input(prompt, local_ack);
-    if local_ack {
-        prompt.focus_window();
-        window::make_frontmost(None::<&Window>);
+/// The app that was frontmost before a prompt took the focus (FLOW-26).
+pub(crate) type Frontmost = Option<window::FrontmostApp>;
+
+/// The native UI of this platform (ADR 0012).
+pub(crate) type NativeUi = telescreen_ui_macos::MacUi;
+pub(crate) use telescreen_ui_macos::UiEvent;
+
+/// VER-4, FLOW-26: a prompt that waits for the acknowledgement on this
+/// computer, and the warning, take clicks and the keyboard focus. Returns the
+/// app that was frontmost before, if it is not Telescreen.
+pub(crate) fn prompt_input(prompt: &Window, on: bool) -> Frontmost {
+    window::set_prompt_input(prompt, on);
+    if !on {
+        return None;
+    }
+    let before = window::frontmost_other_app();
+    eprintln!(
+        "telescreen: {}: the prompt takes the focus",
+        telescreen_platform_macos::clock()
+    );
+    prompt.focus_window();
+    window::make_frontmost(Some(prompt));
+    before
+}
+
+/// FLOW-26: when the warning goes away, the app that was frontmost before it
+/// is frontmost again, so that the forwarded input goes there.
+pub(crate) fn restore_frontmost(before: Frontmost) {
+    if let Some(app) = before {
+        eprintln!(
+            "telescreen: {}: activate the app that was frontmost before the warning",
+            telescreen_platform_macos::clock()
+        );
+        window::activate(&app);
     }
 }
 
@@ -160,8 +197,8 @@ impl Hooks {
         self.prompts.take()
     }
 
-    pub(crate) fn portal_created(&mut self, _: &Arc<Window>) {
-        self.raised = false;
+    pub(crate) fn portal_created(&mut self, portal: PortalId, _: &Arc<Window>) {
+        self.portals.insert(portal, PortalWindow::default());
         window::watch_space_changes();
     }
 
@@ -170,30 +207,34 @@ impl Hooks {
         true
     }
 
-    /// FLOW-26: after a Space change, show a hidden portal again. Opening Mission
-    /// Control is not a Space change, so this does not close Mission Control.
+    /// FLOW-26: after a Space change, show a hidden fullscreen portal again.
+    /// Opening Mission Control is not a Space change, so this does not close
+    /// Mission Control.
     /// The Space notification and the occlusion event can come in either order,
     /// so a Space change counts for a short time.
-    pub(crate) fn portal_hidden(&mut self, portal: &Window, hidden: bool, forwarding: bool) {
+    pub(crate) fn portal_hidden(
+        &mut self,
+        id: PortalId,
+        portal: &Window,
+        hidden: bool,
+        forwarding: bool,
+    ) {
         const SPACE_CHANGE_TIME: Duration = Duration::from_secs(1);
         let now = Instant::now();
-        let was_hidden = std::mem::replace(&mut self.hidden, hidden);
+        let state = self.portals.entry(id).or_default();
+        let was_hidden = std::mem::replace(&mut state.hidden, hidden);
         if hidden && !was_hidden {
-            self.focused_at_hide = portal.has_focus()
-                || self
+            state.focused_at_hide = portal.has_focus()
+                || state
                     .focus_lost
                     .is_some_and(|at| now.duration_since(at) < Duration::from_millis(200));
         }
+        let focused_at_hide = state.focused_at_hide;
         let shown = was_hidden && !hidden;
         // FLOW-26: when Mission Control closes, the portal is on screen again but
         // macOS does not always give it back the focus. If the portal had the
         // focus and no other app took it, the portal takes it again.
-        if shown
-            && forwarding
-            && self.focused_at_hide
-            && !portal.has_focus()
-            && window::is_frontmost()
-        {
+        if shown && forwarding && focused_at_hide && !portal.has_focus() && window::is_frontmost() {
             eprintln!(
                 "telescreen: {}: focus the portal on screen again",
                 telescreen_platform_macos::clock()
@@ -206,7 +247,8 @@ impl Hooks {
         let recent = self
             .space_changed
             .is_some_and(|at| now.duration_since(at) < SPACE_CHANGE_TIME);
-        if hidden && recent {
+        // UI-3: a portal that left fullscreen stays where the user put it.
+        if hidden && recent && portal.fullscreen().is_some() {
             eprintln!(
                 "telescreen: {}: show the hidden portal after a Space change",
                 telescreen_platform_macos::clock()
@@ -220,29 +262,72 @@ impl Hooks {
     /// frontmost app, so that the focus does not go to the main window (FLOW-22,
     /// FLOW-26).
     fn take_focus(&mut self, portal: &Window) {
+        eprintln!(
+            "telescreen: {}: take the focus for {:?} (key window: {:?})",
+            telescreen_platform_macos::clock(),
+            portal.title(),
+            window::key_window_title()
+        );
         portal.focus_window();
         window::make_frontmost(Some(portal));
     }
 
-    pub(crate) fn portal_closed(&mut self) {
-        self.raised = false;
+    pub(crate) fn portal_closed(&mut self, portal: PortalId) {
+        self.portals.remove(&portal);
     }
 
     /// Updates native keyboard focus (FLOW-22, UI-1, UI-2).
-    pub(crate) fn portal_focus(&mut self, portal: &Window, focused: bool, guarded: bool) {
+    pub(crate) fn portal_focus(
+        &mut self,
+        id: PortalId,
+        portal: &Window,
+        focused: bool,
+        guarded: bool,
+    ) {
+        let state = self.portals.entry(id).or_default();
         // The controller gives the focus to the capture (FLOW-22).
         if !focused {
-            self.focus_lost = Some(Instant::now());
+            state.focus_lost = Some(Instant::now());
         }
         if focused {
+            state.reclaim = None;
             window::allow_only_roman_input(portal);
-            if !self.raised && portal.fullscreen().is_some() {
+            if !state.raised && portal.fullscreen().is_some() {
                 window::raise_portal(portal);
-                self.raised = true;
+                state.raised = true;
             }
         } else if guarded {
-            // FLOW-21: keep the focus during handoff and verification.
-            self.take_focus(portal);
+            // FLOW-21: keep the focus during handoff and verification. Do not
+            // take it at once: the focus can have gone to a different portal
+            // (FLOW-25), and `reclaim_focus` checks that.
+            state.reclaim.get_or_insert(Instant::now());
+        }
+    }
+
+    /// FLOW-21, FLOW-25: a guarded portal that lost the focus takes it back,
+    /// but only when no portal window has the focus a short time later. Thus
+    /// the user can move the focus to a different portal, and two guarded
+    /// portals do not take the focus from each other.
+    pub(crate) fn reclaim_focus(&mut self, portals: &[(PortalId, &Window)]) {
+        const SETTLE: Duration = Duration::from_millis(100);
+        let now = Instant::now();
+        let any_focused = portals.iter().any(|(_, window)| window.has_focus());
+        let mut take = None;
+        for (id, window) in portals {
+            let Some(state) = self.portals.get_mut(id) else {
+                continue;
+            };
+            match state.reclaim {
+                Some(_) if any_focused => state.reclaim = None,
+                Some(at) if now.duration_since(at) >= SETTLE => {
+                    state.reclaim = None;
+                    take.get_or_insert(*window);
+                }
+                _ => {}
+            }
+        }
+        if let Some(window) = take {
+            self.take_focus(window);
         }
     }
 
@@ -254,7 +339,12 @@ impl Hooks {
     }
 
     /// Keeps forwarded pointer input out of the portal UI (FLOW-22).
-    pub(crate) fn portal_window_event(&mut self, event: &WindowEvent, forwarding: bool) -> bool {
+    pub(crate) fn portal_window_event(
+        &mut self,
+        _: PortalId,
+        event: &WindowEvent,
+        forwarding: bool,
+    ) -> bool {
         forwarding
             && matches!(
                 event,

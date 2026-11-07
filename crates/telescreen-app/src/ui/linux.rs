@@ -7,18 +7,19 @@
 //! of the portal window (FLOW-22, UI-6). Not tested on hardware yet.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use telescreen_core::config::{Computer, Quirk};
-use telescreen_core::ids::DisplayToken;
+use telescreen_core::ids::{DisplayToken, PortalId};
 use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::key_route::{InputRouter, Route};
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
 use telescreen_core::pointer::{Point, Rect};
+use telescreen_core::portal_capture::{self, FocusLoss, SafetyExit};
 use telescreen_platform_linux::clipboard::LinuxClipboard;
 use telescreen_platform_linux::displays::LinuxDisplays;
 use telescreen_platform_linux::focus::LinuxFocusHolder;
@@ -27,7 +28,7 @@ use telescreen_platform_linux::inject::LinuxInjector;
 use telescreen_platform_linux::prompt::LayerPrompt;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::EventLoopProxy;
-use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::monitor::MonitorHandle;
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::platform::wayland::WindowAttributesExtWayland;
@@ -37,9 +38,6 @@ use super::prompt_queue::{PromptQueue, PromptRequest};
 use super::{Parts, UserEvent};
 use crate::controller::Labels;
 
-/// IN-8: Escape this many times in this time.
-const SAFETY_PRESSES: usize = 10;
-const SAFETY_WINDOW: Duration = Duration::from_secs(5);
 /// Logical pixels for one wheel line.
 const LINE: f32 = 15.0;
 
@@ -50,105 +48,55 @@ enum Mode {
     Forwarding,
 }
 
-struct CaptureState {
+/// The capture state of one portal window (FLOW-25).
+struct PortalState {
     window: Option<Arc<Window>>,
     mode: Mode,
-    portal: Rect,
+    area: Rect,
     /// The last cursor position in the window, in logical pixels.
     cursor: Option<Point>,
     /// The cursor is in the portal window (FLOW-20).
     inside: bool,
+    /// The portal waits for the confirmation (FLOW-21).
+    guarded: bool,
+    /// The portal is on screen: on Linux, the window is fullscreen (UI-3,
+    /// FLOW-26). While it is not, the input in the window stays local.
+    shown: bool,
     inhibitor: Option<ShortcutInhibitor>,
-    modifiers: ModifiersState,
-    escapes: VecDeque<Instant>,
-    /// Where each key and button that is down went (IN-3).
-    router: InputRouter,
-    events: Vec<CapturedEvent>,
 }
 
-impl CaptureState {
-    fn global(&self, local: Point) -> Point {
-        Point {
-            x: self.portal.x + local.x,
-            y: self.portal.y + local.y,
+impl PortalState {
+    fn new() -> Self {
+        Self {
+            window: None,
+            mode: Mode::Off,
+            area: Rect::default(),
+            cursor: None,
+            inside: false,
+            guarded: false,
+            shown: true,
+            inhibitor: None,
         }
     }
 
     fn cursor_global(&self) -> Point {
-        self.global(self.cursor.unwrap_or_default())
+        let local = self.cursor.unwrap_or_default();
+        Point {
+            x: self.area.x + local.x,
+            y: self.area.y + local.y,
+        }
     }
 
     fn forward_now(&self) -> bool {
-        self.mode == Mode::Forwarding && self.inside
+        self.mode == Mode::Forwarding && self.inside && self.shown
     }
 
-    /// Reports the latest cursor position while forwarding. Merges motions.
-    fn report_position(&mut self) {
-        if !self.forward_now() {
-            return;
-        }
-        let at = self.cursor_global();
-        if let Some(CapturedEvent::PointerMoved { at: last }) = self.events.last_mut() {
-            *last = at;
-        } else {
-            self.events.push(CapturedEvent::PointerMoved { at });
-        }
-    }
-
-    fn set_inside(&mut self, inside: bool) {
-        if inside == self.inside {
-            return;
-        }
-        self.inside = inside;
-        if self.mode == Mode::Off {
-            return;
-        }
-        let event = if inside {
-            CapturedEvent::PointerEntered {
-                at: self.cursor_global(),
-            }
-        } else {
-            CapturedEvent::PointerLeft
-        };
-        self.events.push(event);
-        self.report_position();
-    }
-
-    /// Routes one input event (IN-3). Reports it and returns true if it goes to
-    /// the target.
-    fn route(&mut self, input: InputEvent) -> bool {
-        if self.mode != Mode::Forwarding {
-            return false;
-        }
-        // The compositor focuses the portal for the click, and `portal_focus`
-        // reports it (FLOW-22). Thus `focus_wanted` needs nothing here.
-        let decision = self.router.route(&input, self.inside);
-        if decision.route == Route::Forward {
-            self.events.push(CapturedEvent::Input(input));
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Reports keyboard focus before input (FLOW-23).
-    fn keyboard_changed(&mut self, focused: bool) {
-        self.events.push(if focused {
-            CapturedEvent::KeyboardEntered
-        } else {
-            CapturedEvent::KeyboardLeft
-        });
-    }
-
-    /// Releases held input when native keyboard focus is lost (IN-13, UI-6).
-    fn portal_focus(&mut self, focused: bool) {
-        if let Some(focused) = self.router.set_window_focus(focused) {
-            self.keyboard_changed(focused);
-            if !focused && self.mode == Mode::Forwarding {
-                self.router.clear();
-                self.events.push(CapturedEvent::InputLost);
-            }
-        }
+    /// The cursor position goes to the controller: while forwarding, and while
+    /// the portal waits for the confirmation, for the prompt on the target
+    /// (FLOW-7, FLOW-21).
+    fn reports_position(&self) -> bool {
+        self.forward_now()
+            || (self.mode == Mode::Armed && self.guarded && self.inside && self.shown)
     }
 
     /// Keeps the inhibitor across the guard and forwarding (FLOW-21, UI-6).
@@ -163,11 +111,139 @@ impl CaptureState {
         Ok(())
     }
 
-    fn stop(&mut self, event: CapturedEvent) {
+    fn stop(&mut self) {
         self.inhibitor = None;
+        self.guarded = false;
         self.mode = Mode::Off;
+    }
+}
+
+/// The capture of all portal windows. Each portal window gives the input in
+/// it; keys go to the window with the native focus (FLOW-22, FLOW-25).
+struct CaptureState {
+    portals: BTreeMap<PortalId, PortalState>,
+    /// IN-8: the Escape presses.
+    escapes: SafetyExit,
+    /// Where each key and button that is down went, for all portals (IN-3).
+    router: InputRouter,
+    events: Vec<CapturedEvent>,
+}
+
+impl CaptureState {
+    fn forwarding(&self, portal: PortalId) -> bool {
+        self.portals
+            .get(&portal)
+            .is_some_and(|p| p.mode == Mode::Forwarding)
+    }
+
+    /// IN-8: a portal waits for the confirmation (FLOW-21) or forwards.
+    fn waits_or_forwards(&self) -> bool {
+        self.portals
+            .values()
+            .any(|p| p.mode == Mode::Forwarding || (p.mode != Mode::Off && p.guarded))
+    }
+
+    /// Reports the latest cursor position while forwarding or while the portal
+    /// waits for the confirmation. Merges motions.
+    fn report_position(&mut self, portal: PortalId) {
+        let Some(state) = self.portals.get(&portal).filter(|p| p.reports_position()) else {
+            return;
+        };
+        let at = state.cursor_global();
+        if let Some(CapturedEvent::PointerMoved {
+            portal: last,
+            at: last_at,
+        }) = self.events.last_mut()
+            && *last == portal
+        {
+            *last_at = at;
+        } else {
+            self.events.push(CapturedEvent::PointerMoved { portal, at });
+        }
+    }
+
+    fn set_inside(&mut self, portal: PortalId, inside: bool) {
+        let Some(state) = self.portals.get_mut(&portal) else {
+            return;
+        };
+        if inside == state.inside {
+            return;
+        }
+        state.inside = inside;
+        if state.mode == Mode::Off {
+            return;
+        }
+        let event = if inside {
+            CapturedEvent::PointerEntered {
+                portal,
+                at: state.cursor_global(),
+            }
+        } else {
+            CapturedEvent::PointerLeft { portal }
+        };
+        self.events.push(event);
+        self.report_position(portal);
+    }
+
+    /// Routes one input event of the portal window (IN-3). Reports it and
+    /// returns true if it goes to a target. A key goes to the portal with the
+    /// keyboard focus; while that portal does not forward, the key stays local.
+    fn route(&mut self, portal: PortalId, input: InputEvent) -> bool {
+        let cursor_in = self
+            .portals
+            .get(&portal)
+            .filter(|p| p.forward_now())
+            .map(|_| portal);
+        // The compositor focuses the portal for the click, and `portal_focus`
+        // reports it (FLOW-22). Thus `focus_wanted` needs nothing here.
+        let decision = self.router.route(&input, cursor_in);
+        match decision.route {
+            Route::Forward(to) if self.forwarding(to) => {
+                self.events.push(CapturedEvent::Input {
+                    portal: to,
+                    event: input,
+                });
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Reports keyboard focus before input (FLOW-23). Releases held input when
+    /// native keyboard focus is lost (IN-13, UI-6).
+    fn portal_focus(&mut self, portal: PortalId, focused: bool) {
+        if !self.portals.contains_key(&portal) {
+            return;
+        }
+        let portals = &self.portals;
+        let events = portal_capture::window_focus(
+            &mut self.router,
+            portal,
+            focused,
+            |p| portals.get(&p).is_some_and(|p| p.mode == Mode::Forwarding),
+            FocusLoss::UpEventsLost,
+        );
+        self.events.extend(events);
+    }
+
+    /// Stops all portals, for the safety exit (IN-8).
+    fn stop_all(&mut self, event: CapturedEvent) {
+        for state in self.portals.values_mut() {
+            state.stop();
+        }
         self.router.clear();
         self.events.push(event);
+    }
+
+    /// Forgets a portal that has no window and no capture.
+    fn drop_unused(&mut self, portal: PortalId) {
+        if self
+            .portals
+            .get(&portal)
+            .is_some_and(|p| p.window.is_none() && p.mode == Mode::Off)
+        {
+            self.portals.remove(&portal);
+        }
     }
 }
 
@@ -176,58 +252,90 @@ impl CaptureState {
 struct LinuxCapture(Rc<RefCell<CaptureState>>);
 
 impl InputCapture for LinuxCapture {
-    fn arm(&mut self, portal: Rect) -> Result<(), PlatformError> {
+    fn arm(&mut self, portal: PortalId, area: Rect) -> Result<(), PlatformError> {
         let mut s = self.0.borrow_mut();
-        s.portal = portal;
-        if s.mode == Mode::Off {
-            s.mode = Mode::Armed;
+        let state = s.portals.entry(portal).or_insert_with(PortalState::new);
+        state.area = area;
+        if state.mode == Mode::Off {
+            state.mode = Mode::Armed;
         }
-        if s.inside {
-            let at = s.cursor_global();
-            s.events.push(CapturedEvent::PointerEntered { at });
+        if state.inside {
+            let at = state.cursor_global();
+            s.events.push(CapturedEvent::PointerEntered { portal, at });
         }
         Ok(())
     }
 
-    fn forward(&mut self) -> Result<(), PlatformError> {
+    fn forward(&mut self, portal: PortalId) -> Result<(), PlatformError> {
         let mut s = self.0.borrow_mut();
-        if s.window.is_none() {
+        let Some(state) = s.portals.get_mut(&portal).filter(|p| p.mode != Mode::Off) else {
+            return Err(PlatformError::Failed(format!("{portal} is not armed")));
+        };
+        if state.window.is_none() {
             return Err(PlatformError::Failed("no portal window".into()));
         }
-        if let Err(error) = s.inhibit() {
+        if let Err(error) = state.inhibit() {
             // Forwarding still works; compositor shortcuts stay with the compositor.
             eprintln!("telescreen: shortcut inhibit: {error}");
         }
-        s.escapes.clear();
-        s.mode = Mode::Forwarding;
-        s.report_position();
+        state.mode = Mode::Forwarding;
+        state.guarded = false;
+        s.escapes.reset();
+        s.report_position(portal);
         Ok(())
     }
 
-    fn set_portal_focus(&mut self, focused: bool) {
-        self.0.borrow_mut().portal_focus(focused);
+    fn set_portal_focus(&mut self, portal: PortalId, focused: bool) {
+        self.0.borrow_mut().portal_focus(portal, focused);
     }
 
-    fn guard(&mut self, on: bool) -> Result<(), PlatformError> {
+    /// FLOW-26: the controller reports a portal that is not fullscreen (UI-3).
+    /// A Wayland client does not know the global cursor position, so the
+    /// warning on the target shows no cursor of a Linux source.
+    fn set_portal_visible(&mut self, portal: PortalId, visible: bool) {
         let mut s = self.0.borrow_mut();
-        if on {
-            if s.mode == Mode::Off {
-                return Err(PlatformError::Failed(
+        let Some(state) = s.portals.get_mut(&portal) else {
+            return;
+        };
+        if state.shown == visible {
+            return;
+        }
+        state.shown = visible;
+        if visible && state.forward_now() {
+            // The controller sends the pointer position again.
+            let at = state.cursor_global();
+            s.events.push(CapturedEvent::PointerEntered { portal, at });
+        }
+    }
+
+    fn guard(&mut self, portal: PortalId, on: bool) -> Result<(), PlatformError> {
+        let mut s = self.0.borrow_mut();
+        let Some(state) = s.portals.get_mut(&portal).filter(|p| p.mode != Mode::Off) else {
+            return if on {
+                Err(PlatformError::Failed(
                     "the portal guard needs an armed capture".into(),
-                ));
-            }
-            s.inhibit()?;
-        } else if s.mode != Mode::Forwarding {
-            s.inhibitor = None;
+                ))
+            } else {
+                Ok(())
+            };
+        };
+        if on {
+            state.inhibit()?;
+        }
+        state.guarded = on;
+        if !on && state.mode != Mode::Forwarding {
+            state.inhibitor = None;
         }
         Ok(())
     }
 
-    fn disarm(&mut self) {
+    fn disarm(&mut self, portal: PortalId) {
         let mut s = self.0.borrow_mut();
-        s.inhibitor = None;
-        s.mode = Mode::Off;
-        s.router.clear();
+        if let Some(state) = s.portals.get_mut(&portal) {
+            state.stop();
+        }
+        s.router.forget(portal);
+        s.drop_unused(portal);
     }
 }
 
@@ -271,7 +379,12 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Resul
     let (prompt, prompts): (
         Box<dyn telescreen_view::PromptPresenter>,
         Option<PromptQueue>,
-    ) = match LayerPrompt::start() {
+    ) = match LayerPrompt::start({
+        let proxy = proxy.clone();
+        move |prompt, press| {
+            let _ = proxy.send_event(UserEvent::PromptPressed(prompt, press));
+        }
+    }) {
         Ok(prompt) => (Box::new(prompt), None),
         Err(e) => {
             notices.push(format!(
@@ -282,14 +395,8 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Resul
         }
     };
     let capture = LinuxCapture(Rc::new(RefCell::new(CaptureState {
-        window: None,
-        mode: Mode::Off,
-        portal: Rect::default(),
-        cursor: None,
-        inside: false,
-        inhibitor: None,
-        modifiers: ModifiersState::empty(),
-        escapes: VecDeque::new(),
+        portals: BTreeMap::new(),
+        escapes: SafetyExit::new(),
         router: InputRouter::new(),
         events: Vec::new(),
     })));
@@ -308,7 +415,6 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Resul
         capabilities,
         labels: Labels {
             confirm_key: "Return".into(),
-            hand_back_shortcut: "Control+Alt+Shift+Escape".into(),
         },
         hooks: Hooks { capture, prompts },
         notices,
@@ -332,9 +438,21 @@ pub(crate) fn window_attributes(attributes: WindowAttributes) -> WindowAttribute
 
 pub(crate) fn prompt_created(_: &Window) {}
 
-/// VER-4: on Linux the layer-shell prompt takes no input. The user acknowledges
-/// in a different window of Telescreen.
-pub(crate) fn prompt_input(_: &Window, _: bool) {}
+/// A Wayland client cannot activate a different app (FLOW-26).
+pub(crate) type Frontmost = Option<()>;
+
+/// The native UI of this platform (ADR 0012).
+pub(crate) type NativeUi = telescreen_ui_linux::LinuxUi;
+pub(crate) use telescreen_ui_linux::UiEvent;
+
+/// VER-4, FLOW-26: the layer-shell prompt sets its input itself, and reports a
+/// press with `UserEvent::PromptPressed`. A normal window takes input.
+pub(crate) fn prompt_input(_: &Window, _: bool) -> Frontmost {
+    None
+}
+
+/// The compositor gives the keyboard focus back when the prompt goes away.
+pub(crate) fn restore_frontmost(_: Frontmost) {}
 
 fn button(button: MouseButton) -> Option<Button> {
     Some(match button {
@@ -363,20 +481,18 @@ impl Hooks {
             .unwrap_or_default()
     }
 
-    pub(crate) fn portal_created(&mut self, window: &Arc<Window>) {
+    pub(crate) fn portal_created(&mut self, portal: PortalId, window: &Arc<Window>) {
         let mut s = self.capture.0.borrow_mut();
-        s.window = Some(window.clone());
-        s.inside = false;
-        s.cursor = None;
-        s.router = InputRouter::new();
+        let state = s.portals.entry(portal).or_insert_with(PortalState::new);
+        state.window = Some(window.clone());
+        state.inside = false;
+        state.cursor = None;
     }
 
-    pub(crate) fn portal_closed(&mut self) {
+    pub(crate) fn portal_closed(&mut self, portal: PortalId) {
         let mut s = self.capture.0.borrow_mut();
-        s.inhibitor = None;
-        s.window = None;
-        s.mode = Mode::Off;
-        s.router = InputRouter::new();
+        s.portals.remove(&portal);
+        s.router.forget(portal);
     }
 
     /// Records native keyboard focus independently of the cursor (FLOW-22, UI-6).
@@ -384,89 +500,96 @@ impl Hooks {
     /// Wayland client cannot take the focus (FLOW-21).
     pub(crate) fn focus_portal(&mut self, _: &Window) {}
 
-    /// FLOW-26: not specified on Linux. A Wayland client cannot reliably find out
-    /// whether its window is shown.
+    /// FLOW-26: occlusion is not specified on Linux. A Wayland client cannot
+    /// reliably find out whether its window is shown. The window layer still
+    /// reports the fullscreen state of the portal (UI-3).
     pub(crate) fn reports_portal_visibility(&self) -> bool {
         false
     }
 
-    pub(crate) fn portal_hidden(&mut self, _: &Window, _: bool, _: bool) {}
+    pub(crate) fn portal_hidden(&mut self, _: PortalId, _: &Window, _: bool, _: bool) {}
 
-    pub(crate) fn portal_focus(&mut self, _: &Window, focused: bool, _: bool) {
-        self.capture.0.borrow_mut().portal_focus(focused);
+    /// A Wayland client cannot take the focus (FLOW-21).
+    pub(crate) fn reclaim_focus(&mut self, _: &[(PortalId, &Window)]) {}
+
+    pub(crate) fn portal_focus(&mut self, portal: PortalId, _: &Window, focused: bool, _: bool) {
+        self.capture.0.borrow_mut().portal_focus(portal, focused);
     }
 
     /// Returns true if the event is input of the capture, so the UI must not get it.
-    pub(crate) fn portal_window_event(&mut self, event: &WindowEvent, _: bool) -> bool {
+    pub(crate) fn portal_window_event(
+        &mut self,
+        portal: PortalId,
+        event: &WindowEvent,
+        _: bool,
+    ) -> bool {
         let mut s = self.capture.0.borrow_mut();
         match event {
-            WindowEvent::ModifiersChanged(modifiers) => {
-                s.modifiers = modifiers.state();
-                false
-            }
             WindowEvent::CursorMoved { position, .. } => {
-                let scale = s.window.as_ref().map_or(1.0, |w| w.scale_factor());
+                let Some(state) = s.portals.get_mut(&portal) else {
+                    return false;
+                };
+                let scale = state.window.as_ref().map_or(1.0, |w| w.scale_factor());
                 let logical = position.to_logical::<f64>(scale);
-                s.cursor = Some(Point {
+                state.cursor = Some(Point {
                     x: logical.x,
                     y: logical.y,
                 });
-                s.report_position();
+                s.report_position(portal);
                 false
             }
             WindowEvent::CursorEntered { .. } => {
-                s.set_inside(true);
+                s.set_inside(portal, true);
                 false
             }
             WindowEvent::CursorLeft { .. } => {
-                s.set_inside(false);
-                s.cursor = None;
+                s.set_inside(portal, false);
+                if let Some(state) = s.portals.get_mut(&portal) {
+                    state.cursor = None;
+                }
                 false
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let down = event.state == ElementState::Pressed;
                 let escape = event.physical_key == PhysicalKey::Code(KeyCode::Escape);
-                let release = ModifiersState::CONTROL | ModifiersState::ALT | ModifiersState::SHIFT;
-                if s.mode == Mode::Forwarding && escape && down && s.modifiers.contains(release) {
-                    // IN-7: never forwarded.
-                    s.stop(CapturedEvent::HandBackShortcut);
-                    return true;
-                }
                 let Some(code) = event
                     .physical_key
                     .to_scancode()
                     .and_then(|c| u16::try_from(c).ok())
                 else {
-                    return s.mode == Mode::Forwarding && s.router.keyboard_in_portal();
+                    return s.forwarding(portal) && s.router.keyboard() == Some(portal);
                 };
-                let forwarded = s.route(InputEvent::Key {
-                    key: Key(code),
-                    down,
-                });
-                if forwarded && escape && down && !event.repeat {
-                    let now = Instant::now();
-                    s.escapes.push_back(now);
-                    while s
-                        .escapes
-                        .front()
-                        .is_some_and(|t| now.duration_since(*t) > SAFETY_WINDOW)
-                    {
-                        s.escapes.pop_front();
-                    }
-                    if s.escapes.len() >= SAFETY_PRESSES {
-                        s.stop(CapturedEvent::SafetyExit);
-                    }
+                let forwarded = s.route(
+                    portal,
+                    InputEvent::Key {
+                        key: Key(code),
+                        down,
+                    },
+                );
+                // IN-8: count only while a portal forwards or waits for the
+                // confirmation (FLOW-21). winit makes the key repeats on
+                // Wayland and marks them with `repeat`: they do not count.
+                let waits_or_forwards = s.waits_or_forwards();
+                if escape
+                    && down
+                    && s.escapes
+                        .escape_down(Instant::now(), waits_or_forwards, event.repeat)
+                {
+                    s.stop_all(CapturedEvent::SafetyExit);
                 }
                 forwarded
             }
             WindowEvent::MouseInput {
                 state, button: b, ..
             } => match button(*b) {
-                Some(button) => s.route(InputEvent::Button {
-                    button,
-                    down: *state == ElementState::Pressed,
-                }),
-                None => s.forward_now(),
+                Some(button) => s.route(
+                    portal,
+                    InputEvent::Button {
+                        button,
+                        down: *state == ElementState::Pressed,
+                    },
+                ),
+                None => s.portals.get(&portal).is_some_and(PortalState::forward_now),
             },
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 // winit: positive is up or left. The wire is the opposite.
@@ -483,7 +606,7 @@ impl Hooks {
                         },
                     ),
                 };
-                s.route(InputEvent::Scroll { dx, dy, phase })
+                s.route(portal, InputEvent::Scroll { dx, dy, phase })
             }
             _ => false,
         }

@@ -14,11 +14,13 @@ pub mod semantic;
 pub mod yaml;
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Deserializer};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::ids::{ComputerId, DeviceId};
 
@@ -86,7 +88,9 @@ pub struct Computer {
     pub disabled_quirks: BTreeSet<Quirk>,
     pub endpoint: Endpoint,
     /// Keys are local aliases. They have no OS meaning.
-    pub devices: BTreeMap<String, Device>,
+    /// In the order of the config file (UI-18: the menu lists the displays
+    /// in this order).
+    pub devices: IndexMap<String, Device>,
 }
 
 /// The `clipboard` key of a computer (CLIP-1).
@@ -190,6 +194,10 @@ pub enum Driver {
     Command(Program),
     /// The built-in verifier (VER-5). Only in `verify`.
     Prompt,
+    /// The built-in display matcher. Only in `portal-match` and
+    /// `input-target`. A display matches when its metadata has each value of
+    /// `matches`, with the same JSON type.
+    Display { matches: Map<String, Value> },
     /// A namespaced extension driver, for example `lab.http`. This build has no
     /// extension drivers; the capability check reports them as unsupported.
     Extension { name: String, options: Value },
@@ -222,6 +230,8 @@ struct RawOperation {
     #[serde(default)]
     env: BTreeMap<String, String>,
     options: Option<Value>,
+    #[serde(rename = "match")]
+    matches: Option<Map<String, Value>>,
 }
 
 impl RawOperation {
@@ -247,6 +257,12 @@ impl RawOperation {
             "exec" => Driver::Exec(program(self.command)?),
             "command" => Driver::Command(program(self.command)?),
             "prompt" => Driver::Prompt,
+            "display" => Driver::Display {
+                matches: self
+                    .matches
+                    .filter(|matches| !matches.is_empty())
+                    .ok_or("the display driver needs a `match` with one key or more")?,
+            },
             _ => Driver::Extension {
                 options: self.options.unwrap_or(Value::Null),
                 name: self.driver,

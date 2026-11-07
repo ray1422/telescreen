@@ -27,6 +27,7 @@ case "$(uname -s)-$(uname -m)" in
     # The release profile keeps debug info for local builds. The archive does not need it.
     strip "$work/telescreen/telescreen"
     cp packaging/linux/dev.telescreen.Telescreen.desktop "$work/telescreen/"
+    cp assets/linux/telescreen.png "$work/telescreen/dev.telescreen.Telescreen.png"
     ;;
   *)
     echo "no release for $(uname -s) $(uname -m)" >&2
