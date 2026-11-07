@@ -57,14 +57,27 @@ cat >"$app/Contents/Info.plist" <<PLIST
   <string>Telescreen connects to your other computers on the local network to forward the keyboard and the mouse.</string>
   <key>NSBonjourServices</key>
   <array><string>_telescreen._udp</string></array>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>dev.telescreen.Telescreen</string>
+      <key>CFBundleURLSchemes</key><array><string>telescreen</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST
 identity=${TELESCREEN_SIGN_IDENTITY:-Telescreen Dev}
-if security find-identity -p codesigning | grep -qF "\"$identity\""; then
-  codesign --force --sign "$identity" "$app"
-else
+if ! security find-identity -p codesigning | grep -qF "\"$identity\""; then
   echo "no signing identity \"$identity\": ad-hoc signature" >&2
-  codesign --force --sign - "$app"
+  identity=-
 fi
+
+# The Control Center button (UI-10, spike 8).
+appex="$app/Contents/PlugIns/TelescreenControl.appex"
+scripts/make-macos-control.sh "$app" "$version" "$identity"
+codesign --force --sign "$identity" "$app"
+# A running extension answers with its old code.
+pkill -f "$appex/Contents/MacOS/TelescreenControl" || true
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f -R "$app"
 echo "built $app"

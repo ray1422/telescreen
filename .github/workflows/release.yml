@@ -74,6 +74,9 @@ jobs:
           security list-keychains -d user -s "$keychain" login.keychain
           rm "$RUNNER_TEMP/signing.p12"
       - run: scripts/package-release.sh dist
+        env:
+          # The App Intents metadata must come from the Xcode tool (spike 8).
+          TELESCREEN_REQUIRE_XCODE: "1"
       - uses: actions/upload-artifact@v4
         with:
           name: macos

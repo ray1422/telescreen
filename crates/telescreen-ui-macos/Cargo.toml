@@ -15,4 +15,4 @@ telescreen-view.workspace = true
 serde_json.workspace = true
 objc2.workspace = true
 objc2-foundation = { workspace = true, features = ["NSString", "NSArray", "NSGeometry", "NSNotification", "NSObject", "NSDictionary", "NSValue", "NSData"] }
-objc2-app-kit = { workspace = true, features = ["NSApplication", "NSWindow", "NSPanel", "NSView", "NSResponder", "NSColor", "NSGraphics", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSScreen", "NSImage", "NSRunningApplication"] }
+objc2-app-kit = { workspace = true, features = ["NSApplication", "NSWindow", "NSPanel", "NSView", "NSResponder", "NSColor", "NSGraphics", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSScreen", "NSImage", "NSRunningApplication", "NSEvent"] }

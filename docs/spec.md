@@ -164,7 +164,7 @@ Menu and entry points:
   - The text clipboard switch (CLIP-1), "Settings…", and "Quit Telescreen".
 - **UI-10** macOS entry points. Both can be on at the same time (user, 2026-11-06):
   - A status item. A setting turns it on and off.
-  - A Control Center button (a WidgetKit `ControlWidgetButton`). It opens the menu, which Telescreen draws itself. The user adds the button in Control Center; Telescreen cannot add it. From the Control Center button, the menu opens below the menu bar at the right edge of the screen with the pointer. From the status item, the menu opens below the status item (Claude decides, 2026-11-06).
+  - A Control Center button (a WidgetKit `ControlWidgetButton`). It opens the menu, which Telescreen draws itself. The user adds the button in Control Center; Telescreen cannot add it. From the Control Center button, the menu opens below the menu bar at the right edge of the screen with the pointer. From the status item, the menu opens below the status item (Claude decides, 2026-11-06). The button runs an App Intent in the extension. The intent opens the URL `telescreen://menu`, and Telescreen opens the menu when it gets this URL. If Telescreen does not run, macOS starts it first (spike 8). Telescreen ignores other `telescreen:` URLs.
   - The menu uses the system glass material.
 - **UI-11** Linux entry points:
   - KDE: a Plasma applet in the system tray (user, 2026-11-06: in the first version of the redesign). It reads the menu view model over D-Bus.

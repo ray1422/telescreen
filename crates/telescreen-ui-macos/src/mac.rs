@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
 use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSScreen, NSWindow};
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEvent, NSScreen, NSWindow};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSImage, NSPanel, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength, NSView, NSWindowCollectionBehavior, NSWindowDelegate,
@@ -33,6 +33,12 @@ unsafe extern "C" {
 /// `kCoreEventClass` ('aevt') and `kAEReopenApplication` ('rapp').
 const CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
 const REOPEN_APPLICATION: u32 = u32::from_be_bytes(*b"rapp");
+/// The Apple Event of an opened URL: `kInternetEventClass` and `kAEGetURL`
+/// ('GURL'), with the URL in `keyDirectObject` ('----').
+const GET_URL: u32 = u32::from_be_bytes(*b"GURL");
+const DIRECT_OBJECT: u32 = u32::from_be_bytes(*b"----");
+/// The URL of the Control Center button (UI-10, spike 8).
+const MENU_URL: &str = "telescreen://menu";
 
 /// What the user did in the native UI.
 #[derive(Debug, Clone, PartialEq)]
@@ -217,8 +223,44 @@ define_class!(
             // UI-15: a second start opens the main window of this instance.
             show_main();
         }
+
+        // SAFETY: the signature of an NSAppleEventManager handler.
+        #[unsafe(method(handleGetURL:withReplyEvent:))]
+        fn handle_get_url(&self, event: Option<&AnyObject>, _reply: Option<&AnyObject>) {
+            let url = event.and_then(|event| {
+                // SAFETY: an NSAppleEventDescriptor; both methods return nil or
+                // an autoreleased object.
+                unsafe {
+                    let param: *mut AnyObject =
+                        msg_send![event, paramDescriptorForKeyword: DIRECT_OBJECT];
+                    let text: *mut NSString = match param.as_ref() {
+                        Some(param) => msg_send![param, stringValue],
+                        None => std::ptr::null_mut(),
+                    };
+                    text.as_ref().map(NSString::to_string)
+                }
+            });
+            match url.as_deref() {
+                // UI-10: the Control Center button opens the menu.
+                Some(MENU_URL) => {
+                    ANCHOR.set(Anchor::PointerScreen);
+                    show();
+                }
+                other => eprintln!("telescreen: unknown URL {other:?}"),
+            }
+        }
     }
 );
+
+/// Where the menu panel opens (UI-10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    /// Below the status item.
+    StatusItem,
+    /// From the Control Center button: below the menu bar, at the right edge
+    /// of the screen with the pointer.
+    PointerScreen,
+}
 
 struct State {
     main: Retained<NSWindow>,
@@ -240,6 +282,7 @@ thread_local! {
     static PORTALS: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
     /// Telescreen minimized the main window (UI-13).
     static MINIMIZED: Cell<bool> = const { Cell::new(false) };
+    static ANCHOR: Cell<Anchor> = const { Cell::new(Anchor::StatusItem) };
     /// The session state of the status glyph (UI-17).
     static GLYPH: Cell<Glyph> = const { Cell::new(Glyph::Idle) };
 }
@@ -286,7 +329,7 @@ extern "C" fn on_event(json: *const c_char) {
     }
 }
 
-/// Puts the panel below the status item, at the size that SwiftUI wants (UI-10).
+/// Puts the panel at its anchor, at the size that SwiftUI wants (UI-10).
 fn place() {
     let Some(size) = SIZE.get() else { return };
     let Some(mtm) = MainThreadMarker::new() else {
@@ -297,22 +340,42 @@ fn place() {
             return;
         };
         let Some(state) = state.as_ref() else { return };
-        let Some(button) = state.item.button(mtm) else {
-            return;
+        let (visible, mut x, top) = match ANCHOR.get() {
+            Anchor::StatusItem => {
+                let Some(button) = state.item.button(mtm) else {
+                    return;
+                };
+                let Some(item_window) = button.window() else {
+                    return;
+                };
+                let anchor = item_window.frame();
+                let visible = item_window.screen().map(|screen| screen.visibleFrame());
+                (visible, anchor.origin.x, anchor.origin.y - 4.0)
+            }
+            Anchor::PointerScreen => {
+                let pointer = NSEvent::mouseLocation();
+                let screens = NSScreen::screens(mtm);
+                let screen = screens.iter().find(|screen| {
+                    let f = screen.frame();
+                    pointer.x >= f.origin.x
+                        && pointer.x < f.origin.x + f.size.width
+                        && pointer.y >= f.origin.y
+                        && pointer.y < f.origin.y + f.size.height
+                });
+                let Some(visible) = screen.or_else(|| screens.firstObject()).map(|s| s.visibleFrame())
+                else {
+                    return;
+                };
+                let top = visible.origin.y + visible.size.height - 4.0;
+                (Some(visible), f64::INFINITY, top)
+            }
         };
-        let Some(item_window) = button.window() else {
-            return;
-        };
-        let anchor = item_window.frame();
-        let mut x = anchor.origin.x;
-        if let Some(screen) = item_window.screen() {
-            let visible = screen.visibleFrame();
+        if let Some(visible) = visible {
             let right = visible.origin.x + visible.size.width - 8.0;
             if x + size.width > right {
                 x = right - size.width;
             }
         }
-        let top = anchor.origin.y - 4.0;
         let frame = NSRect::new(NSPoint::new(x, top - size.height), size);
         state.panel.setFrame_display(frame, true);
     });
@@ -330,6 +393,7 @@ fn hide() {
 }
 
 fn toggle() {
+    ANCHOR.set(Anchor::StatusItem);
     let visible = STATE.with(|state| {
         state
             .try_borrow()
@@ -516,6 +580,9 @@ impl MacUi {
             let _: () = msg_send![manager, setEventHandler: &*reopen,
                 andSelector: sel!(handleReopen:withReplyEvent:),
                 forEventClass: CORE_EVENT_CLASS, andEventID: REOPEN_APPLICATION];
+            let _: () = msg_send![manager, setEventHandler: &*reopen,
+                andSelector: sel!(handleGetURL:withReplyEvent:),
+                forEventClass: GET_URL, andEventID: GET_URL];
         }
         STATE.with_borrow_mut(|s| {
             *s = Some(State {

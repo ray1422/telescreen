@@ -138,3 +138,18 @@ Code: `spikes/control-center/`. `build.sh` compiles one Swift file with `swiftc`
 | Refetch | chronod reads the descriptors again only when `CFBundleVersion` changes, and an extension process that still runs answers with the old code. After a change: stop the extension process, increase the version, and run `lsregister` again. |
 | Custom SF Symbol | Not tested. It needs an asset catalog, and only Xcode has `actool`. |
 | Result | The Control Center button works: an extension with an own intent, the self-signed signature, and an app with a Rust main. A release build needs the Xcode tools for the App Intents metadata and for the asset catalog of the custom glyph (a macOS CI runner has Xcode). The app does not handle `telescreen://menu` yet (step f2). |
+
+### Spike 8, part 2: App Intents metadata in the build (2026-11-07)
+
+User decision: the hand-written metadata is a fallback; CI uses the metadata of the Xcode tool. `scripts/make-macos-control.sh` builds the extension. `TELESCREEN_REQUIRE_XCODE=1` (CI and release) makes the build fail when the tool is missing.
+
+The arguments come from the swift-build sources (swiftlang/swift-build, read 2026-11-07), not from a guess:
+
+- `Sources/SWBApplePlatform/Specs/AppIntentsMetadata.xcspec`: `appintentsmetadataprocessor --toolchain-dir $(TOOLCHAIN_DIR) --module-name $(SWIFT_MODULE_NAME) --sdk-root $(SDKROOT) --xcode-version $(XCODE_PRODUCT_BUILD_VERSION) --platform-family $(PLATFORM_FAMILY_NAME) --deployment-target …`, then the options `--bundle-identifier`, `--output` (the Resources folder of the product), `--target-triple` (one for each architecture), `--binary-file`, `--dependency-file` (the linker `-dependency_info` file), `--stringsdata-file`, `--source-file-list`, `--metadata-file-list`, `--static-metadata-file-list`, `--swift-const-vals-list`, and the default flags `--compile-time-extraction`, `--deployment-aware-processing`, `--no-app-shortcuts-localization`.
+- `Sources/SWBApplePlatform/AppIntentsMetadataCompiler.swift`: each file list has one path on each line.
+- `Sources/SWBCore/SpecImplementations/Tools/SwiftCompiler.swift`: swiftc gets `-emit-const-values` and `-Xfrontend -const-gather-protocols-file -Xfrontend <file>`, a JSON list of protocol names. The output is a `.swiftconstvalues` file.
+- `Sources/SWBApplePlatform/Plugin.swift`: the protocol names (`SWIFT_EMIT_CONST_VALUE_PROTOCOLS`): the App Intents protocols and `AppExtension`, `ExtensionPointDefining`.
+
+Checked with no Xcode: `swiftc -wmo -emit-const-values-path` with the protocol list writes a `.swiftconstvalues` file that names `TelescreenControl.OpenMenuIntent`. The call of `appintentsmetadataprocessor` itself is not tested here (no Xcode); the first CI run of the macOS job tests it. The script compares the `actions` of the generated file with the fallback and warns when they differ.
+
+`actool` for the custom SF Symbol: not done. Read its arguments from swift-build in the same way before the CI step.

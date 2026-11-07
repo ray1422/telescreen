@@ -24,3 +24,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - run: cargo test --workspace
+      # The bundle with the Control Center extension. The App Intents metadata
+      # must come from the Xcode tool, not from the fallback (spike 8).
+      - name: Build the app bundle
+        env:
+          TELESCREEN_REQUIRE_XCODE: "1"
+        run: scripts/make-macos-app.sh "$RUNNER_TEMP/app"
