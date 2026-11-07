@@ -14,7 +14,10 @@ Shape {
     // The superellipse exponent. 2 is a circle; larger values are more square.
     property real exponent: 4
 
-    preferredRendererType: Shape.CurveRenderer
+    // The curve renderer (Qt 6.6) antialiases the outline. Qt 6.4 has no such
+    // property, and a binding to an unknown property stops the load.
+    Component.onCompleted: if (root.preferredRendererType !== undefined)
+        root.preferredRendererType = Shape.CurveRenderer
 
     function outline(w, h, r, p, inset) {
         const x = inset, y = inset

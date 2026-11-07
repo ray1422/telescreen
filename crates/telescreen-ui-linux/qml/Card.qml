@@ -8,6 +8,8 @@ Item {
     id: root
 
     default property alias rows: column.data
+    // Kirigami.Units.cornerRadius is from recent Kirigami versions; older versions have none.
+    readonly property real radius: Kirigami.Units.cornerRadius ?? Kirigami.Units.smallSpacing
 
     Layout.fillWidth: true
     implicitHeight: column.implicitHeight
@@ -18,12 +20,12 @@ Item {
     G2Rect {
         anchors.fill: parent
         anchors.margins: -1
-        radius: Kirigami.Units.cornerRadius + 1
+        radius: root.radius + 1
         color: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, 0.12)
     }
     G2Rect {
         anchors.fill: parent
-        radius: Kirigami.Units.cornerRadius
+        radius: root.radius
         color: Kirigami.Theme.backgroundColor
     }
     ColumnLayout {
