@@ -748,15 +748,12 @@ impl Controller {
         self.search_deadline.is_some() && self.discovery_enabled(peer)
     }
 
-    /// True if a candidate of the portal has no connection and can be found.
+    /// True if a candidate of a display has no connection and can be found.
     fn candidate_to_search(&self) -> bool {
-        self.portal_device().is_some_and(|device| {
-            routes::candidates(&self.config, &device)
-                .iter()
-                .any(|route| {
-                    !self.connected.contains(route.target) && self.discovery_enabled(route.target)
-                })
-        })
+        self.display_cache
+            .iter()
+            .flat_map(|display| self.display_peers(&display.token))
+            .any(|peer| !self.connected.contains(&peer) && self.discovery_enabled(&peer))
     }
 
     fn start_search(&mut self) {
@@ -2622,13 +2619,7 @@ impl Controller {
                 self.clipboard.set_enabled(on);
                 self.update_clipboard();
             }
-            Intent::Refresh => {
-                self.dial_candidates();
-                // UI-18: the menu evaluates again only after its first evaluation.
-                if self.display_evaluation.is_some() {
-                    self.evaluate_displays();
-                }
-            }
+            Intent::Refresh { display } => self.refresh_display(&display),
             Intent::AllowDiscovery => {
                 if self.discovery_enabled(&self.local) {
                     if self.discovery_deadline.is_some() {

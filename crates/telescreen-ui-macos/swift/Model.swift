@@ -43,7 +43,10 @@ struct MenuDisplay: Decodable, Equatable, Identifiable {
     let name: String
     let matching: Tagged
     let devices: [MenuDevice]
+    let canRefresh: Bool
     var id: String { token }
+    /// The display has candidates, so it shows "Refresh" (NET-10, mockup 81).
+    var hasCandidates: Bool { devices.contains { !$0.candidates.isEmpty } }
 }
 
 struct MenuDevice: Decodable, Equatable, Identifiable {

@@ -41,6 +41,7 @@ fn menu() -> MenuScreen {
             token: DisplayToken::from("lg"),
             name: "LG".into(),
             matching: DisplayMatching::Done,
+            can_refresh: true,
             devices: vec![MenuDevice {
                 device: DeviceId::from("shared-lg"),
                 alias: "Desktop".into(),
@@ -99,6 +100,7 @@ fn ui18_the_menu_json_shape() {
                 "token": "lg",
                 "name": "LG",
                 "matching": {"kind": "done"},
+                "can_refresh": true,
                 "devices": [{
                     "device": "shared-lg",
                     "alias": "Desktop",
@@ -136,7 +138,7 @@ fn ui18_each_intent_round_trips_as_json() {
     let intents = [
         Intent::DeviceIsBack { device: dev() },
         Intent::SetClipboard { on: true },
-        Intent::Refresh,
+        Intent::Refresh { display: lg() },
         Intent::AllowDiscovery,
         Intent::StopDiscovery,
         Intent::EndSession,

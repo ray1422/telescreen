@@ -305,7 +305,19 @@ extern "C" fn on_event(json: *const c_char) {
     if let Some(intent) = value.get("intent") {
         match serde_json::from_value::<Intent>(intent.clone()) {
             Ok(intent) => {
-                hide();
+                // UI-9: an action that only changes what the menu shows keeps
+                // the menu open, so that the user sees the result.
+                let stays = matches!(
+                    intent,
+                    Intent::Refresh { .. }
+                        | Intent::SetClipboard { .. }
+                        | Intent::AllowDiscovery
+                        | Intent::StopDiscovery
+                        | Intent::DeviceIsBack { .. }
+                );
+                if !stays {
+                    hide();
+                }
                 emit(UiEvent::Intent(intent));
             }
             Err(e) => eprintln!("telescreen: bad intent {intent}: {e}"),

@@ -147,7 +147,6 @@ fn parse_intent(value: &Value) -> Result<Intent, DebugError> {
     }
     if let Some(name) = value.as_str() {
         return match name {
-            "Refresh" => Ok(Intent::Refresh),
             "AllowDiscovery" => Ok(Intent::AllowDiscovery),
             "StopDiscovery" => Ok(Intent::StopDiscovery),
             "EndSession" => Ok(Intent::EndSession),

@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
+use telescreen_core::config::Device;
 use telescreen_core::driver::{DeviceRef, OperationKind, Outcome, PortalInfo, Request};
 use telescreen_core::ids::{ComputerId, DisplayToken};
 use telescreen_core::platform::DisplayInfo;
@@ -147,6 +148,50 @@ impl Controller {
         }
     }
 
+    /// The candidates of the devices on a display: the `portal-match` result
+    /// of the display, and the device of a portal on it.
+    pub(super) fn display_peers(&self, token: &DisplayToken) -> BTreeSet<ComputerId> {
+        let mut devices: Vec<Device> = Vec::new();
+        if let Some(result) = self
+            .display_evaluation
+            .as_ref()
+            .and_then(|e| e.displays.get(token))
+            .filter(|r| r.pending == 0 && r.error.is_none())
+        {
+            devices.extend(
+                self.local_devices()
+                    .into_iter()
+                    .filter(|(alias, _)| result.matched.contains(alias))
+                    .map(|(_, device)| device),
+            );
+        }
+        if self
+            .portal
+            .as_ref()
+            .is_some_and(|p| &p.display.token == token)
+            && let Some(device) = self.portal_device()
+        {
+            devices.push(device);
+        }
+        devices
+            .iter()
+            .flat_map(|device| routes::candidates(&self.config, device))
+            .map(|route| route.target.clone())
+            .collect()
+    }
+
+    /// "Refresh" of a display (NET-10): dial each candidate of the display that
+    /// has no connection and no running dial, and search (NET-15). It does not
+    /// run `portal-match` again (user, 2026-11-07).
+    pub(super) fn refresh_display(&mut self, token: &DisplayToken) {
+        for peer in self.display_peers(token) {
+            if !self.connected.contains(&peer) && !self.dialing.contains(&peer) {
+                self.dial_peer(peer);
+            }
+        }
+        self.start_search();
+    }
+
     /// Replaces the trust state of the main window (UI-13). The app reads the
     /// local trust list.
     pub fn set_trusted(&mut self, trusted: BTreeSet<ComputerId>) {
@@ -267,6 +312,10 @@ impl Controller {
                     name: display_name(display),
                     matching,
                     devices,
+                    can_refresh: self
+                        .display_peers(&display.token)
+                        .iter()
+                        .any(|peer| self.peer_status(peer) == "offline"),
                 })
             })
             .collect()

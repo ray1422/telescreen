@@ -2466,7 +2466,9 @@ fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
         (screen.candidates[0].unavailable.clone(), screen.can_refresh)
     };
     assert_eq!(candidate(&w), (None, false), "connected");
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w), 0, "a connected candidate needs no dial");
 
     w.mac.controller.on_net(
@@ -2479,10 +2481,14 @@ fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
     assert_eq!(candidate(&w), (Some("offline".into()), true));
     assert_eq!(dials(&w), 0, "no automatic dial");
 
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w), 1);
     assert_eq!(candidate(&w), (Some("connecting".into()), false));
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w), 1, "one dial at a time");
 
     w.mac.controller.on_net(
@@ -2495,7 +2501,9 @@ fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
     assert_eq!(candidate(&w), (Some("offline".into()), true));
     w.mac.log.borrow_mut().net.clear();
 
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w), 1, "the user can try again");
     w.pump();
     assert_eq!(candidate(&w), (None, false));
@@ -2504,7 +2512,9 @@ fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
 #[test]
 fn net10_refresh_without_a_portal_does_not_dial() {
     let mut w = World::new();
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert!(w.mac.log.borrow().net.is_empty());
 }
 
@@ -2625,7 +2635,9 @@ fn net11_a_dial_has_all_hosts_in_sequence() {
         endpoint_of(config, PC1).hosts = vec!["a.test".into(), "b.test".into()];
     });
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(
         dials(&w),
         [vec![dial_target("a.test"), dial_target("b.test")]]
@@ -2636,7 +2648,9 @@ fn net11_a_dial_has_all_hosts_in_sequence() {
 fn net15_refresh_with_no_discovery_key_does_not_search() {
     let mut w = World::new();
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert!(discovery_calls(&w).is_empty());
     assert_eq!(status(&w), Some("connecting".into()));
 }
@@ -2674,13 +2688,17 @@ fn net15_a_portal_with_no_discovery_candidate_does_not_search() {
 fn net15_refresh_during_a_dial_starts_a_search() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac.log.borrow_mut().net.clear();
     w.mac.controller.tick(w.now + Duration::from_secs(31));
     assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
     assert_eq!(status(&w), Some("connecting".into()));
     assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert!(dials(&w).is_empty(), "one dial at a time");
     assert_eq!(discovery_calls(&w), ["search", "stop_search", "search"]);
 }
@@ -2689,7 +2707,9 @@ fn net15_refresh_during_a_dial_starts_a_search() {
 fn net10_refresh_is_shown_but_not_available_during_a_dial_with_no_discovery() {
     let mut w = World::new();
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     let screen = w.mac.controller.portal_screen().unwrap();
     assert!(screen.show_refresh);
     assert!(!screen.can_refresh);
@@ -2702,12 +2722,16 @@ fn net15_refresh_searches_for_30_seconds_and_the_candidate_shows_it() {
     assert_eq!(status(&w), Some("offline".into()));
     assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
 
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(discovery_calls(&w), ["search"]);
     assert!(dials(&w).is_empty(), "no host and no known address");
     assert_eq!(status(&w), Some("searching".into()));
     assert!(!w.mac.controller.portal_screen().unwrap().can_refresh);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(discovery_calls(&w), ["search"], "one search at a time");
 
     w.mac.controller.tick(w.now + Duration::from_secs(29));
@@ -2722,7 +2746,9 @@ fn net15_refresh_searches_for_30_seconds_and_the_candidate_shows_it() {
 fn net16_a_result_dials_the_found_address_first() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     fail_dial(&mut w);
     w.mac
         .controller
@@ -2738,7 +2764,9 @@ fn net16_a_result_dials_the_found_address_first() {
 fn net16_a_result_during_a_dial_joins_its_race() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac.log.borrow_mut().net.clear();
     w.mac
         .controller
@@ -2754,7 +2782,9 @@ fn net16_a_result_during_a_dial_joins_its_race() {
 fn net16_a_lost_connection_does_not_dial_again() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac
         .controller
         .on_discovered(ComputerId::from(PC1), vec![dial_target("192.168.0.9")]);
@@ -2781,7 +2811,9 @@ fn net16_a_new_result_replaces_the_previous_one_and_later_dials_use_it() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
     let pc1 = ComputerId::from(PC1);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     fail_dial(&mut w);
     w.mac
         .controller
@@ -2792,7 +2824,9 @@ fn net16_a_new_result_replaces_the_previous_one_and_later_dials_use_it() {
         .on_discovered(pc1, vec![dial_target("192.168.0.9")]);
     fail_dial(&mut w);
     w.mac.controller.tick(w.now + Duration::from_secs(31));
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(
         dials(&w),
         [vec![dial_target("192.168.0.9"), dial_target("pc1.test")]]
@@ -2826,7 +2860,9 @@ fn net16_a_result_that_is_not_an_offline_candidate_does_not_dial() {
 fn net15_closing_the_portal_stops_the_search() {
     let mut w = mdns_world(&[]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac.controller.close_portal(EndReason::SourceClosed);
     assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
 }
@@ -2836,7 +2872,9 @@ fn net12_ac48_a_search_error_gives_a_notice_and_the_dial_still_runs() {
     let mut w = mdns_world(&["pc1.test"]);
     offline_portal(&mut w);
     w.mac.log.borrow_mut().discovery_fails = true;
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     assert_eq!(dials(&w).len(), 1);
     assert_eq!(status(&w), Some("connecting".into()));
     assert!(
@@ -2853,7 +2891,9 @@ fn net12_ac48_a_search_error_gives_a_notice_and_the_dial_still_runs() {
 fn net12_a_search_that_stops_with_an_error_ends_the_searching_state() {
     let mut w = mdns_world(&[]);
     offline_portal(&mut w);
-    w.mac.controller.on_intent(Intent::Refresh);
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
     w.mac.controller.on_discovery_failed("gone".into());
     assert_eq!(status(&w), Some("offline".into()));
     assert!(
@@ -3617,11 +3657,59 @@ fn ui18_a_stale_portal_match_result_is_dropped() {
 }
 
 #[test]
-fn ui18_refresh_evaluates_again_only_after_the_first_evaluation() {
+fn net10_ui18_refresh_of_a_display_dials_its_offline_candidates() {
     let mut w = evaluated();
-    assert!(w.mac.log.borrow().jobs.is_empty());
-    w.mac.controller.on_intent(Intent::Refresh);
-    assert!(!w.mac.log.borrow().jobs.is_empty());
+    let pc1 = ComputerId::from("pc1");
+    let dials = |w: &World| {
+        w.mac
+            .log
+            .borrow()
+            .net
+            .iter()
+            .filter(|c| matches!(c, NetCommand::Dial { .. }))
+            .count()
+    };
+    let lg_display = |w: &World| {
+        w.mac
+            .controller
+            .menu_screen()
+            .displays
+            .into_iter()
+            .find(|d| d.token == lg())
+            .unwrap()
+    };
+    assert!(!lg_display(&w).can_refresh, "connected");
+    w.mac.controller.on_net(
+        NetEvent::Disconnected {
+            peer: pc1.clone(),
+            reason: "test".into(),
+        },
+        w.now,
+    );
+    assert!(lg_display(&w).can_refresh);
+    w.mac.log.borrow_mut().net.clear();
+
+    // A display with no candidate has nothing to dial.
+    w.mac.controller.on_intent(Intent::Refresh {
+        display: DisplayToken::from("builtin"),
+    });
+    assert_eq!(dials(&w), 0);
+
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
+    assert_eq!(dials(&w), 1, "no portal is necessary (ACT-5)");
+    assert!(
+        w.mac.log.borrow().jobs.is_empty(),
+        "no portal-match again (user, 2026-11-07)"
+    );
+    let display = lg_display(&w);
+    assert!(!display.can_refresh, "the dial runs");
+    assert_eq!(display.devices[0].candidates[0].status, "connecting");
+    w.mac
+        .controller
+        .on_intent(Intent::Refresh { display: lg() });
+    assert_eq!(dials(&w), 1, "one dial at a time");
 }
 
 #[test]

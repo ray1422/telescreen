@@ -31,7 +31,7 @@ An invalid request gets `{"ok":false,"error":<text>}`.
 
 A window is `{"role":"control"|"portal"|"prompt","monitor":<display token or null>,"fullscreen":<bool>,"focused":<bool>,"position":[x,y] or null,"size":[w,h]}`. Position and size are logical pixels. Wayland does not report the position.
 
-An intent is the JSON form of the native UI (UI-18), for example `{"kind":"switch_and_control","display":<display token>,"device":<device id>,"target":<computer id>}`, or one of: `"Refresh"`, `"AllowDiscovery"`, `"StopDiscovery"`, `"EndSession"`, `{"HandBack":{"session":<id>}}`, `{"StopSession":{"session":<id>}}` ("Disconnect"), `{"ControlFromHere":{"session":<id>}}`, `{"SetClipboard":{"on":<bool>}}`, `{"DeviceIsBack":{"device":<device id>}}`.
+An intent is the JSON form of the native UI (UI-18), for example `{"kind":"switch_and_control","display":<display token>,"device":<device id>,"target":<computer id>}`, or one of: `"AllowDiscovery"`, `"StopDiscovery"`, `"EndSession"`, `{"HandBack":{"session":<id>}}`, `{"StopSession":{"session":<id>}}` ("Disconnect"), `{"ControlFromHere":{"session":<id>}}`, `{"SetClipboard":{"on":<bool>}}`, `{"DeviceIsBack":{"device":<device id>}}`.
 
 Example with `socat`:
 

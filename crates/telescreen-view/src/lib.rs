@@ -221,8 +221,9 @@ pub enum Intent {
     DeviceIsBack { device: DeviceId },
     /// Changes the text clipboard switch for this run (CLIP-1).
     SetClipboard { on: bool },
-    /// Dial each offline candidate of the portal again (NET-10), and search (NET-15).
-    Refresh,
+    /// Dial each offline candidate of the display one time (NET-10), and
+    /// search (NET-15). It does not run `portal-match` again.
+    Refresh { display: DisplayToken },
     /// Make this computer discoverable for 10 minutes (NET-14).
     AllowDiscovery,
     /// Stop "Allow discovery" before the end (NET-14).
@@ -369,6 +370,9 @@ pub struct MenuDisplay {
     pub matching: DisplayMatching,
     /// The local devices that match this display, each with its candidates.
     pub devices: Vec<MenuDevice>,
+    /// True if "Refresh" can start a dial or a search: a candidate of the
+    /// display is offline (NET-10).
+    pub can_refresh: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

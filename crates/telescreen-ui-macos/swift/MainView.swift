@@ -288,9 +288,17 @@ private struct DisplayGroup: View {
     var body: some View {
         let state = displayStateText(display, screen: screen).map { $0.prefix(1).uppercased() + $0.dropFirst() }
         Card(display.name) {
-            if let state {
-                Text(state).font(.system(size: 12)).foregroundStyle(.tertiary)
+            HStack(spacing: 6) {
+                if let state {
+                    Text(state).font(.system(size: 12)).foregroundStyle(.tertiary)
+                }
+                if display.hasCandidates {
+                    // The title row is 22 pt high, with 6 pt at the right (mockup 81).
+                    RefreshButton(display: display, size: 22, corner: 6)
+                        .padding(.trailing, -8)
+                }
             }
+            .frame(height: 22)
         } content: {
             switch display.matching.kind {
             case "evaluating":

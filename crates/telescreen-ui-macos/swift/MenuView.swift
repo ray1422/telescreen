@@ -366,10 +366,22 @@ private struct DisplaySection: View {
             device.candidates.map { (device, $0) }
         }
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(menuSecondary)
-                .padding(.top, first ? 6 : 10)
-                .padding(.horizontal, 8)
-                .padding(.bottom, candidates.isEmpty ? 2 : 4)
+            if display.hasCandidates {
+                HStack(spacing: 6) {
+                    Text(title).font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(menuSecondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    RefreshButton(display: display, size: 24, corner: 7)
+                }
+                .padding(.top, first ? 2 : 6)
+                .padding(.leading, 8)
+                .padding(.trailing, 4)
+            } else {
+                Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(menuSecondary)
+                    .padding(.top, first ? 6 : 10)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, candidates.isEmpty ? 2 : 4)
+            }
             switch display.matching.kind {
             case "evaluating":
                 note("Checking the display…")
@@ -396,6 +408,39 @@ private struct DisplaySection: View {
                 }
             }
         }
+    }
+}
+
+/// "Refresh" of a display (NET-10): dials its offline candidates. It always
+/// shows; it is dim and disabled when nothing is offline.
+struct RefreshButton: View {
+    let display: MenuDisplay
+    let size: CGFloat
+    let corner: CGFloat
+    @StateObject private var hover = Hover()
+
+    var body: some View {
+        Button {
+            sendIntent(["kind": "refresh", "display": display.token])
+        } label: {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.primary.opacity(0.85))
+                .frame(width: size, height: size)
+                .background {
+                    if hover.on && display.canRefresh {
+                        RoundedRectangle(cornerRadius: corner, style: .continuous)
+                            .fill(.primary.opacity(0.12))
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!display.canRefresh)
+        .opacity(display.canRefresh ? 1 : 0.35)
+        .onHover { hover.on = $0 }
+        .help("Refresh")
+        .accessibilityLabel("Refresh \(display.name)")
     }
 }
 

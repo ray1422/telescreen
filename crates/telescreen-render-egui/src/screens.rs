@@ -82,7 +82,20 @@ pub(crate) fn control(ui: &mut egui::Ui, screen: &ControlScreen) -> Vec<Intent> 
         // ACT-1, ACT-5: each action names the display, the device, and the target.
         for display in &screen.displays {
             ui.push_id(&display.token, |ui| {
-                ui.heading(&display.name);
+                ui.horizontal(|ui| {
+                    ui.heading(&display.name);
+                    // NET-10: dial the offline candidates of this display.
+                    let has_candidates = display.devices.iter().any(|d| !d.candidates.is_empty());
+                    if has_candidates
+                        && ui
+                            .add_enabled(display.can_refresh, egui::Button::new("Refresh"))
+                            .clicked()
+                    {
+                        intents.push(Intent::Refresh {
+                            display: display.token.clone(),
+                        });
+                    }
+                });
                 match &display.matching {
                     DisplayMatching::Evaluating => {
                         ui.label("Checking this display…");
@@ -333,12 +346,14 @@ mod tests {
                         name: "Display".into(),
                         matching: DisplayMatching::Done,
                         devices: Vec::new(),
+                        can_refresh: false,
                     },
                     MenuDisplay {
                         token: "evaluating".into(),
                         name: "Display".into(),
                         matching: DisplayMatching::Evaluating,
                         devices: Vec::new(),
+                        can_refresh: false,
                     },
                     MenuDisplay {
                         token: "failed".into(),
@@ -347,11 +362,13 @@ mod tests {
                             error: "no EDID".into(),
                         },
                         devices: Vec::new(),
+                        can_refresh: false,
                     },
                     MenuDisplay {
                         token: "shared".into(),
                         name: "Display".into(),
                         matching: DisplayMatching::Done,
+                        can_refresh: true,
                         devices: vec![
                             MenuDevice {
                                 device: "no-route".into(),
