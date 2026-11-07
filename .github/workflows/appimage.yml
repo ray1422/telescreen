@@ -1,0 +1,89 @@
+# Build the Linux AppImage on AlmaLinux 9 (glibc 2.34), then start it on older
+# and newer distributions (packaging/appimage/build.sh). The release does not
+# use it yet.
+name: appimage
+
+on:
+  pull_request:
+    paths:
+      - packaging/appimage/**
+      - .github/workflows/appimage.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: almalinux:9
+    strategy:
+      fail-fast: false
+      matrix:
+        # app: the telescreen binary. preview: the QML preview with the bundled Qt and Kirigami.
+        mode: [app, preview]
+    steps:
+      - run: |
+          dnf -y install epel-release dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf -y --setopt=install_weak_deps=False install git gcc gcc-c++ cmake ninja-build python3-pip gettext \
+            xz bzip2 file findutils which binutils patchelf desktop-file-utils pkgconf-pkg-config \
+            zlib-devel bzip2-devel xz-devel libzstd-devel openssl-devel hunspell-devel \
+            mesa-libGL-devel mesa-libEGL-devel libxkbcommon-devel libxkbcommon-x11-devel wayland-devel \
+            fontconfig-devel freetype-devel dbus-devel libX11-devel libxcb-devel \
+            xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-cursor
+      - uses: actions/checkout@v4
+      - if: matrix.mode == 'app'
+        run: |
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      # Qt, the KDE Frameworks, and linuxdeploy. Save them also after a
+      # failure, so that the next run continues from the first part that failed.
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/appimage
+          key: appimage-alma9-${{ hashFiles('packaging/appimage/build.sh') }}-${{ github.run_id }}
+          restore-keys: |
+            appimage-alma9-${{ hashFiles('packaging/appimage/build.sh') }}-
+            appimage-alma9-
+      - run: sh packaging/appimage/build.sh ${{ matrix.mode == 'preview' && '--preview' || '' }}
+      - uses: actions/cache/save@v4
+        if: always() && matrix.mode == 'preview'
+        with:
+          path: target/appimage
+          key: appimage-alma9-${{ hashFiles('packaging/appimage/build.sh') }}-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage-${{ matrix.mode }}
+          path: target/dist/*.AppImage
+
+  start:
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:22.04", "ubuntu:24.04", "debian:12", "fedora:43"]
+    container: ${{ matrix.image }}
+    steps:
+      # Only the libraries that the AppImage expects from the host, each one by
+      # name, with no recommended or weak dependencies.
+      - run: |
+          if command -v apt-get >/dev/null; then
+            apt-get update
+            apt-get install -y --no-install-recommends libgl1 libegl1 libopengl0 libfontconfig1 libfreetype6 \
+              fonts-dejavu-core libxkbcommon0 libdbus-1-3 libglib2.0-0
+          else
+            dnf -y --setopt=install_weak_deps=False install mesa-libGL mesa-libEGL libglvnd-opengl fontconfig \
+              freetype dejavu-sans-fonts libxkbcommon dbus-libs glib2
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: appimage-*
+          merge-multiple: true
+      - run: |
+          chmod +x ./*.AppImage
+          ./Telescreen-x86_64.AppImage --appimage-extract-and-run --version
+          QT_QPA_PLATFORM=offscreen timeout 60 ./Telescreen-preview-x86_64.AppImage --appimage-extract-and-run \
+            fixtures/main-idle.json "$PWD/preview.png"
+          ls -l preview.png
