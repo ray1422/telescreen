@@ -11,7 +11,13 @@
 # AppIntentsMetadataCompiler.swift, SwiftCompiler.swift). Without Xcode, it
 # copies the hand-written fallback and prints a warning.
 #
-# TELESCREEN_REQUIRE_XCODE=1 (CI): fail if the Xcode tool is not available.
+# The button shows the custom SF Symbol of Assets.xcassets (tools/make_symbol.py).
+# With Xcode, actool compiles the catalog, with the arguments of swift-build
+# (AssetCatalogCompiler.xcspec, AssetCatalogCompiler.swift,
+# InterfaceBuilderShared.swift). Without Xcode, the button shows the system
+# symbol "display".
+#
+# TELESCREEN_REQUIRE_XCODE=1 (CI): fail if the Xcode tools are not available.
 set -eu
 
 app=$1
@@ -30,12 +36,36 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 processor=$(xcrun --find appintentsmetadataprocessor 2>/dev/null || true)
-if [ -z "$processor" ] && [ "${TELESCREEN_REQUIRE_XCODE:-}" = 1 ]; then
-  echo "TELESCREEN_REQUIRE_XCODE=1, but appintentsmetadataprocessor is not available (no Xcode)" >&2
+actool=$(xcrun --find actool 2>/dev/null || true)
+if { [ -z "$processor" ] || [ -z "$actool" ]; } && [ "${TELESCREEN_REQUIRE_XCODE:-}" = 1 ]; then
+  echo "TELESCREEN_REQUIRE_XCODE=1, but appintentsmetadataprocessor or actool is not available (no Xcode)" >&2
   exit 1
 fi
 
 mkdir -p "$appex/Contents/MacOS" "$appex/Contents/Resources"
+
+# Compile the catalog before swiftc: TELESCREEN_SYMBOL selects the symbol.
+symbol=
+if [ -n "$actool" ]; then
+  "$actool" \
+    --output-format human-readable-text --notices --warnings \
+    --export-dependency-info "$work/assetcatalog_dependencies" \
+    --output-partial-info-plist "$work/assetcatalog_generated_info.plist" \
+    --enable-on-demand-resources NO \
+    --development-region en \
+    --target-device mac \
+    --minimum-deployment-target "$deployment" \
+    --platform macosx \
+    --compile "$appex/Contents/Resources" \
+    "$control/Assets.xcassets"
+  if [ ! -f "$appex/Contents/Resources/Assets.car" ]; then
+    echo "actool wrote no Assets.car" >&2
+    exit 1
+  fi
+  symbol="-D TELESCREEN_SYMBOL"
+else
+  echo "warning: no Xcode: the Control Center button shows the system symbol" >&2
+fi
 
 # The protocols whose conformances swiftc writes to the const values file
 # (SWIFT_EMIT_CONST_VALUE_PROTOCOLS of swift-build, Plugin.swift).
@@ -45,8 +75,9 @@ JSON
 
 # The extension must start at _NSExtensionMain. The const values and the
 # linker dependency info are inputs of appintentsmetadataprocessor.
+# shellcheck disable=SC2086 # $symbol is empty or two words.
 swiftc -O -wmo -parse-as-library -application-extension -module-name "$module" \
-  -target "$triple" \
+  -target "$triple" $symbol \
   -Xlinker -e -Xlinker _NSExtensionMain \
   -Xlinker -dependency_info -Xlinker "$work/dependency_info.dat" \
   -emit-const-values-path "$work/$module.swiftconstvalues" \

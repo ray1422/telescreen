@@ -30,9 +30,14 @@ struct OpenMenuIntent: AppIntent {
 struct TelescreenControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "dev.telescreen.Telescreen.Control.menu") {
-            // UI-17: a placeholder until the custom SF Symbol exists.
+            // UI-17: the custom SF Symbol needs actool (Xcode). Without it,
+            // the button shows a system symbol.
             ControlWidgetButton(action: OpenMenuIntent()) {
-                Label("Telescreen", systemImage: "display")
+                #if TELESCREEN_SYMBOL
+                    Label("Telescreen", image: "telescreen.display")
+                #else
+                    Label("Telescreen", systemImage: "display")
+                #endif
             }
         }
         .displayName("Telescreen")
