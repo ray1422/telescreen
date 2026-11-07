@@ -85,7 +85,13 @@ export QMAKE=$QT/bin/qmake
 export LD_LIBRARY_PATH=$LIBDIR:$QT/lib
 export QML_SOURCES_PATHS=$ROOT/crates/telescreen-ui-linux/qml
 export QML_MODULES_PATHS=$LIBDIR/qml
-export EXTRA_PLATFORM_PLUGINS="libqwayland-generic.so;libqwayland-egl.so;libqoffscreen.so"
+# The names of the Wayland platform plugins change between Qt versions
+# (6.8: libqwayland-generic.so and libqwayland-egl.so; 6.12: libqwayland.so).
+EXTRA_PLATFORM_PLUGINS=libqoffscreen.so
+for plugin in "$QT"/plugins/platforms/libqwayland*.so; do
+    EXTRA_PLATFORM_PLUGINS="$EXTRA_PLATFORM_PLUGINS;$(basename "$plugin")"
+done
+export EXTRA_PLATFORM_PLUGINS
 export EXTRA_QT_MODULES="waylandclient;svg"
 export LDAI_OUTPUT=$OUT/Telescreen-preview-x86_64.AppImage
 ./linuxdeploy-x86_64.AppImage --appdir AppDir \
