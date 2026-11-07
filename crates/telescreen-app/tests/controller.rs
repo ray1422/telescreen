@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 use telescreen_app::controller::{
-    Controller, Job, JobId, JobOutput, JobPort, Labels, NetPort, Ports, VerifierId, VerifierPort,
+    AckOrigin, Controller, Job, JobId, JobOutput, JobPort, Labels, NetPort, Ports, VerifierId,
+    VerifierPort,
 };
 use telescreen_app::pointer_mailbox::ReceivedPointer;
 use telescreen_core::clipboard::{ClipboardChange, ClipboardItem};
@@ -28,7 +29,9 @@ use telescreen_core::session::source::HandoffResult;
 use telescreen_core::verifier::VerifierEvent;
 use telescreen_core::wire::{EndReason, HandBackOutcome, Message, PointerDatagram, RefuseReason};
 use telescreen_transport::{DialTarget, NetCommand, NetEvent};
-use telescreen_view::{Intent, Matching, PromptId, PromptPresenter, PromptScreen, SessionPhase};
+use telescreen_view::{
+    Intent, Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase,
+};
 
 /// The config of the tests. pc1 and the Mac verify with the `prompt` verifier.
 fn config() -> Config {
@@ -115,6 +118,8 @@ struct Log {
     pointer_on: Vec<(Option<String>, Normalized)>,
     prompts: Vec<String>,
     prompt_visible: bool,
+    /// The shown prompts: the id, the display, and the screen (VER-4, VER-8).
+    shown: Vec<(PromptId, DisplayToken, PromptScreen)>,
     /// The cursor positions on the prompt (FLOW-26).
     prompt_cursor: Vec<Option<Normalized>>,
     /// Peers of each `NetCommand::Close`.
@@ -322,7 +327,12 @@ impl VerifierPort for Verifiers {
 
 struct Prompt(Shared);
 impl PromptPresenter for Prompt {
-    fn show(&mut self, _: PromptId, _: &DisplayInfo, screen: &PromptScreen) -> Result<(), String> {
+    fn show(
+        &mut self,
+        prompt: PromptId,
+        display: &DisplayInfo,
+        screen: &PromptScreen,
+    ) -> Result<(), String> {
         let mut log = self.0.borrow_mut();
         log.prompts.push(format!(
             "{} | {}",
@@ -330,10 +340,15 @@ impl PromptPresenter for Prompt {
             screen.text.clone().unwrap_or_default()
         ));
         log.prompt_visible = true;
+        log.shown.retain(|(id, ..)| *id != prompt);
+        log.shown
+            .push((prompt, display.token.clone(), screen.clone()));
         Ok(())
     }
-    fn hide(&mut self, _: PromptId) {
-        self.0.borrow_mut().prompt_visible = false;
+    fn hide(&mut self, prompt: PromptId) {
+        let mut log = self.0.borrow_mut();
+        log.prompt_visible = false;
+        log.shown.retain(|(id, ..)| *id != prompt);
     }
     fn cursor(&mut self, _: PromptId, at: Option<Normalized>) {
         self.0.borrow_mut().prompt_cursor.push(at);
@@ -368,6 +383,26 @@ impl Peer {
             [portal] => portal,
             ref ids => panic!("expected one portal, got {ids:?}"),
         }
+    }
+
+    /// The screen of the one portal of this peer, or None with no portal.
+    fn screen(&self) -> Option<PortalScreen> {
+        if self.controller.portal_ids().is_empty() {
+            return None;
+        }
+        self.controller.portal_screen(self.portal())
+    }
+
+    /// True once when the window layer must focus the portal window (FLOW-22).
+    fn take_focus_request(&mut self) -> bool {
+        !self.controller.take_portal_focus_requests().is_empty()
+    }
+
+    /// The display of the next portal window request (FLOW-17, ACT-5).
+    fn take_window_request(&mut self) -> Option<DisplayToken> {
+        self.controller
+            .take_portal_window_request()
+            .map(|(_, token)| token)
     }
 }
 
@@ -613,6 +648,8 @@ impl World {
                                 .iter()
                                 .map(|d| d.token.clone())
                                 .find(|t| displays_of(&request.device.id).contains(&t.0.as_str()))
+                                // VER-8: two devices on one output.
+                                .or_else(|| request.displays.first().map(|d| d.token.clone()))
                                 .unwrap();
                             JobOutput::Operation(Ok(Outcome::Display(token)))
                         }
@@ -632,7 +669,7 @@ impl World {
     }
 
     fn phase(&self) -> Option<SessionPhase> {
-        Some(self.mac.controller.portal_screen()?.session?.phase)
+        Some(self.mac.screen()?.session?.phase)
     }
 
     /// ACT-5: the portal closed with its session, and a notice has the reason.
@@ -659,10 +696,15 @@ impl World {
         self.pump();
     }
 
-    fn advance_to_confirmation(&mut self) {
+    /// Returns the portal, which can close during the handoff.
+    fn advance_to_confirmation(&mut self) -> PortalId {
         self.open_portal();
-        self.mac.controller.start_handoff(ComputerId::from("pc1"));
+        let portal = self.mac.portal();
+        self.mac
+            .controller
+            .start_handoff(portal, ComputerId::from("pc1"));
         self.pump();
+        portal
     }
 
     fn advance_to_forwarding(&mut self) {
@@ -671,7 +713,7 @@ impl World {
     }
 
     fn advance_to_forwarding_from_confirmation(&mut self) {
-        assert!(self.mac.controller.acknowledge());
+        assert!(self.mac.controller.acknowledge(AckOrigin::Computer));
         self.mac
             .controller
             .on_captured(CapturedEvent::PointerEntered {
@@ -732,7 +774,7 @@ fn in14_the_target_multiplies_a_scroll_by_its_speed() {
 fn flow2_flow3_portal_match_and_candidates() {
     let mut w = World::new();
     w.open_portal();
-    let screen = w.mac.controller.portal_screen().unwrap();
+    let screen = w.mac.controller.portal_screen(w.mac.portal()).unwrap();
     assert!(matches!(screen.matching, Matching::Matched(ref d) if d.alias == "Desktop"));
     assert_eq!(screen.candidates.len(), 1, "pc2 has no route from the Mac");
     assert_eq!(screen.candidates[0].target, ComputerId::from("pc1"));
@@ -760,10 +802,12 @@ fn flow3_no_handoff_without_suppress() {
         },
     );
     w.open_portal();
-    let screen = w.mac.controller.portal_screen().unwrap();
+    let screen = w.mac.controller.portal_screen(w.mac.portal()).unwrap();
     let reason = screen.candidates[0].unavailable.clone().unwrap_or_default();
     assert!(reason.contains("suppress"), "unavailable: {reason:?}");
-    w.mac.controller.start_handoff(ComputerId::from("pc1"));
+    w.mac
+        .controller
+        .start_handoff(w.mac.portal(), ComputerId::from("pc1"));
     w.pump();
     assert_eq!(w.phase(), None, "no session starts");
 }
@@ -775,7 +819,7 @@ fn flow2_ac9_no_match_on_other_display() {
         .controller
         .open_portal(display("builtin", -1500.0, 1500.0));
     w.pump();
-    let screen = w.mac.controller.portal_screen().unwrap();
+    let screen = w.mac.controller.portal_screen(w.mac.portal()).unwrap();
     assert_eq!(screen.matching, Matching::NoMatch);
     assert!(screen.candidates.is_empty());
 }
@@ -804,7 +848,7 @@ fn flow7_ac3_prompt_with_hint_on_target() {
     let video = w
         .mac
         .controller
-        .portal_screen()
+        .portal_screen(w.mac.portal())
         .unwrap()
         .session
         .unwrap()
@@ -821,13 +865,21 @@ fn flow7_ac3_prompt_with_hint_on_target() {
 fn ac6_confirmation_needs_prompt_and_focus() {
     let mut w = World::new();
     w.open_portal();
-    assert!(!w.mac.controller.acknowledge(), "no session: a normal key");
-    w.mac.controller.start_handoff(ComputerId::from("pc1"));
+    assert!(
+        !w.mac.controller.acknowledge(AckOrigin::Computer),
+        "no session: a normal key"
+    );
+    w.mac
+        .controller
+        .start_handoff(w.mac.portal(), ComputerId::from("pc1"));
     w.pump();
-    w.mac.controller.set_portal_focus(false);
-    assert!(!w.mac.controller.acknowledge(), "no focus: a normal key");
-    w.mac.controller.set_portal_focus(true);
-    assert!(w.mac.controller.acknowledge());
+    w.mac.controller.set_portal_focus(w.mac.portal(), false);
+    assert!(
+        !w.mac.controller.acknowledge(AckOrigin::Computer),
+        "no focus: a normal key"
+    );
+    w.mac.controller.set_portal_focus(w.mac.portal(), true);
+    assert!(w.mac.controller.acknowledge(AckOrigin::Computer));
 }
 
 #[test]
@@ -851,7 +903,7 @@ fn flow10_ac5_forwarding_after_confirmation() {
     let video = w
         .mac
         .controller
-        .portal_screen()
+        .portal_screen(w.mac.portal())
         .unwrap()
         .session
         .unwrap()
@@ -1087,22 +1139,22 @@ fn flow23_ac27_one_visible_keyboard_focus() {
 fn flow22_a_click_in_the_portal_asks_for_the_native_focus() {
     let mut w = World::new();
     w.advance_to_forwarding();
-    w.mac.controller.set_portal_focus(false);
-    assert!(!w.mac.controller.take_portal_focus_request());
+    w.mac.controller.set_portal_focus(w.mac.portal(), false);
+    assert!(!w.mac.take_focus_request());
 
     // IN-17: macOS suppresses the click, so the window layer asks for the focus.
     w.mac.controller.on_captured(CapturedEvent::FocusWanted {
         portal: w.mac.portal(),
     });
-    assert!(w.mac.controller.take_portal_focus_request());
-    assert!(!w.mac.controller.take_portal_focus_request(), "once");
+    assert!(w.mac.take_focus_request());
+    assert!(!w.mac.take_focus_request(), "once");
 
     // The native focus comes before the window layer asks: no request.
     w.mac.controller.on_captured(CapturedEvent::FocusWanted {
         portal: w.mac.portal(),
     });
-    w.mac.controller.set_portal_focus(true);
-    assert!(!w.mac.controller.take_portal_focus_request());
+    w.mac.controller.set_portal_focus(w.mac.portal(), true);
+    assert!(!w.mac.take_focus_request());
 }
 
 #[test]
@@ -1115,7 +1167,7 @@ fn flow22_act5_the_next_session_has_a_new_portal() {
     w.mac.log.borrow_mut().capture.clear();
     w.advance_to_confirmation();
     // The new portal window gets the native focus (FLOW-22).
-    w.mac.controller.set_portal_focus(true);
+    w.mac.controller.set_portal_focus(w.mac.portal(), true);
     w.advance_to_forwarding_from_confirmation();
     let capture = w.mac.log.borrow().capture.clone();
     assert!(capture.contains(&"focus true".to_string()), "{capture:?}");
@@ -1128,7 +1180,7 @@ fn flow26_ac51_the_target_warns_while_the_portal_is_hidden() {
     let shown = w.pc1.log.borrow().prompts.len();
 
     // Mission Control opens on the Mac.
-    w.mac.controller.set_portal_visible(false);
+    w.mac.controller.set_portal_visible(w.mac.portal(), false);
     w.pump();
     // The portal keeps the native focus, but the keys stay on the Mac.
     assert!(
@@ -1138,9 +1190,9 @@ fn flow26_ac51_the_target_warns_while_the_portal_is_hidden() {
             .capture
             .ends_with(&["hidden".into(), "focus false".into()])
     );
-    w.mac.controller.set_portal_focus(true);
+    w.mac.controller.set_portal_focus(w.mac.portal(), true);
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "focus false");
-    assert!(w.mac.controller.portal_hidden());
+    assert!(w.mac.controller.portal_hidden(w.mac.portal()));
     {
         let log = w.pc1.log.borrow();
         assert_eq!(
@@ -1149,11 +1201,11 @@ fn flow26_ac51_the_target_warns_while_the_portal_is_hidden() {
         );
         assert!(log.prompt_visible);
     }
-    w.mac.controller.set_portal_visible(false);
+    w.mac.controller.set_portal_visible(w.mac.portal(), false);
     w.pump();
     assert_eq!(w.pc1.log.borrow().prompts.len(), shown + 1, "no change");
 
-    w.mac.controller.set_portal_visible(true);
+    w.mac.controller.set_portal_visible(w.mac.portal(), true);
     w.pump();
     assert!(
         w.mac
@@ -1162,7 +1214,7 @@ fn flow26_ac51_the_target_warns_while_the_portal_is_hidden() {
             .capture
             .ends_with(&["visible".into(), "focus true".into()])
     );
-    assert!(!w.mac.controller.portal_hidden());
+    assert!(!w.mac.controller.portal_hidden(w.mac.portal()));
     assert!(!w.pc1.log.borrow().prompt_visible);
 }
 
@@ -1170,7 +1222,7 @@ fn flow26_ac51_the_target_warns_while_the_portal_is_hidden() {
 fn flow26_the_warning_shows_the_cursor_of_the_source() {
     let mut w = World::new();
     w.advance_to_forwarding();
-    w.mac.controller.set_portal_visible(false);
+    w.mac.controller.set_portal_visible(w.mac.portal(), false);
     w.pump();
     let datagrams = w.pc1.log.borrow().pointer.len();
     let moved = |w: &mut World, x: f64| {
@@ -1195,7 +1247,7 @@ fn flow26_the_warning_shows_the_cursor_of_the_source() {
     assert_eq!(w.pc1.log.borrow().prompt_cursor[1..], [None]);
 
     moved(&mut w, 100.0);
-    w.mac.controller.set_portal_visible(true);
+    w.mac.controller.set_portal_visible(w.mac.portal(), true);
     w.pump();
     assert_eq!(*w.pc1.log.borrow().prompt_cursor.last().unwrap(), None);
     let count = w.pc1.log.borrow().prompt_cursor.len();
@@ -1211,7 +1263,7 @@ fn flow26_the_warning_shows_the_cursor_of_the_source() {
 fn flow26_the_warning_goes_away_with_the_session() {
     let mut w = World::new();
     w.advance_to_forwarding();
-    w.mac.controller.set_portal_visible(false);
+    w.mac.controller.set_portal_visible(w.mac.portal(), false);
     w.pump();
     assert!(w.pc1.log.borrow().prompt_visible);
     w.mac.controller.on_captured(CapturedEvent::SafetyExit);
@@ -1223,14 +1275,17 @@ fn flow26_the_warning_goes_away_with_the_session() {
 fn flow26_a_portal_hidden_before_forwarding_warns_at_the_start() {
     let mut w = World::new();
     w.advance_to_confirmation();
-    w.mac.controller.set_portal_visible(false);
+    w.mac.controller.set_portal_visible(w.mac.portal(), false);
     w.pump();
-    assert!(!w.mac.controller.portal_hidden(), "not forwarding yet");
-    w.mac.controller.set_portal_visible(true);
+    assert!(
+        !w.mac.controller.portal_hidden(w.mac.portal()),
+        "not forwarding yet"
+    );
+    w.mac.controller.set_portal_visible(w.mac.portal(), true);
     w.pump();
-    w.mac.controller.set_portal_visible(false);
+    w.mac.controller.set_portal_visible(w.mac.portal(), false);
     w.advance_to_forwarding_from_confirmation();
-    assert!(w.mac.controller.portal_hidden());
+    assert!(w.mac.controller.portal_hidden(w.mac.portal()));
     assert!(
         w.pc1
             .log
@@ -1354,18 +1409,18 @@ fn flow21_ac26_guard_from_handoff_to_confirmation() {
         w.mac.log.borrow().capture,
         ["arm 3400", "focus true", "guard on"]
     );
-    assert!(w.mac.controller.guarded());
+    assert!(w.mac.controller.guarded(w.mac.portal()));
 }
 
 #[test]
 fn flow21_guard_ends_with_the_timeout() {
     let mut w = World::new();
-    w.advance_to_confirmation();
+    let portal = w.advance_to_confirmation();
     w.pc1
         .controller
         .tick(w.now + std::time::Duration::from_secs(61));
     w.pump();
-    assert!(!w.mac.controller.guarded());
+    assert!(!w.mac.controller.guarded(portal));
     assert!(
         w.mac
             .log
@@ -1382,8 +1437,8 @@ fn flow21_guard_ends_with_the_timeout() {
 fn flow21_no_guard_after_a_failed_handoff() {
     let mut w = World::new();
     w.handoff = HandoffResult::Failed { completed_steps: 0 };
-    w.advance_to_confirmation();
-    assert!(!w.mac.controller.guarded());
+    let portal = w.advance_to_confirmation();
+    assert!(!w.mac.controller.guarded(portal));
 }
 
 #[test]
@@ -1414,10 +1469,7 @@ fn ac23_stop_this_session() {
     assert_eq!(w.pc1.log.borrow().injected.last(), Some(&key(56, false)));
     w.assert_ended("the target stopped the session");
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
-    assert!(
-        w.pc1.controller.portal_screen().is_none(),
-        "no reverse session"
-    );
+    assert!(w.pc1.screen().is_none(), "no reverse session");
 }
 
 #[test]
@@ -1440,7 +1492,7 @@ fn flow17_ac23_control_from_here_starts_the_reverse_session() {
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     // pc1 is now the source: a portal on the display of the old session, and a
     // handoff to the old source that waits for the confirmation.
-    let portal = w.pc1.controller.portal_screen().unwrap();
+    let portal = w.pc1.controller.portal_screen(w.pc1.portal()).unwrap();
     assert_eq!(
         portal.session.unwrap().phase,
         SessionPhase::WaitingForAck {
@@ -1465,7 +1517,9 @@ fn flow6_reverse_handoff_ends_the_old_session() {
         .controller
         .open_portal(display("HDMI-A-2", 0.0, 2048.0));
     w.pump();
-    w.pc1.controller.start_handoff(ComputerId::from("mac"));
+    w.pc1
+        .controller
+        .start_handoff(w.pc1.portal(), ComputerId::from("mac"));
     w.pump();
     assert!(!w.mac.controller.has_portal(), "FLOW-24");
     assert!(
@@ -1588,9 +1642,11 @@ fn ac18_peer_lost_releases_both_sides() {
 fn flow19_ac19_portal_display_gone() {
     let mut w = World::new();
     w.advance_to_forwarding();
-    w.mac.controller.close_portal(EndReason::PortalGone);
+    w.mac
+        .controller
+        .close_portal(w.mac.portal(), EndReason::PortalGone);
     w.pump();
-    assert!(w.mac.controller.portal_screen().is_none());
+    assert!(w.mac.screen().is_none());
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert!(w.pc1.controller.control_screen().incoming.is_empty());
 }
@@ -1625,9 +1681,10 @@ fn net4_session_without_route_is_refused() {
 fn flow4_ac8_portal_moves_to_other_display() {
     let mut w = World::new();
     w.advance_to_forwarding();
+    let portal = w.mac.portal();
     w.mac
         .controller
-        .portal_display_changed(display("builtin", -1500.0, 1500.0));
+        .portal_display_changed(portal, display("builtin", -1500.0, 1500.0));
     w.pump();
     // The old device binding does not apply on the new display, so the
     // session ends, and the portal closes with it (ACT-5).
@@ -1981,10 +2038,19 @@ fn ver2_ac39_no_verify_starts_forwarding_unverified() {
     let mut w = world_with_pc1_verify(None);
     w.advance_to_confirmation();
     assert!(w.pc1.log.borrow().prompts.is_empty(), "no prompt");
-    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
+    let session = w
+        .mac
+        .controller
+        .portal_screen(w.mac.portal())
+        .unwrap()
+        .session
+        .unwrap();
     assert_eq!(session.phase, SessionPhase::Forwarding);
     assert_eq!(session.video_input, VideoInput::Unverified);
-    assert!(!w.mac.controller.acknowledge(), "Return is a normal key");
+    assert!(
+        !w.mac.controller.acknowledge(AckOrigin::Computer),
+        "Return is a normal key"
+    );
 }
 
 #[test]
@@ -1993,7 +2059,13 @@ fn ver3_a_process_verifier_runs_on_the_destination() {
     w.advance_to_confirmation();
     assert_eq!(w.pc1.log.borrow().verifier_calls, ["start 1 command"]);
     assert!(w.mac.log.borrow().verifier_calls.is_empty());
-    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
+    let session = w
+        .mac
+        .controller
+        .portal_screen(w.mac.portal())
+        .unwrap()
+        .session
+        .unwrap();
     assert_eq!(session.phase, SessionPhase::Verifying);
 
     // The verifier shows a text and asks for an acknowledgement (VER-3, VER-4).
@@ -2009,7 +2081,7 @@ fn ver3_a_process_verifier_runs_on_the_destination() {
         w.pc1.log.borrow().prompts.last().unwrap(),
         "Press Return on MacBook to control this computer | Is it here?"
     );
-    assert!(w.mac.controller.acknowledge());
+    assert!(w.mac.controller.acknowledge(AckOrigin::Computer));
     w.pump();
     assert_eq!(
         w.pc1.log.borrow().verifier_calls,
@@ -2025,7 +2097,13 @@ fn ver3_a_process_verifier_runs_on_the_destination() {
     });
     w.pump();
     assert!(!w.pc1.log.borrow().prompt_visible);
-    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
+    let session = w
+        .mac
+        .controller
+        .portal_screen(w.mac.portal())
+        .unwrap()
+        .session
+        .unwrap();
     assert_eq!(session.phase, SessionPhase::Forwarding);
     assert_eq!(session.video_input, VideoInput::Confirmed);
 }
@@ -2040,7 +2118,13 @@ fn ver3_an_exec_verifier_with_no_user() {
         .on_verifier_event(VerifierId(1), VerifierEvent::Done(true));
     w.pump();
     assert!(w.pc1.log.borrow().prompts.is_empty(), "no window");
-    let session = w.mac.controller.portal_screen().unwrap().session.unwrap();
+    let session = w
+        .mac
+        .controller
+        .portal_screen(w.mac.portal())
+        .unwrap()
+        .session
+        .unwrap();
     assert_eq!(session.phase, SessionPhase::Forwarding);
     assert_eq!(session.video_input, VideoInput::Confirmed);
 }
@@ -2048,14 +2132,17 @@ fn ver3_an_exec_verifier_with_no_user() {
 #[test]
 fn flow11_ac10_a_failed_verification_ends_the_session() {
     let mut w = world_with_pc1_verify(Some(json!({"driver": "command", "command": "check"})));
-    w.advance_to_confirmation();
+    let portal = w.advance_to_confirmation();
     w.pc1
         .controller
         .on_verifier_event(VerifierId(1), VerifierEvent::Failed("timeout".into()));
     w.pump();
     assert!(!w.mac.controller.has_portal(), "ACT-5");
     assert!(has_notice(&w.mac, "The display state is unknown."));
-    assert!(!w.mac.controller.guarded(), "the guard ends (FLOW-21)");
+    assert!(
+        !w.mac.controller.guarded(portal),
+        "the guard ends (FLOW-21)"
+    );
     assert!(w.pc1.controller.control_screen().incoming.is_empty());
 }
 
@@ -2230,14 +2317,23 @@ fn hb1_hb2_ac36_the_target_hands_back() {
     assert_eq!(mac_state(&w), VideoInput::Unverified);
     assert!(w.mac.controller.awaiting_local_ack());
     assert!(
-        !w.mac.controller.acknowledge(),
+        !w.mac.controller.awaiting_ack(),
         "the portal has no session to ack"
     );
-    assert!(w.mac.controller.acknowledge_local());
+    let (prompt, screen) = prompt_on(&w.mac, &lg()).expect("the local prompt");
+    assert!(screen.ack_here, "VER-4");
+    assert!(w.mac.controller.acknowledge(AckOrigin::Prompt(prompt)));
     assert!(!w.mac.controller.awaiting_local_ack());
     assert!(!w.mac.log.borrow().prompt_visible);
     assert_eq!(mac_state(&w), VideoInput::Confirmed);
-    assert!(!w.mac.controller.acknowledge_local(), "one ack");
+    assert!(
+        !w.mac.controller.acknowledge(AckOrigin::Prompt(prompt)),
+        "one ack"
+    );
+    assert!(
+        !w.mac.controller.acknowledge(AckOrigin::Computer),
+        "one ack"
+    );
 }
 
 #[test]
@@ -2256,7 +2352,7 @@ fn hb3_ac15_the_hand_back_shortcut() {
     );
     assert_eq!(w.mac.log.borrow().capture.last().unwrap(), "disarm");
     assert_eq!(w.mac.log.borrow().prompts.last().unwrap(), LOCAL_PROMPT);
-    assert!(w.mac.controller.acknowledge_local());
+    assert!(w.mac.controller.acknowledge(AckOrigin::Computer));
     assert_eq!(mac_state(&w), VideoInput::Confirmed);
 }
 
@@ -2264,7 +2360,7 @@ fn hb3_ac15_the_hand_back_shortcut() {
 fn hb3_ui3_ac38_the_portal_left_fullscreen() {
     let mut w = World::new();
     w.advance_to_forwarding();
-    w.mac.controller.portal_left_fullscreen();
+    w.mac.controller.portal_left_fullscreen(w.mac.portal());
     w.pump();
     assert_eq!(
         w.pc1.log.borrow().target.last().unwrap(),
@@ -2493,7 +2589,10 @@ fn pc4_takes_the_display(w: &mut World) {
         .controller
         .open_portal(display("HDMI-A-2", 0.0, 2048.0));
     w.pump();
-    w.extra[0].controller.start_handoff(ComputerId::from("mac"));
+    let portal = w.extra[0].portal();
+    w.extra[0]
+        .controller
+        .start_handoff(portal, ComputerId::from("mac"));
     w.pump();
 }
 
@@ -2558,7 +2657,7 @@ fn net10_ac42_refresh_dials_an_offline_candidate_one_time() {
     };
     w.open_portal();
     let candidate = |w: &World| {
-        let screen = w.mac.controller.portal_screen().unwrap();
+        let screen = w.mac.controller.portal_screen(w.mac.portal()).unwrap();
         (screen.candidates[0].unavailable.clone(), screen.can_refresh)
     };
     assert_eq!(candidate(&w), (None, false), "connected");
@@ -2705,7 +2804,11 @@ fn dial_target(host: &str) -> DialTarget {
 }
 
 fn status(w: &World) -> Option<String> {
-    w.mac.controller.portal_screen().unwrap().candidates[0]
+    w.mac
+        .controller
+        .portal_screen(w.mac.portal())
+        .unwrap()
+        .candidates[0]
         .unavailable
         .clone()
 }
@@ -2759,7 +2862,7 @@ fn net15_opening_a_portal_dials_and_searches_at_the_same_time() {
     assert_eq!(dials(&w).len(), 1);
     assert_eq!(discovery_calls(&w), ["search"]);
     assert_eq!(status(&w), Some("connecting".into()));
-    let screen = w.mac.controller.portal_screen().unwrap();
+    let screen = w.mac.controller.portal_screen(w.mac.portal()).unwrap();
     assert!(screen.show_refresh);
     assert!(!screen.can_refresh, "the dial and the search run");
 }
@@ -2770,7 +2873,13 @@ fn net15_a_connection_ends_the_search() {
     w.open_portal();
     assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
     assert_eq!(status(&w), None);
-    assert!(!w.mac.controller.portal_screen().unwrap().show_refresh);
+    assert!(
+        !w.mac
+            .controller
+            .portal_screen(w.mac.portal())
+            .unwrap()
+            .show_refresh
+    );
 }
 
 #[test]
@@ -2791,7 +2900,13 @@ fn net15_refresh_during_a_dial_starts_a_search() {
     w.mac.controller.tick(w.now + Duration::from_secs(31));
     assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
     assert_eq!(status(&w), Some("connecting".into()));
-    assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
+    assert!(
+        w.mac
+            .controller
+            .portal_screen(w.mac.portal())
+            .unwrap()
+            .can_refresh
+    );
     w.mac
         .controller
         .on_intent(Intent::Refresh { display: lg() });
@@ -2806,7 +2921,7 @@ fn net10_refresh_is_shown_but_not_available_during_a_dial_with_no_discovery() {
     w.mac
         .controller
         .on_intent(Intent::Refresh { display: lg() });
-    let screen = w.mac.controller.portal_screen().unwrap();
+    let screen = w.mac.controller.portal_screen(w.mac.portal()).unwrap();
     assert!(screen.show_refresh);
     assert!(!screen.can_refresh);
 }
@@ -2816,7 +2931,13 @@ fn net15_refresh_searches_for_30_seconds_and_the_candidate_shows_it() {
     let mut w = mdns_world(&[]);
     offline_portal(&mut w);
     assert_eq!(status(&w), Some("offline".into()));
-    assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
+    assert!(
+        w.mac
+            .controller
+            .portal_screen(w.mac.portal())
+            .unwrap()
+            .can_refresh
+    );
 
     w.mac
         .controller
@@ -2824,7 +2945,13 @@ fn net15_refresh_searches_for_30_seconds_and_the_candidate_shows_it() {
     assert_eq!(discovery_calls(&w), ["search"]);
     assert!(dials(&w).is_empty(), "no host and no known address");
     assert_eq!(status(&w), Some("searching".into()));
-    assert!(!w.mac.controller.portal_screen().unwrap().can_refresh);
+    assert!(
+        !w.mac
+            .controller
+            .portal_screen(w.mac.portal())
+            .unwrap()
+            .can_refresh
+    );
     w.mac
         .controller
         .on_intent(Intent::Refresh { display: lg() });
@@ -2835,7 +2962,13 @@ fn net15_refresh_searches_for_30_seconds_and_the_candidate_shows_it() {
     w.mac.controller.tick(w.now + Duration::from_secs(31));
     assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
     assert_eq!(status(&w), Some("offline".into()));
-    assert!(w.mac.controller.portal_screen().unwrap().can_refresh);
+    assert!(
+        w.mac
+            .controller
+            .portal_screen(w.mac.portal())
+            .unwrap()
+            .can_refresh
+    );
 }
 
 #[test]
@@ -2959,7 +3092,9 @@ fn net15_closing_the_portal_stops_the_search() {
     w.mac
         .controller
         .on_intent(Intent::Refresh { display: lg() });
-    w.mac.controller.close_portal(EndReason::SourceClosed);
+    w.mac
+        .controller
+        .close_portal(w.mac.portal(), EndReason::SourceClosed);
     assert_eq!(discovery_calls(&w), ["search", "stop_search"]);
 }
 
@@ -3103,7 +3238,9 @@ fn shared() -> DeviceId {
 /// Connects the Mac and pc1 with no portal and no session.
 fn connect(w: &mut World) {
     w.open_portal();
-    w.mac.controller.close_portal(EndReason::SourceClosed);
+    w.mac
+        .controller
+        .close_portal(w.mac.portal(), EndReason::SourceClosed);
     w.pump();
     assert!(!w.mac.controller.has_portal());
 }
@@ -3155,7 +3292,7 @@ fn act1_act2_switch_display_only_runs_the_steps_with_no_session() {
     // The destination verifies, as after a hand back (ACT-2, VER-4).
     assert!(w.pc1.controller.awaiting_local_ack());
     assert_eq!(pc1_state(&w), VideoInput::Unverified);
-    assert!(w.pc1.controller.acknowledge_local());
+    assert!(w.pc1.controller.acknowledge(AckOrigin::Computer));
     assert_eq!(pc1_state(&w), VideoInput::Confirmed);
     // VER-6: the device left the Mac.
     assert_eq!(mac_state(&w), VideoInput::Unchanged);
@@ -3288,7 +3425,7 @@ fn act3_control_only_attaches_with_no_steps() {
             target: ComputerId::from("pc1"),
         },
     );
-    assert_eq!(w.mac.controller.take_portal_window_request(), Some(lg()));
+    assert_eq!(w.mac.take_window_request(), Some(lg()));
     assert_eq!(handoff_jobs(&w.mac), 0, "ACT-3: no steps");
     assert_eq!(w.phase(), waiting_for_ack());
     // FLOW-21: the portal guards the keyboard while it waits.
@@ -3324,7 +3461,7 @@ fn act5_switch_and_control_opens_the_portal_and_closes_it_at_the_end() {
             target: ComputerId::from("pc1"),
         },
     );
-    assert_eq!(w.mac.controller.take_portal_window_request(), Some(lg()));
+    assert_eq!(w.mac.take_window_request(), Some(lg()));
     assert_eq!(handoff_jobs(&w.mac), 1);
     assert_eq!(w.phase(), waiting_for_ack());
     w.advance_to_forwarding_from_confirmation();
@@ -3383,8 +3520,8 @@ fn act5_flow17_the_portal_of_control_from_here_closes_after_a_hand_back() {
         .controller
         .on_intent(Intent::ControlFromHere { session });
     w.pump();
-    assert!(w.pc1.controller.portal_screen().is_some());
-    assert!(w.pc1.controller.acknowledge());
+    assert!(w.pc1.screen().is_some());
+    assert!(w.pc1.controller.acknowledge(AckOrigin::Computer));
     w.pc1.controller.on_captured(CapturedEvent::PointerEntered {
         portal: w.pc1.portal(),
         at: Point { x: 10.0, y: 10.0 },
@@ -3426,7 +3563,7 @@ fn act4_a_control_request_makes_the_receiver_attach() {
     let mut w = World::new();
     let_control(&mut w);
     // The Mac opens a portal on the matching display and attaches (ACT-4).
-    assert_eq!(w.mac.controller.take_portal_window_request(), Some(lg()));
+    assert_eq!(w.mac.take_window_request(), Some(lg()));
     assert_eq!(handoff_jobs(&w.mac), 0);
     assert_eq!(w.phase(), waiting_for_ack());
     assert!(
@@ -4060,7 +4197,7 @@ impl World {
 
     fn phase_on(&self, display: &DisplayToken) -> Option<SessionPhase> {
         let portal = self.mac.controller.portal_on(display)?;
-        Some(self.mac.controller.portal_screen_of(portal)?.session?.phase)
+        Some(self.mac.controller.portal_screen(portal)?.session?.phase)
     }
 
     /// Opens a portal on the display and forwards to the target through it.
@@ -4071,9 +4208,12 @@ impl World {
         let portal = self.portal_of(&token);
         self.mac
             .controller
-            .start_handoff_in(portal, ComputerId::from(target));
+            .start_handoff(portal, ComputerId::from(target));
         self.pump();
-        assert!(self.mac.controller.acknowledge_in(portal), "FLOW-8");
+        assert!(
+            self.mac.controller.acknowledge(AckOrigin::Portal(portal)),
+            "FLOW-8"
+        );
         self.mac
             .controller
             .on_captured(CapturedEvent::PointerEntered {
@@ -4314,4 +4454,174 @@ fn flow25_ui18_the_menu_has_a_row_for_each_portal_and_ends_one() {
     w.pump();
     assert_eq!(w.mac.controller.portal_on(&dell()), None, "ACT-5");
     assert_eq!(w.phase_on(&lg()), Some(SessionPhase::Forwarding));
+}
+
+impl World {
+    /// VER-8: the Mac with two portal displays, and pc1 with one output for
+    /// both devices.
+    fn one_output() -> Self {
+        let capabilities = InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        };
+        let peer = |id: &str, displays| {
+            peer_config(
+                id,
+                displays,
+                capabilities.clone(),
+                true,
+                config_two_displays_one_target(),
+            )
+        };
+        World {
+            mac: peer("mac", vec![display("lg", 0.0, 3400.0), dell_display()]),
+            pc1: peer("pc1", vec![display("HDMI-A-2", 0.0, 2048.0)]),
+            extra: Vec::new(),
+            now: Instant::now(),
+            handoff: HandoffResult::Done,
+        }
+    }
+
+    /// Opens a portal on the display and starts a handoff to pc1; the session
+    /// then waits for the acknowledgement.
+    fn verify_on(&mut self, display: DisplayInfo) -> PortalId {
+        let token = display.token.clone();
+        self.mac.controller.open_portal(display);
+        self.pump();
+        let portal = self.portal_of(&token);
+        self.mac
+            .controller
+            .start_handoff(portal, ComputerId::from("pc1"));
+        self.pump();
+        assert_eq!(self.phase_on(&token), waiting_for_ack());
+        portal
+    }
+}
+
+fn state_of(peer: &Peer, alias: &str) -> VideoInput {
+    let screen = peer.controller.control_screen();
+    screen
+        .devices
+        .iter()
+        .find(|row| row.alias == alias)
+        .expect("the device list has each local device")
+        .state
+}
+
+#[test]
+fn ver8_a_new_prompt_on_a_display_stops_the_earlier_one() {
+    let mut w = World::one_output();
+    w.verify_on(display("lg", 0.0, 3400.0));
+    assert_eq!(w.pc1.controller.control_screen().incoming.len(), 1);
+    let b = w.verify_on(dell_display());
+    // The earlier session on HDMI-A-2 ended with no forwarding.
+    let incoming = w.pc1.controller.control_screen().incoming;
+    assert_eq!(incoming.len(), 1, "{incoming:?}");
+    assert_ne!(w.phase_on(&lg()), waiting_for_ack());
+    assert_eq!(state_of(&w.pc1, "Monitor"), VideoInput::Unknown);
+    // The new prompt works.
+    assert!(w.pc1.log.borrow().prompt_visible);
+    assert!(w.mac.controller.acknowledge(AckOrigin::Portal(b)), "FLOW-8");
+}
+
+#[test]
+fn ver8_a_session_prompt_stops_a_hand_back_prompt_on_the_display() {
+    let mut w = World::one_output();
+    connect(&mut w);
+    act(
+        &mut w,
+        Intent::SwitchDisplayOnly {
+            display: lg(),
+            device: shared(),
+            target: ComputerId::from("pc1"),
+        },
+    );
+    assert!(w.pc1.controller.awaiting_local_ack(), "ACT-2");
+    let b = w.verify_on(dell_display());
+    assert!(!w.pc1.controller.awaiting_local_ack());
+    assert_eq!(state_of(&w.pc1, "Monitor"), VideoInput::Unknown);
+    assert!(w.pc1.log.borrow().prompt_visible);
+    assert!(w.mac.controller.acknowledge(AckOrigin::Portal(b)), "FLOW-8");
+}
+
+/// The prompt on `display` of the peer, if one shows.
+fn prompt_on(peer: &Peer, display: &DisplayToken) -> Option<(PromptId, PromptScreen)> {
+    peer.log
+        .borrow()
+        .shown
+        .iter()
+        .find(|(_, token, _)| token == display)
+        .map(|(id, _, screen)| (*id, screen.clone()))
+}
+
+#[test]
+fn ver4_ver8_an_acknowledgement_in_a_prompt_acts_on_that_prompt() {
+    let mut w = World::two_displays();
+    let (a, b) = w.forward_on_both();
+    act(&mut w, Intent::SourceHandBack { portal: Some(a) });
+    act(&mut w, Intent::SourceHandBack { portal: Some(b) });
+    // HB-1: the Mac verifies both devices, each on its display (VER-4).
+    let (on_lg, lg_screen) = prompt_on(&w.mac, &lg()).expect("a prompt on lg");
+    let (on_dell, dell_screen) = prompt_on(&w.mac, &dell()).expect("a prompt on dell");
+    assert!(lg_screen.ack_here && dell_screen.ack_here, "VER-4");
+    assert_eq!(state_of(&w.mac, "Desktop"), VideoInput::Unverified);
+    assert_eq!(state_of(&w.mac, "Side"), VideoInput::Unverified);
+
+    // A click in the second prompt acknowledges that prompt only.
+    assert!(w.mac.controller.acknowledge(AckOrigin::Prompt(on_dell)));
+    assert_eq!(state_of(&w.mac, "Side"), VideoInput::Confirmed);
+    assert_eq!(state_of(&w.mac, "Desktop"), VideoInput::Unverified);
+    assert!(prompt_on(&w.mac, &dell()).is_none());
+    assert_eq!(prompt_on(&w.mac, &lg()).map(|(id, _)| id), Some(on_lg));
+    assert!(w.mac.controller.awaiting_local_ack(), "the first one waits");
+    assert!(
+        !w.mac.controller.acknowledge(AckOrigin::Prompt(on_dell)),
+        "one ack"
+    );
+
+    assert!(w.mac.controller.acknowledge(AckOrigin::Prompt(on_lg)));
+    assert_eq!(state_of(&w.mac, "Desktop"), VideoInput::Confirmed);
+    assert!(!w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn ver4_a_session_prompt_does_not_take_the_acknowledgement() {
+    let mut w = World::new();
+    w.advance_to_confirmation();
+    let (prompt, screen) =
+        prompt_on(&w.pc1, &DisplayToken::from("HDMI-A-2")).expect("the session prompt");
+    assert!(screen.ack_wanted);
+    assert!(
+        !screen.ack_here,
+        "FLOW-8: the source acknowledges in its portal"
+    );
+    assert!(!w.pc1.controller.acknowledge(AckOrigin::Prompt(prompt)));
+    assert_eq!(w.phase(), waiting_for_ack());
+}
+
+#[test]
+fn ver4_return_in_another_prompt_window_acknowledges_the_waiting_hand_back() {
+    let mut w = World::two_displays();
+    let (a, b) = w.forward_on_both();
+    act(&mut w, Intent::SourceHandBack { portal: Some(a) });
+    act(&mut w, Intent::SourceHandBack { portal: Some(b) });
+    let (on_dell, _) = prompt_on(&w.mac, &dell()).expect("a prompt on dell");
+    assert!(w.mac.controller.acknowledge(AckOrigin::Prompt(on_dell)));
+    // The window of the dell prompt has no verification now. A click in it
+    // does nothing; Return in it is Return in a window of Telescreen.
+    assert!(!w.mac.controller.acknowledge(AckOrigin::Prompt(on_dell)));
+    assert!(w.mac.controller.acknowledge(AckOrigin::PromptKey(on_dell)));
+    assert_eq!(state_of(&w.mac, "Desktop"), VideoInput::Confirmed);
+    assert!(!w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn flow8_a_portal_with_no_session_takes_no_acknowledgement() {
+    let mut w = World::new();
+    w.open_portal();
+    let portal = w.mac.portal();
+    assert!(!w.mac.controller.awaiting_ack());
+    assert!(!w.mac.controller.acknowledge(AckOrigin::Portal(portal)));
+    assert!(!w.mac.controller.acknowledge(AckOrigin::Computer));
 }

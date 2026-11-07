@@ -14,6 +14,7 @@ pub mod keys;
 pub mod platform;
 pub mod pointer;
 pub mod pointer_stats;
+pub mod portal_capture;
 pub mod routes;
 pub mod session;
 pub mod verification;

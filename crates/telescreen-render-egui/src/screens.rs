@@ -537,11 +537,13 @@ mod tests {
             for ack_wanted in [false, true] {
                 // `None`: the acknowledgement is on this computer (a hand back).
                 for source in [Some("Source peer".to_string()), None] {
+                    let ack_here = ack_wanted && source.is_none();
                     let screen = PromptScreen {
                         source,
                         confirm_key: "Return".into(),
                         text: text.clone(),
                         ack_wanted,
+                        ack_here,
                         portal_hidden: false,
                         blank: false,
                     };

@@ -3,7 +3,9 @@
 use telescreen_core::pointer::Rect;
 use wayland_client::backend::WaylandError;
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
-use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
+use wayland_client::protocol::{
+    wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat, wl_surface,
+};
 use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
 
@@ -27,6 +29,18 @@ pub struct Configure {
     pub height: u32,
 }
 
+/// The pointer and the keyboard of a seat, and the presses on the surfaces of
+/// the connection.
+#[derive(Debug, Default)]
+pub struct SeatInput {
+    pub pointer: Option<wl_pointer::WlPointer>,
+    pub keyboard: Option<wl_keyboard::WlKeyboard>,
+    pub pointer_on: Option<wl_surface::WlSurface>,
+    pub keyboard_on: Option<wl_surface::WlSurface>,
+    /// A left click or Return on a surface.
+    pub presses: Vec<wl_surface::WlSurface>,
+}
+
 /// One bound output: its registry name, its proxies, and its data.
 #[derive(Debug)]
 pub struct Output {
@@ -48,6 +62,7 @@ pub struct State {
     pub outputs: Vec<Output>,
     pub configures: Vec<Configure>,
     pub closed: Vec<u64>,
+    pub seat: SeatInput,
     xdg_manager: Option<zxdg_output_manager_v1::ZxdgOutputManagerV1>,
 }
 

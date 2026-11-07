@@ -13,7 +13,6 @@
 //! Forwarded buttons also reach the portal for native keyboard focus.
 //! Other event types are suppressed while the cursor is in the portal (IN-10).
 
-use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU64, Ordering::SeqCst};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -23,10 +22,11 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 use telescreen_core::ids::PortalId;
 use telescreen_core::input::{Button, InputEvent, ScrollPhase};
-use telescreen_core::key_route::{FocusChange, InputRouter, Route};
+use telescreen_core::key_route::{InputRouter, Route};
 use telescreen_core::keys::{self, Key};
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
 use telescreen_core::pointer::{Point, Rect};
+use telescreen_core::portal_capture::{self, FocusLoss, SafetyExit};
 
 use crate::ffi::{self, CGEventRef};
 
@@ -37,9 +37,6 @@ const QUEUE: usize = 4096;
 const SLOTS: usize = 4;
 /// IN-9: the main thread must give a heartbeat in this time while forwarding.
 const WATCHDOG: Duration = Duration::from_secs(3);
-/// IN-8: Escape this many times in this time.
-const SAFETY_PRESSES: usize = 10;
-const SAFETY_WINDOW: Duration = Duration::from_secs(5);
 const KEYCODE_ESCAPE: i64 = 0x35;
 const RELEASE_FLAGS: u64 = ffi::FLAG_CONTROL | ffi::FLAG_ALTERNATE | ffi::FLAG_COMMAND;
 
@@ -88,7 +85,8 @@ struct Shared {
 
 #[derive(Default)]
 struct KeyState {
-    escapes: VecDeque<Instant>,
+    /// IN-8: the Escape presses.
+    escapes: SafetyExit,
     /// Modifier keys that are down (evdev codes).
     modifiers: Vec<Key>,
     /// Routes and native keyboard focus of all portals (IN-3, FLOW-22, FLOW-25).
@@ -227,7 +225,7 @@ impl InputCapture for MacCapture {
         }
         s.secure_input.store(false, SeqCst);
         s.beat();
-        s.lock_keys().escapes.clear();
+        s.lock_keys().escapes.reset();
         slot.mode.store(FORWARDING, SeqCst);
         let at = ffi::cursor_position();
         s.cursor_at(slot, Point { x: at.x, y: at.y });
@@ -240,8 +238,17 @@ impl InputCapture for MacCapture {
             return;
         }
         let mut keys = s.lock_keys();
-        let change = keys.router.set_window_focus(portal, focused);
-        s.keyboard_changed(change);
+        // IN-13: the event tap still sees the up events after a focus loss.
+        let events = portal_capture::window_focus(
+            &mut keys.router,
+            portal,
+            focused,
+            |_| false,
+            FocusLoss::UpEventsSeen,
+        );
+        for event in events {
+            s.push(event);
+        }
     }
 
     fn set_portal_visible(&mut self, portal: PortalId, visible: bool) {
@@ -405,16 +412,6 @@ impl Shared {
         self.slots
             .iter()
             .any(|slot| slot.active() && slot.area().contains(at))
-    }
-
-    /// Reports keyboard focus before the input that caused it (FLOW-23).
-    fn keyboard_changed(&self, change: FocusChange) {
-        if let Some(portal) = change.left {
-            self.push(CapturedEvent::KeyboardLeft { portal });
-        }
-        if let Some(portal) = change.entered {
-            self.push(CapturedEvent::KeyboardEntered { portal });
-        }
     }
 
     /// The cursor is at `at`: report a crossing of the edge of the portal of the
@@ -597,7 +594,7 @@ fn handle(shared: &Shared, kind: u32, event: CGEventRef) -> bool {
         && guarded
         && kind == ffi::KEY_DOWN
         && field(ffi::FIELD_KEYCODE) == KEYCODE_ESCAPE
-        && safety_exit(&mut shared.lock_keys())
+        && shared.lock_keys().escapes.press(Instant::now())
     {
         shared.stop(CapturedEvent::SafetyExit);
         return false;
@@ -664,7 +661,7 @@ fn forward(shared: &Shared, kind: u32, event: CGEventRef, field: &dyn Fn(u32) ->
             let forwarded = route(shared, &mut keys, InputEvent::Key { key, down });
             // IN-8: count each Escape while forwarding, also when the key stays
             // on macOS, for example while the portal has no focus (FLOW-26).
-            if down && key == Key::ESC && safety_exit(&mut keys) {
+            if down && key == Key::ESC && keys.escapes.press(Instant::now()) {
                 shared.stop(CapturedEvent::SafetyExit);
             }
             forwarded
@@ -724,16 +721,12 @@ fn forward(shared: &Shared, kind: u32, event: CGEventRef, field: &dyn Fn(u32) ->
 /// The portal of the hand back shortcut (IN-7, FLOW-25): the forwarding portal
 /// with the keyboard focus, else the only forwarding portal.
 fn hand_back_portal(shared: &Shared, keys: &KeyState) -> Option<PortalId> {
-    if let Some(portal) = keys.router.keyboard()
-        && shared.forwarding_slot(portal).is_some()
-    {
-        return Some(portal);
-    }
-    let mut forwarding = shared.slots.iter().filter(|slot| slot.forwarding());
-    match (forwarding.next(), forwarding.next()) {
-        (Some(slot), None) => Some(slot.portal()),
-        _ => None,
-    }
+    let forwarding = shared
+        .slots
+        .iter()
+        .filter(|slot| slot.forwarding())
+        .map(Slot::portal);
+    portal_capture::hand_back_portal(keys.router.keyboard(), forwarding)
 }
 
 /// The phase of a scroll from the trackpad fields (IN-18). A mouse wheel has
@@ -775,24 +768,6 @@ fn route(shared: &Shared, keys: &mut KeyState, input: InputEvent) -> bool {
         }
         _ => false,
     }
-}
-
-/// Counts Escape presses in the callback (IN-8). True at the tenth press in 5 s.
-fn safety_exit(keys: &mut KeyState) -> bool {
-    let now = Instant::now();
-    keys.escapes.push_back(now);
-    while keys
-        .escapes
-        .front()
-        .is_some_and(|t| now.duration_since(*t) > SAFETY_WINDOW)
-    {
-        keys.escapes.pop_front();
-    }
-    if keys.escapes.len() >= SAFETY_PRESSES {
-        keys.escapes.clear();
-        return true;
-    }
-    false
 }
 
 /// A flags-changed event names the modifier key that changed. The device bits of

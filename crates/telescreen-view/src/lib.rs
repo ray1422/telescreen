@@ -136,6 +136,10 @@ pub struct PromptScreen {
     /// Verifier text; for the built-in prompt, the `hint` of this computer.
     pub text: Option<String>,
     pub ack_wanted: bool,
+    /// The user acknowledges in this prompt window, on this computer (VER-4).
+    /// Then the window takes clicks and the keyboard. The controller sets it;
+    /// a shell does not derive it from the other fields.
+    pub ack_here: bool,
     /// The warning of FLOW-26: the source does not show its portal.
     pub portal_hidden: bool,
     /// The prompt shows nothing. A presenter that keeps blank prompts
@@ -152,6 +156,7 @@ impl PromptScreen {
             confirm_key: String::new(),
             text: Some("Input is paused".into()),
             ack_wanted: false,
+            ack_here: false,
             portal_hidden: true,
             blank: false,
         }

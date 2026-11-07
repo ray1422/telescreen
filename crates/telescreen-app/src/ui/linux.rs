@@ -7,10 +7,10 @@
 //! of the portal window (FLOW-22, UI-6). Not tested on hardware yet.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use telescreen_core::config::{Computer, Quirk};
 use telescreen_core::ids::{DisplayToken, PortalId};
@@ -19,6 +19,7 @@ use telescreen_core::key_route::{InputRouter, Route};
 use telescreen_core::keys::Key;
 use telescreen_core::platform::{CapturedEvent, InputCapture, PlatformError};
 use telescreen_core::pointer::{Point, Rect};
+use telescreen_core::portal_capture::{self, FocusLoss, SafetyExit};
 use telescreen_platform_linux::clipboard::LinuxClipboard;
 use telescreen_platform_linux::displays::LinuxDisplays;
 use telescreen_platform_linux::focus::LinuxFocusHolder;
@@ -37,9 +38,6 @@ use super::prompt_queue::{PromptQueue, PromptRequest};
 use super::{Parts, UserEvent};
 use crate::controller::Labels;
 
-/// IN-8: Escape this many times in this time.
-const SAFETY_PRESSES: usize = 10;
-const SAFETY_WINDOW: Duration = Duration::from_secs(5);
 /// Logical pixels for one wheel line.
 const LINE: f32 = 15.0;
 
@@ -109,7 +107,8 @@ impl PortalState {
 struct CaptureState {
     portals: BTreeMap<PortalId, PortalState>,
     modifiers: ModifiersState,
-    escapes: VecDeque<Instant>,
+    /// IN-8: the Escape presses.
+    escapes: SafetyExit,
     /// Where each key and button that is down went, for all portals (IN-3).
     router: InputRouter,
     events: Vec<CapturedEvent>,
@@ -193,19 +192,15 @@ impl CaptureState {
         if !self.portals.contains_key(&portal) {
             return;
         }
-        let change = self.router.set_window_focus(portal, focused);
-        if let Some(left) = change.left {
-            self.events
-                .push(CapturedEvent::KeyboardLeft { portal: left });
-            if self.forwarding(left) {
-                self.router.clear();
-                self.events.push(CapturedEvent::InputLost);
-            }
-        }
-        if let Some(entered) = change.entered {
-            self.events
-                .push(CapturedEvent::KeyboardEntered { portal: entered });
-        }
+        let portals = &self.portals;
+        let events = portal_capture::window_focus(
+            &mut self.router,
+            portal,
+            focused,
+            |p| portals.get(&p).is_some_and(|p| p.mode == Mode::Forwarding),
+            FocusLoss::UpEventsLost,
+        );
+        self.events.extend(events);
     }
 
     /// Stops one portal, for the hand back shortcut (IN-7).
@@ -270,7 +265,7 @@ impl InputCapture for LinuxCapture {
             eprintln!("telescreen: shortcut inhibit: {error}");
         }
         state.mode = Mode::Forwarding;
-        s.escapes.clear();
+        s.escapes.reset();
         s.report_position(portal);
         Ok(())
     }
@@ -348,7 +343,12 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Resul
     let (prompt, prompts): (
         Box<dyn telescreen_view::PromptPresenter>,
         Option<PromptQueue>,
-    ) = match LayerPrompt::start() {
+    ) = match LayerPrompt::start({
+        let proxy = proxy.clone();
+        move |prompt| {
+            let _ = proxy.send_event(UserEvent::PromptPressed(prompt));
+        }
+    }) {
         Ok(prompt) => (Box::new(prompt), None),
         Err(e) => {
             notices.push(format!(
@@ -361,7 +361,7 @@ pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Resul
     let capture = LinuxCapture(Rc::new(RefCell::new(CaptureState {
         portals: BTreeMap::new(),
         modifiers: ModifiersState::empty(),
-        escapes: VecDeque::new(),
+        escapes: SafetyExit::new(),
         router: InputRouter::new(),
         events: Vec::new(),
     })));
@@ -404,8 +404,8 @@ pub(crate) fn window_attributes(attributes: WindowAttributes) -> WindowAttribute
 
 pub(crate) fn prompt_created(_: &Window) {}
 
-/// VER-4: on Linux the layer-shell prompt takes no input. The user acknowledges
-/// in a different window of Telescreen.
+/// VER-4: the layer-shell prompt sets its input itself, and reports a press
+/// with `UserEvent::PromptPressed`. A normal window takes input.
 pub(crate) fn prompt_input(_: &Window, _: bool) {}
 
 fn button(button: MouseButton) -> Option<Button> {
@@ -533,19 +533,8 @@ impl Hooks {
                 // confirmation (FLOW-21).
                 let counts =
                     forwarded || s.portals.get(&portal).is_some_and(|p| p.mode != Mode::Off);
-                if counts && escape && down && !event.repeat {
-                    let now = Instant::now();
-                    s.escapes.push_back(now);
-                    while s
-                        .escapes
-                        .front()
-                        .is_some_and(|t| now.duration_since(*t) > SAFETY_WINDOW)
-                    {
-                        s.escapes.pop_front();
-                    }
-                    if s.escapes.len() >= SAFETY_PRESSES {
-                        s.stop_all(CapturedEvent::SafetyExit);
-                    }
+                if counts && escape && down && !event.repeat && s.escapes.press(Instant::now()) {
+                    s.stop_all(CapturedEvent::SafetyExit);
                 }
                 forwarded
             }

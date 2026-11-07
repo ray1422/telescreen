@@ -129,6 +129,58 @@ pub struct Request {
     pub displays: Vec<DisplayInfo>,
 }
 
+impl Request {
+    /// A request on the source computer `local`. `target` is the target of the
+    /// handoff, or `None` for `portal-match`.
+    pub fn on_source(
+        local: &ComputerId,
+        device: DeviceRef,
+        target: Option<ComputerId>,
+        displays: Vec<DisplayInfo>,
+    ) -> Request {
+        Request {
+            computer_id: local.clone(),
+            device,
+            source_computer_id: local.clone(),
+            target_computer_id: target,
+            session_id: None,
+            portal: None,
+            displays,
+        }
+    }
+
+    /// A request on the destination computer `local` of a handoff from
+    /// `source`: `input-target` and `verify`.
+    pub fn on_destination(
+        local: &ComputerId,
+        device: DeviceRef,
+        source: ComputerId,
+        displays: Vec<DisplayInfo>,
+    ) -> Request {
+        Request {
+            computer_id: local.clone(),
+            device,
+            source_computer_id: source,
+            target_computer_id: Some(local.clone()),
+            session_id: None,
+            portal: None,
+            displays,
+        }
+    }
+
+    /// Sets the session of the request. A hand back has no session.
+    pub fn with_session(mut self, session: Option<SessionId>) -> Request {
+        self.session_id = session;
+        self
+    }
+
+    /// Sets the portal of the request.
+    pub fn with_portal(mut self, portal: PortalInfo) -> Request {
+        self.portal = Some(portal);
+        self
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct Envelope<'a> {
     pub(crate) protocol: u32,

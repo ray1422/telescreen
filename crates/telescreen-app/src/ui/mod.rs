@@ -42,7 +42,7 @@ use winit::monitor::MonitorHandle;
 use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
 use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 
-use crate::controller::{Controller, JobId, JobOutput, Ports, VerifierId};
+use crate::controller::{AckOrigin, Controller, JobId, JobOutput, Ports, VerifierId};
 use crate::paths;
 use crate::pointer_mailbox::{PointerMailbox, ReceivedPointer};
 use crate::startup::{self, Startup};
@@ -62,6 +62,9 @@ pub enum UserEvent {
     Verifier(VerifierId, VerifierEvent),
     /// The input capture has events in its queue.
     Captured,
+    /// A left click or Return on the prompt that takes input (VER-4).
+    #[cfg(target_os = "linux")]
+    PromptPressed(PromptId),
     /// A report of the discovery backend (NET-12).
     Discovery(telescreen_core::platform::DiscoveryEvent),
     /// A request of the debug protocol and the channel for its response line.
@@ -497,14 +500,14 @@ impl App {
                 self.controller
                     .add_notice(format!("Cannot open the portal: {e}"));
                 self.controller
-                    .close_portal_in(portal, EndReason::SourceClosed);
+                    .close_portal(portal, EndReason::SourceClosed);
             }
         }
     }
 
     /// Makes the window for a portal opened by the controller (ACT-5, FLOW-17).
     fn take_portal_window_request(&mut self, event_loop: &ActiveEventLoop) {
-        let Some((portal, token)) = self.controller.next_portal_window_request() else {
+        let Some((portal, token)) = self.controller.take_portal_window_request() else {
             return;
         };
         if self.portals.remove(&portal).is_some() {
@@ -516,8 +519,7 @@ impl App {
         let Some(monitor) = monitor else {
             self.controller
                 .add_notice(format!("Cannot find the portal display {token}."));
-            self.controller
-                .close_portal_in(portal, EndReason::PortalGone);
+            self.controller.close_portal(portal, EndReason::PortalGone);
             return;
         };
         self.create_portal_window(event_loop, monitor, portal, token);
@@ -541,9 +543,9 @@ impl App {
         let id = portal.portal;
         match self.controller.display(&token) {
             Some(display) => {
-                self.controller.portal_display_changed_in(id, display);
+                self.controller.portal_display_changed(id, display);
             }
-            None => self.controller.close_portal_in(id, EndReason::PortalGone),
+            None => self.controller.close_portal(id, EndReason::PortalGone),
         }
     }
 
@@ -551,7 +553,7 @@ impl App {
         if self.portals.remove(&portal).is_some() {
             self.hooks.portal_closed(portal);
             self.controller
-                .close_portal_in(portal, EndReason::SourceClosed);
+                .close_portal(portal, EndReason::SourceClosed);
         }
     }
 
@@ -599,8 +601,8 @@ impl App {
             .collect();
         self.hooks.reclaim_focus(&windows);
         for portal in self.portals.values() {
-            let hidden = self.controller.portal_hidden_in(portal.portal);
-            let forwarding = self.controller.forwarding_in(portal.portal);
+            let hidden = self.controller.portal_hidden(portal.portal);
+            let forwarding = self.controller.forwarding(portal.portal);
             self.hooks
                 .portal_hidden(portal.portal, &portal.surface.window, hidden, forwarding);
         }
@@ -628,7 +630,7 @@ impl App {
         }
         for portal in self.portals.values() {
             if self.drawn_portals.get(&portal.portal)
-                != self.controller.portal_screen_of(portal.portal).as_ref()
+                != self.controller.portal_screen(portal.portal).as_ref()
             {
                 portal.surface.window.request_redraw();
             }
@@ -717,10 +719,9 @@ impl App {
                 display,
                 screen,
             } => {
-                let local_ack = screen.source.is_none() && screen.ack_wanted;
+                let local_ack = screen.ack_here;
                 if let Some(surface) = self.prompts.get_mut(&prompt) {
-                    if local_ack && !(surface.screen.source.is_none() && surface.screen.ack_wanted)
-                    {
+                    if local_ack && !surface.screen.ack_here {
                         platform::prompt_input(&surface.surface.window, true);
                     }
                     surface.screen = screen;
@@ -768,7 +769,7 @@ impl App {
             .values_mut()
             .find(|p| p.surface.window.id() == id)
         {
-            let screen = self.controller.portal_screen_of(portal.portal);
+            let screen = self.controller.portal_screen(portal.portal);
             if let (Some(renderer), Some(screen)) = (&mut portal.surface.renderer, &screen) {
                 intents = renderer.draw_portal(screen);
             }
@@ -791,15 +792,17 @@ impl App {
     }
 
     /// Accepts acknowledgements before the renderer sees them (VER-4, FLOW-9).
+    /// `portal` and `prompt` name the window of the event.
     fn acknowledgement_event(
         &mut self,
         event: &WindowEvent,
         portal: Option<PortalId>,
-        is_prompt: bool,
+        prompt: Option<PromptId>,
     ) -> bool {
-        // FLOW-8: the acknowledgement of the portal window of the event.
-        let acknowledge = |controller: &mut Controller| {
-            portal.is_some_and(|portal| controller.acknowledge_in(portal))
+        let origin = match (portal, prompt) {
+            (Some(portal), _) => AckOrigin::Portal(portal),
+            (None, Some(prompt)) => AckOrigin::Prompt(prompt),
+            (None, None) => AckOrigin::Computer,
         };
         match event {
             WindowEvent::KeyboardInput { event, .. }
@@ -810,17 +813,18 @@ impl App {
                         PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
                     ) =>
             {
-                acknowledge(&mut self.controller)
-                    || (self.controller.awaiting_local_ack() && self.controller.acknowledge_local())
+                let origin = match origin {
+                    AckOrigin::Prompt(prompt) => AckOrigin::PromptKey(prompt),
+                    origin => origin,
+                };
+                self.controller.acknowledge(origin)
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if portal.is_some() || is_prompt => {
-                let accepted = acknowledge(&mut self.controller)
-                    || (self.controller.awaiting_local_ack()
-                        && self.controller.acknowledge_local());
+            } if portal.is_some() || prompt.is_some() => {
+                let accepted = self.controller.acknowledge(origin);
                 self.swallow_release = accepted;
                 accepted
             }
@@ -840,7 +844,7 @@ impl App {
     fn portal_event(&mut self, portal: PortalId, event: &WindowEvent) -> bool {
         if self
             .hooks
-            .portal_window_event(portal, event, self.controller.forwarding_in(portal))
+            .portal_window_event(portal, event, self.controller.forwarding(portal))
         {
             return true;
         }
@@ -855,8 +859,8 @@ impl App {
                     telescreen_platform_macos::clock(),
                     telescreen_platform_macos::window::key_window_title()
                 );
-                self.controller.set_portal_focus_in(portal, *focused);
-                let guarded = self.controller.guarded_in(portal);
+                self.controller.set_portal_focus(portal, *focused);
+                let guarded = self.controller.guarded(portal);
                 self.hooks.portal_focus(portal, &window, *focused, guarded);
                 false
             }
@@ -867,17 +871,17 @@ impl App {
                     telescreen_platform_macos::clock()
                 );
                 if self.hooks.reports_portal_visibility() {
-                    self.controller.set_portal_visible_in(portal, !occluded);
+                    self.controller.set_portal_visible(portal, !occluded);
                 }
-                if *occluded && self.controller.guarded_in(portal) {
+                if *occluded && self.controller.guarded(portal) {
                     // FLOW-21: keep the portal in place during verification.
                     self.hooks.portal_focus(portal, &window, false, true);
                 }
                 false
             }
             WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
-                if self.controller.forwarding_in(portal) && window.fullscreen().is_none() {
-                    self.controller.portal_left_fullscreen_in(portal);
+                if self.controller.forwarding(portal) && window.fullscreen().is_none() {
+                    self.controller.portal_left_fullscreen(portal);
                 }
                 self.portal_monitor_changed(portal, &window);
                 false
@@ -914,7 +918,10 @@ impl App {
                 }
                 debug::state_response(&StateReport {
                     control: self.controller.control_screen(),
-                    portal: self.controller.portal_screen(),
+                    portal: self
+                        .controller
+                        .main_portal()
+                        .and_then(|id| self.controller.portal_screen(id)),
                     windows,
                 })
             }
@@ -928,7 +935,7 @@ impl App {
                 debug::ok_response()
             }
             Request::Ack => {
-                if self.controller.acknowledge() || self.controller.acknowledge_local() {
+                if self.controller.acknowledge(AckOrigin::Computer) {
                     debug::ok_response()
                 } else if !self.controller.awaiting_ack() && !self.controller.awaiting_local_ack() {
                     debug::error_response("nothing waits for an acknowledgement")
@@ -1088,6 +1095,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Verifier(id, event) => self.controller.on_verifier_event(id, event),
             UserEvent::Captured => {}
+            #[cfg(target_os = "linux")]
+            UserEvent::PromptPressed(prompt) => {
+                self.controller.acknowledge(AckOrigin::Prompt(prompt));
+            }
             UserEvent::Discovery(event) => match event {
                 telescreen_core::platform::DiscoveryEvent::Found(found) => {
                     let trust = paths::trust_file().and_then(|path| {
@@ -1133,9 +1144,14 @@ impl ApplicationHandler<UserEvent> for App {
             .map(|p| p.portal);
         let is_portal = portal.is_some();
         let is_control = self.control.as_ref().is_some_and(|c| c.window.id() == id);
-        let is_prompt = self.prompts.values().any(|p| p.surface.window.id() == id);
+        let prompt = self
+            .prompts
+            .iter()
+            .find(|(_, p)| p.surface.window.id() == id)
+            .map(|(prompt, _)| *prompt);
+        let is_prompt = prompt.is_some();
         let used = (is_portal || is_control || is_prompt)
-            && self.acknowledgement_event(&event, portal, is_prompt)
+            && self.acknowledgement_event(&event, portal, prompt)
             || portal.is_some_and(|portal| self.portal_event(portal, &event));
         if is_control && matches!(event, WindowEvent::CloseRequested) {
             self.controller.shutdown();

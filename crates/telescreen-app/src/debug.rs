@@ -28,7 +28,7 @@ pub enum Request {
     PointerStats,
     /// `{"cmd":"intent","intent":<intent>}`: the same as a click in the UI.
     Intent(Intent),
-    /// `{"cmd":"ack"}`: acknowledges the portal session, else a local verification.
+    /// `{"cmd":"ack"}`: `AckOrigin::Computer`: the portal session, else a local verification.
     Ack,
     /// `{"cmd":"hold_keyboard","display":"<token>"}`: takes keyboard focus (UI-7).
     HoldKeyboard { display: DisplayToken },

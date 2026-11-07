@@ -1,7 +1,8 @@
 //! The confirmation prompt as a layer-shell overlay on the input-target output
 //! (UI-5, FLOW-7). It runs on its own thread with its own Wayland connection.
-//! It does not take keyboard or pointer input: the user confirms on the source,
-//! or, for a hand back, in another window of Telescreen (VER-4).
+//! It takes no input while the user confirms on the source. When the
+//! acknowledgement is on this destination, it takes clicks and the keyboard, and
+//! a left click or Return acknowledges (VER-4).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -15,10 +16,10 @@ use telescreen_core::platform::DisplayInfo;
 use telescreen_core::pointer::Normalized;
 use telescreen_view::{PromptId, PromptPresenter, PromptScreen};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_subcompositor, wl_subsurface,
-    wl_surface,
+    wl_buffer, wl_compositor, wl_keyboard, wl_pointer, wl_region, wl_seat, wl_shm, wl_shm_pool,
+    wl_subcompositor, wl_subsurface, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, QueueHandle, WEnum};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
 
 use crate::wl::{Configure, Globals, State, ignore_events};
@@ -63,6 +64,85 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, u64> for State {
     }
 }
 
+/// The user data of the seat of the prompt connection.
+struct PromptSeat;
+
+impl Dispatch<wl_seat::WlSeat, PromptSeat> for State {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &PromptSeat,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(capabilities),
+        } = event
+        else {
+            return;
+        };
+        let input = &mut state.seat;
+        if capabilities.contains(wl_seat::Capability::Pointer) && input.pointer.is_none() {
+            input.pointer = Some(seat.get_pointer(qh, ()));
+        }
+        if capabilities.contains(wl_seat::Capability::Keyboard) && input.keyboard.is_none() {
+            input.keyboard = Some(seat.get_keyboard(qh, ()));
+        }
+    }
+}
+
+/// The evdev codes of the acknowledgement: the left button, Return, keypad Enter.
+const BTN_LEFT: u32 = 0x110;
+const KEY_ENTER: u32 = 28;
+const KEY_KPENTER: u32 = 96;
+
+impl Dispatch<wl_pointer::WlPointer, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let input = &mut state.seat;
+        match event {
+            wl_pointer::Event::Enter { surface, .. } => input.pointer_on = Some(surface),
+            wl_pointer::Event::Leave { .. } => input.pointer_on = None,
+            wl_pointer::Event::Button {
+                button: BTN_LEFT,
+                state: WEnum::Value(wl_pointer::ButtonState::Pressed),
+                ..
+            } => input.presses.extend(input.pointer_on.clone()),
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let input = &mut state.seat;
+        match event {
+            wl_keyboard::Event::Enter { surface, .. } => input.keyboard_on = Some(surface),
+            wl_keyboard::Event::Leave { .. } => input.keyboard_on = None,
+            wl_keyboard::Event::Key {
+                key: KEY_ENTER | KEY_KPENTER,
+                state: WEnum::Value(wl_keyboard::KeyState::Pressed),
+                ..
+            } => input.presses.extend(input.keyboard_on.clone()),
+            _ => {}
+        }
+    }
+}
+
 enum Command {
     Show {
         prompt: PromptId,
@@ -86,13 +166,15 @@ pub struct LayerPrompt {
 }
 
 impl LayerPrompt {
-    pub fn start() -> Result<Self, String> {
+    /// Starts the prompt thread. It calls `on_ack` with the prompt of a left
+    /// click or Return on a prompt that takes input (VER-4).
+    pub fn start(on_ack: impl Fn(PromptId) + Send + 'static) -> Result<Self, String> {
         let (commands, command_rx) = channel();
         let (result_tx, results) = channel();
         let (ready_tx, ready_rx) = channel();
         thread::Builder::new()
             .name("telescreen-prompt".into())
-            .spawn(move || match Overlay::connect() {
+            .spawn(move || match Overlay::connect(Box::new(on_ack)) {
                 Ok(overlay) => {
                     let _ = ready_tx.send(Ok(()));
                     overlay.run(command_rx, result_tx);
@@ -157,6 +239,8 @@ struct Surface {
     /// The size of the last configure.
     size: Option<(u32, u32)>,
     cursor: Option<Cursor>,
+    /// The surface takes clicks and the keyboard (VER-4).
+    takes_input: bool,
 }
 
 struct Overlay {
@@ -169,10 +253,16 @@ struct Overlay {
     /// The cursor image and its size, made at the first use.
     cursor_image: Option<(wl_buffer::WlBuffer, i32, i32)>,
     surfaces: HashMap<u64, Surface>,
+    on_ack: Box<dyn Fn(PromptId) + Send>,
+}
+
+/// VER-4: the prompt takes input when the acknowledgement is on this destination.
+fn takes_input(screen: &PromptScreen) -> bool {
+    screen.ack_here
 }
 
 impl Overlay {
-    fn connect() -> Result<Self, String> {
+    fn connect(on_ack: Box<dyn Fn(PromptId) + Send>) -> Result<Self, String> {
         let globals = Globals::connect()?;
         let qh = globals.handle();
         let compositor = globals
@@ -188,6 +278,8 @@ impl Overlay {
             .bind(&qh, 1..=4, ())
             .map_err(|_| "the compositor has no zwlr_layer_shell_v1".to_string())?;
         let subcompositor = globals.list.bind(&qh, 1..=1, ()).ok();
+        // With no seat, the prompt takes no input.
+        let _: Option<wl_seat::WlSeat> = globals.list.bind(&qh, 1..=7, PromptSeat).ok();
         Ok(Self {
             globals,
             compositor,
@@ -196,6 +288,7 @@ impl Overlay {
             subcompositor,
             cursor_image: None,
             surfaces: HashMap::new(),
+            on_ack,
         })
     }
 
@@ -246,7 +339,9 @@ impl Overlay {
             && surface.output == output
             && let Some((width, height)) = surface.size
         {
+            let input = takes_input(&screen);
             surface.screen = screen;
+            self.set_input(id, input);
             return self.draw(Configure {
                 surface: id,
                 width,
@@ -258,10 +353,6 @@ impl Overlay {
         let output = self.globals.output(output)?;
         let qh = self.globals.handle();
         let surface = self.compositor.create_surface(&qh, ());
-        // An empty input region: pointer events go to the windows below.
-        let region = self.compositor.create_region(&qh, ());
-        surface.set_input_region(Some(&region));
-        region.destroy();
         let layer = self.shell.get_layer_surface(
             &surface,
             Some(&output),
@@ -270,11 +361,10 @@ impl Overlay {
             &qh,
             id,
         );
-        use zwlr_layer_surface_v1::{Anchor, KeyboardInteractivity};
+        use zwlr_layer_surface_v1::Anchor;
         layer.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
         layer.set_exclusive_zone(-1);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        surface.commit();
+        let input = takes_input(&screen);
         self.surfaces.insert(
             id,
             Surface {
@@ -285,13 +375,46 @@ impl Overlay {
                 output: output_name,
                 size: None,
                 cursor: None,
+                // `set_input` sets the state of a new surface.
+                takes_input: !input,
             },
         );
+        self.set_input(id, input);
+        if let Some(surface) = self.surfaces.get(&id) {
+            surface.surface.commit();
+        }
         self.globals.roundtrip()?;
         self.handle_events();
         match self.surfaces.get(&id) {
             Some(s) if s.buffer.is_some() => Ok(()),
             _ => Err("the compositor did not configure the prompt".into()),
+        }
+    }
+
+    /// VER-4: with input, the surface takes the pointer on all of its area and
+    /// takes the keyboard. Else pointer events go to the windows below, and the
+    /// surface never has the keyboard focus. The next commit applies it.
+    fn set_input(&mut self, id: u64, input: bool) {
+        use zwlr_layer_surface_v1::KeyboardInteractivity;
+        let Some(surface) = self.surfaces.get_mut(&id) else {
+            return;
+        };
+        if surface.takes_input == input {
+            return;
+        }
+        surface.takes_input = input;
+        if input {
+            surface.surface.set_input_region(None);
+            surface
+                .layer
+                .set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+        } else {
+            let region = self.compositor.create_region(&self.globals.handle(), ());
+            surface.surface.set_input_region(Some(&region));
+            region.destroy();
+            surface
+                .layer
+                .set_keyboard_interactivity(KeyboardInteractivity::None);
         }
     }
 
@@ -313,6 +436,16 @@ impl Overlay {
     fn handle_events(&mut self) {
         for id in std::mem::take(&mut self.globals.state.closed) {
             self.hide(id);
+        }
+        for pressed in std::mem::take(&mut self.globals.state.seat.presses) {
+            let prompt = self
+                .surfaces
+                .iter()
+                .find(|(_, s)| s.takes_input && s.surface == pressed)
+                .map(|(id, _)| PromptId(*id));
+            if let Some(prompt) = prompt {
+                (self.on_ack)(prompt);
+            }
         }
         for configure in std::mem::take(&mut self.globals.state.configures) {
             if let Err(e) = self.draw(configure) {
