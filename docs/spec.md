@@ -14,7 +14,7 @@ Example setup: a MacBook with a built-in display and an external display. A Linu
 
 ### 2.1 Versions
 
-Versions follow Semantic Versioning. There is no stable release, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version. From v0.600.0, the hundreds of the minor version mark a large release, and the two last digits count the small features (user, 2026-11-07). Example: v0.600.0 is the UI redesign, v0.601.0 is its first small feature, v0.601.1 is a fix, and the next large release is v0.700.0. v0.5.0 is the last version before this rule. The rule applies also below v0.600.0: v0.501.0 is the first small feature after v0.5.0, a test release of the partial UI redesign (user, 2026-11-07).
+Versions follow Semantic Versioning. There is no stable release, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version. From v0.600.0, the hundreds of the minor version mark a large release, and the two last digits count the small features (user, 2026-11-07). Example: v0.600.0 is the UI redesign, v0.601.0 is its first small feature, v0.601.1 is a fix, and the next large release is v0.700.0. v0.5.0 is the last version before this rule. The rule applies also below v0.600.0: v0.501.0 is the first small feature after v0.5.0, a test release of the partial UI redesign (user, 2026-11-07). v0.502.0 is the next test release, with the Qt UI on Linux and the scroll fixes (user, 2026-11-08).
 
 v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user, 2026-10-27). The first release is v0.3.0.
 
