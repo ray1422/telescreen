@@ -1,0 +1,34 @@
+// The Qt application of the Linux UI. A QApplication (not a QGuiApplication),
+// because the KDE Qt Quick Controls style (org.kde.desktop) draws with QStyle.
+
+#include "app.h"
+
+#include <QtGui/QIcon>
+#include <QtQml/QQmlApplicationEngine>
+#include <QtQuickControls2/QQuickStyle>
+#include <QtWidgets/QApplication>
+
+std::int32_t ts_ui_run()
+{
+    static int argc = 1;
+    static char name[] = "telescreen";
+    static char *argv[] = {name, nullptr};
+
+    // The style of the desktop, unless the user selected a different one.
+    if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE")) {
+        QQuickStyle::setStyle(QStringLiteral("org.kde.desktop"));
+    }
+    QApplication app(argc, argv);
+    QApplication::setApplicationName(QStringLiteral("Telescreen"));
+    // The Wayland app ID; the launcher entry has this name (DIST-4).
+    QApplication::setDesktopFileName(QStringLiteral("dev.telescreen.Telescreen"));
+    // UI-15: the app continues to run when the user closes all its windows.
+    QApplication::setQuitOnLastWindowClosed(false);
+
+    QQmlApplicationEngine engine;
+    engine.loadFromModule("dev.telescreen.ui", "App");
+    if (engine.rootObjects().isEmpty()) {
+        return 1;
+    }
+    return app.exec();
+}
