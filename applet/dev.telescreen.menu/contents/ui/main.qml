@@ -33,14 +33,20 @@ PlasmoidItem {
         return state === "idle" && expanded ? "menu-open" : state
     }
 
+    // The signature is the tuple of all arguments: "(s)", not "s". With "s",
+    // Plasma sends no argument, and Telescreen answers "Signature mismatch".
     function call(member, args) {
-        DBus.SessionBus.asyncCall({
+        const reply = DBus.SessionBus.asyncCall({
             service: service,
             path: objectPath,
             iface: iface,
             member: member,
             arguments: args,
-            signature: args.length > 0 ? "s" : "",
+            signature: "(" + "s".repeat(args.length) + ")",
+        })
+        reply.finished.connect(() => {
+            if (reply.isError)
+                console.warn("Telescreen:", member, "failed:", reply.error.message)
         })
     }
 

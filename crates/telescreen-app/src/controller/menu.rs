@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 
 use telescreen_core::config::Device;
-use telescreen_core::ids::{ComputerId, DisplayToken};
+use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken};
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::routes;
 use telescreen_core::session::VideoInput;
@@ -190,6 +190,7 @@ impl Controller {
                 peer: session.target().clone(),
                 peer_label: self.label_of(session.target()),
                 device: session.device().clone(),
+                device_label: self.device_label(session.device()),
                 role: MenuRole::Source {
                     phase: self.phase_view(session),
                     video_input: session.video_input(),
@@ -202,13 +203,23 @@ impl Controller {
                 peer: target.source().clone(),
                 peer_label: self.label_of(target.source()),
                 device: target.device().clone(),
+                device_label: self.device_label(target.device()),
                 role: MenuRole::Target {
                     state: target_phase_text(target.phase()).into(),
                     hand_back: self.hand_back_cause(target),
+                    video_input: self.device_states.get(target.device()).copied(),
                 },
             });
         }
         rows
+    }
+
+    /// The label of a local device, else its alias, else its id.
+    fn device_label(&self, id: &DeviceId) -> String {
+        match self.local_device(id) {
+            Some((alias, device)) => device.label.unwrap_or(alias),
+            None => id.0.clone(),
+        }
     }
 
     fn menu_displays(&self) -> Vec<MenuDisplay> {
@@ -240,6 +251,7 @@ impl Controller {
                     .iter()
                     .filter(|(alias, _)| matched.contains(alias))
                     .map(|(alias, device)| MenuDevice {
+                        in_session: false,
                         device: device.id.clone(),
                         alias: alias.clone(),
                         label: device.label.clone().unwrap_or_else(|| alias.clone()),
@@ -318,11 +330,39 @@ impl Controller {
 
     /// The menu (UI-9). A UI draws it when it changes (UI-18).
     pub fn menu_screen(&self) -> MenuScreen {
+        let sessions = self.menu_sessions();
+        let mut displays = self.menu_displays();
+        // UI-9, the mockups: a session as the target hides its device, and a
+        // display with no other device goes away. A session as the source
+        // marks its device, and its target is not a candidate.
+        let mut hidden = Vec::new();
+        for session in &sessions {
+            let target = matches!(session.role, MenuRole::Target { .. });
+            for display in &mut displays {
+                if target {
+                    let before = display.devices.len();
+                    display.devices.retain(|d| d.device != session.device);
+                    if before > 0 && display.devices.is_empty() {
+                        hidden.push(display.token.clone());
+                    }
+                } else {
+                    for device in display
+                        .devices
+                        .iter_mut()
+                        .filter(|d| d.device == session.device)
+                    {
+                        device.in_session = true;
+                        device.candidates.retain(|c| c.target != session.peer);
+                    }
+                }
+            }
+        }
+        displays.retain(|d| !hidden.contains(&d.token));
         MenuScreen {
             computer: self.label_of(&self.local),
             glyph: self.glyph(),
-            sessions: self.menu_sessions(),
-            displays: self.menu_displays(),
+            sessions,
+            displays,
             control_requests: self.control_request_rows(),
             clipboard: self
                 .ports

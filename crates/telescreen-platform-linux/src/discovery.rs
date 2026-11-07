@@ -149,7 +149,7 @@ impl Discovery for AvahiDiscovery {
             "Ping",
             &(),
         );
-        // Not joined on the main thread: a running resolve can take some time.
+        // Not joined on the window layer thread: a running resolve can take some time.
         drop(search.thread);
     }
 }

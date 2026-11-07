@@ -145,6 +145,10 @@ pub(crate) fn prompt_created(prompt: &Window) {
 /// The app that was frontmost before a prompt took the focus (FLOW-26).
 pub(crate) type Frontmost = Option<window::FrontmostApp>;
 
+/// The native UI of this platform (ADR 0012).
+pub(crate) type NativeUi = telescreen_ui_macos::MacUi;
+pub(crate) use telescreen_ui_macos::UiEvent;
+
 /// VER-4, FLOW-26: a prompt that waits for the acknowledgement on this
 /// computer, and the warning, take clicks and the keyboard focus. Returns the
 /// app that was frontmost before, if it is not Telescreen.

@@ -3,6 +3,7 @@
 
 #include "app.h"
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QUrl>
 #include <QtGui/QIcon>
 #include <QtQml/QQmlApplicationEngine>
@@ -35,4 +36,9 @@ std::int32_t ts_ui_run()
         return 1;
     }
     return app.exec();
+}
+
+void ts_ui_quit()
+{
+    QCoreApplication::quit();
 }

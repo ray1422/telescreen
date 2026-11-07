@@ -8,6 +8,7 @@
         ],
         "Category": "System Information",
         "Description": "Switch the shared display and control another computer",
+        "EnabledByDefault": true,
         "Icon": "video-display",
         "Id": "dev.telescreen.menu",
         "License": "BSD-3-Clause",

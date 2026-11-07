@@ -3539,6 +3539,7 @@ dependencies = [
  "telescreen-platform-macos",
  "telescreen-render-egui",
  "telescreen-transport",
+ "telescreen-ui-linux",
  "telescreen-ui-macos",
  "telescreen-view",
  "thiserror 2.0.21",
@@ -3634,6 +3635,7 @@ dependencies = [
  "cxx-qt-lib",
  "serde_json",
  "telescreen-view",
+ "zbus",
 ]
 
 [[package]]

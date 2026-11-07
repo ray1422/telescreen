@@ -18,6 +18,7 @@ serde_json.workspace = true
 cxx.workspace = true
 cxx-qt.workspace = true
 cxx-qt-lib = { workspace = true, features = ["qt_gui", "qt_qml"] }
+zbus.workspace = true
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
 cxx-qt-build.workspace = true

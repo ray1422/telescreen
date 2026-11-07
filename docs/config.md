@@ -11,7 +11,7 @@ The default file is `$XDG_CONFIG_HOME/telescreen/config.yaml`, else `~/.config/t
 - `version: 1`: the config format version. Reject unknown versions at load time.
 - `computers`: the keys are stable computer IDs. The user selects the local ID (spec PEER-3). You must not guess it from the hostname.
 - `hint`: optional plain text, 1 to 500 characters. The `prompt` verifier of this computer shows it after a handoff to this computer (spec VER-5). Example: the copy/paste shortcuts of this computer. It is not a template and not markup.
-- `clipboard`: optional. `clipboard.text` (boolean, default `true`) is the start value of the text clipboard switch of this computer (CLIP-1). The control window can change the switch while the app runs; the change is not saved. No other key is permitted in `clipboard`.
+- `clipboard`: optional. `clipboard.text` (boolean, default `true`) is the start value of the text clipboard switch of this computer (CLIP-1). The menu and the main window can change the switch while the app runs; the change is not saved. No other key is permitted in `clipboard`.
 - `scroll-speed`: optional number, larger than 0 and not larger than 10 (default `1`). This computer multiplies each scroll that it receives from a source by this number (spec IN-14). Example: `0.4` on the Linux computer makes the scroll from the Mac slower.
 - `disabled-quirks`: optional list of workaround names, with no duplicates (default: an empty list). This computer uses each platform workaround, unless this list has its name (spec IN-16). An unknown name is an error. The change takes effect when the app starts. The names:
   - `kwin-button-scroll`: on KWin, a forwarded scroll is a button scroll (spec IN-15). If this list has the name, a forwarded scroll on KWin is a wheel scroll, and applications can animate it.
@@ -73,7 +73,7 @@ Each operation has its own timer. On timeout, you must stop the child process tr
 - A program with a `/` must be an absolute path. Telescreen does not find it in the search path.
 - A program name with no `/` is found in the search path (user, 2026-10-27). If the computer section has `path`, use it. Else read `PATH` from the login shell of the user one time at the start: `$SHELL -l -c` with a command that prints `PATH`. Reason: an app that macOS starts from Finder or `open` has only the system directories in its own `PATH`.
 - The program gets the search path as its `PATH`, so that a script finds the same programs. `env` can replace it (Claude decides, 2026-10-27).
-- If Telescreen cannot read the `PATH` of the login shell, it uses its own `PATH` and shows a notice in the control window (Claude decides, 2026-10-27).
+- If Telescreen cannot read the `PATH` of the login shell, it uses its own `PATH` and shows a notice in the main window (Claude decides, 2026-10-27).
 - `open` on macOS starts an app through Launch Services and returns at once. The output of the app does not come back, and the exit code is the exit code of `open`. Use the executable in the app bundle, or `open --stdout`.
 
 ## The `command` Driver (protocol 2)

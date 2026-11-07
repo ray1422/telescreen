@@ -441,6 +441,10 @@ pub(crate) fn prompt_created(_: &Window) {}
 /// A Wayland client cannot activate a different app (FLOW-26).
 pub(crate) type Frontmost = Option<()>;
 
+/// The native UI of this platform (ADR 0012).
+pub(crate) type NativeUi = telescreen_ui_linux::LinuxUi;
+pub(crate) use telescreen_ui_linux::UiEvent;
+
 /// VER-4, FLOW-26: the layer-shell prompt sets its input itself, and reports a
 /// press with `UserEvent::PromptPressed`. A normal window takes input.
 pub(crate) fn prompt_input(_: &Window, _: bool) -> Frontmost {

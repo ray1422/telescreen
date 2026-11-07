@@ -1,7 +1,10 @@
-//! The window layer: the winit event loop, the control window, the portal window,
-//! and (on macOS) the prompt windows. It gives events to the controller and draws
-//! the view models with the renderer. The platform hooks are in `mac.rs` and
-//! `linux.rs`.
+//! The window layer: the winit event loop, the start window, the portal windows,
+//! and the prompt windows. It gives events to the controller, draws the view
+//! models with the renderer, and pushes the view models to the native UI
+//! (ADR 0012). The platform hooks are in `mac.rs` and `linux.rs`.
+//!
+//! On Linux the Qt event loop of the native UI runs on the main thread, and the
+//! winit event loop runs on a second thread (M20 step g).
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -73,6 +76,9 @@ pub enum UserEvent {
     /// An event of the native UI (ADR 0012).
     #[cfg(target_os = "macos")]
     Ui(telescreen_ui_macos::UiEvent),
+    /// An event of the native UI (ADR 0012).
+    #[cfg(target_os = "linux")]
+    Ui(telescreen_ui_linux::UiEvent),
 }
 
 /// The command-line options for starting Telescreen.
@@ -86,8 +92,100 @@ pub struct Launch {
     pub debug_socket: Option<PathBuf>,
 }
 
-/// Resolves the local computer, then runs until the control window closes.
+/// Resolves the local computer, then runs until the user quits (UI-15).
+#[cfg(not(target_os = "linux"))]
 pub fn launch(launch: Launch) -> Result<(), String> {
+    run_window_layer(launch, EventLoop::<UserEvent>::with_user_event())
+}
+
+/// Resolves the local computer, then runs until the user quits (UI-15).
+///
+/// First it takes the D-Bus name of the single instance (UI-15). If a different
+/// process has the name, that process shows its main window, and this one
+/// stops. With no session bus, Telescreen runs with no single instance and no
+/// applet.
+///
+/// Qt must run on the main thread, so the winit loop runs on a second thread.
+/// The Qt loop starts only when the app starts. Before that, the window layer
+/// can stop with an error or show the start window (UI-8). At quit, the winit
+/// thread drops its windows and its Wayland objects, then it stops the Qt loop
+/// (spike 6).
+#[cfg(target_os = "linux")]
+pub fn launch(launch: Launch) -> Result<(), String> {
+    use telescreen_ui_linux::Claim;
+    use winit::platform::wayland::EventLoopBuilderExtWayland;
+    use winit::platform::x11::EventLoopBuilderExtX11;
+
+    let menu_server = match telescreen_ui_linux::claim() {
+        Ok(Claim::Owner(server)) => Some(server),
+        // A debug start must not end as a success with no debug socket.
+        Ok(Claim::Running(_)) if launch.debug_socket.is_some() => {
+            return Err("Telescreen already runs; quit it to start with a debug socket".into());
+        }
+        Ok(Claim::Running(Ok(()))) => {
+            println!("telescreen: Telescreen already runs; it shows its main window");
+            return Ok(());
+        }
+        Ok(Claim::Running(Err(error))) => {
+            return Err(format!(
+                "Telescreen already runs, but it cannot show its main window: {error}"
+            ));
+        }
+        Err(error) => {
+            eprintln!(
+                "telescreen: no session bus ({error}); Telescreen runs with no single instance and no applet"
+            );
+            None
+        }
+    };
+
+    /// Stops the Qt loop when the winit thread ends, also after a panic.
+    struct QuitQt;
+    impl Drop for QuitQt {
+        fn drop(&mut self) {
+            telescreen_ui_linux::quit();
+        }
+    }
+
+    let (qt_start, start) = std::sync::mpsc::channel();
+    let winit = std::thread::Builder::new()
+        .name("telescreen-winit".into())
+        .spawn(move || {
+            let _quit = QuitQt;
+            let mut builder = EventLoop::<UserEvent>::with_user_event();
+            EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
+            EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
+            QT_START.with_borrow_mut(|s| *s = Some(qt_start));
+            MENU_SERVER.with_borrow_mut(|s| *s = menu_server);
+            run_window_layer(launch, builder)
+        })
+        .map_err(|e| e.to_string())?;
+    // An error: the winit thread ended, and the sender is gone.
+    if start.recv().is_ok() {
+        let code = telescreen_ui_linux::run();
+        if code != 0 {
+            eprintln!("telescreen: the Qt UI stopped with code {code}");
+        }
+    }
+    winit
+        .join()
+        .unwrap_or_else(|_| Err("the window thread panicked".into()))
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    /// The window layer sends one message when the Qt loop must start.
+    static QT_START: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> =
+        const { std::cell::RefCell::new(None) };
+    /// The D-Bus service of the applet, until the app starts (UI-11).
+    static MENU_SERVER: std::cell::RefCell<Option<telescreen_ui_linux::MenuServer>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn run_window_layer(
+    launch: Launch,
+    mut builder: winit::event_loop::EventLoopBuilder<UserEvent>,
+) -> Result<(), String> {
     let interactive = launch.config.is_none() && launch.computer.is_none();
     let config_path = match launch.config {
         Some(path) => path,
@@ -108,12 +206,10 @@ pub fn launch(launch: Launch) -> Result<(), String> {
         }
         eprintln!("telescreen: {text}");
     }
-    let mut event_loop = EventLoop::<UserEvent>::with_user_event()
-        .build()
-        .map_err(|e| match &startup {
-            Startup::Problem(text) => text.clone(),
-            _ => e.to_string(),
-        })?;
+    let mut event_loop = builder.build().map_err(|e| match &startup {
+        Startup::Problem(text) => text.clone(),
+        _ => e.to_string(),
+    })?;
     // Before the start window: a test can select the computer (UI-8).
     #[cfg(feature = "debug-protocol")]
     let debug_server = match &launch.debug_socket {
@@ -310,21 +406,17 @@ fn start_app(
         #[cfg(feature = "debug-protocol")]
         _debug_server: None,
         hooks: parts.hooks,
-        control: None,
         portals: BTreeMap::new(),
         prompts: HashMap::new(),
         frontmost_before: None,
         last_display_check: Instant::now(),
         swallow_release: false,
-        drawn_control: None,
         drawn_portals: HashMap::new(),
-        #[cfg(target_os = "macos")]
         native: None,
-        #[cfg(target_os = "macos")]
+        #[cfg(target_os = "linux")]
+        menu_server: None,
         menu: telescreen_view::Publisher::new(),
-        #[cfg(target_os = "macos")]
         main: telescreen_view::Publisher::new(),
-        #[cfg(target_os = "macos")]
         proxy: event_loop.create_proxy(),
     })
 }
@@ -421,7 +513,6 @@ struct App {
     #[cfg(feature = "debug-protocol")]
     _debug_server: Option<crate::debug::Server>,
     hooks: platform::Hooks,
-    control: Option<Surface>,
     /// One window for each portal of the controller (FLOW-25).
     portals: BTreeMap<PortalId, PortalSurface>,
     prompts: HashMap<PromptId, PromptSurface>,
@@ -431,17 +522,14 @@ struct App {
     last_display_check: Instant,
     /// The release of an acknowledgement click must not go to the UI (FLOW-9).
     swallow_release: bool,
-    drawn_control: Option<telescreen_view::ControlScreen>,
     drawn_portals: HashMap<PortalId, telescreen_view::PortalScreen>,
-    /// The native menu (ADR 0012, UI-9). The egui control window stays until
-    /// the main window replaces it.
-    #[cfg(target_os = "macos")]
-    native: Option<telescreen_ui_macos::MacUi>,
-    #[cfg(target_os = "macos")]
+    /// The native UI (ADR 0012): the menu (UI-9) and the main window (UI-13).
+    native: Option<platform::NativeUi>,
+    /// The D-Bus service of the applet (UI-11). `None` with no session bus.
+    #[cfg(target_os = "linux")]
+    menu_server: Option<telescreen_ui_linux::MenuServer>,
     menu: telescreen_view::Publisher<telescreen_view::MenuScreen>,
-    #[cfg(target_os = "macos")]
     main: telescreen_view::Publisher<telescreen_view::MainScreen>,
-    #[cfg(target_os = "macos")]
     proxy: EventLoopProxy<UserEvent>,
 }
 
@@ -631,11 +719,6 @@ impl App {
             self.hooks.portal_closed(portal);
         }
         // Draw again only when a view model changed.
-        if let Some(control) = &self.control
-            && self.drawn_control.as_ref() != Some(&self.controller.control_screen())
-        {
-            control.window.request_redraw();
-        }
         for portal in self.portals.values() {
             if self.drawn_portals.get(&portal.portal)
                 != self.controller.portal_screen(portal.portal).as_ref()
@@ -653,26 +736,19 @@ impl App {
                 native.push_main(main);
             }
         }
-    }
-
-    /// The egui control window (until the native main window replaces it).
-    #[cfg(not(target_os = "macos"))]
-    fn open_control_window(&mut self, event_loop: &ActiveEventLoop) {
-        let attributes = platform::window_attributes(Window::default_attributes())
-            .with_title("Telescreen")
-            .with_inner_size(LogicalSize::new(560.0, 520.0));
-        match event_loop.create_window(attributes) {
-            Ok(window) => {
-                let (surface, error) = Surface::new(window, &mut self.gpu);
-                if let Some(error) = error {
-                    eprintln!("telescreen: {error}");
-                }
-                self.control = Some(surface);
-            }
-            Err(e) => {
-                eprintln!("telescreen: cannot open the window: {e}");
-                event_loop.exit();
-            }
+        #[cfg(target_os = "linux")]
+        if let Some(native) = &self.native
+            && let Some(main) = self.main.update(self.controller.main_screen())
+            && let Err(error) = native.push_main(main)
+        {
+            eprintln!("telescreen: cannot show the main window: {error}");
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(server) = &self.menu_server
+            && let Some(menu) = self.menu.update(self.controller.menu_screen())
+            && let Err(error) = server.push_menu(menu)
+        {
+            eprintln!("telescreen: cannot give the menu to the applet: {error}");
         }
     }
 
@@ -688,6 +764,33 @@ impl App {
                 Err(error) => eprintln!("telescreen: no native menu: {error}"),
             }
         }
+        #[cfg(target_os = "linux")]
+        if self.native.is_none() {
+            let proxy = std::sync::Mutex::new(self.proxy.clone());
+            self.native = Some(telescreen_ui_linux::LinuxUi::new(move |event| {
+                if let Ok(proxy) = proxy.lock() {
+                    let _ = proxy.send_event(UserEvent::Ui(event));
+                }
+            }));
+            // The Qt loop starts on the main thread.
+            if let Some(start) = QT_START.with_borrow_mut(Option::take) {
+                let _ = start.send(());
+            }
+        }
+        #[cfg(target_os = "linux")]
+        if self.menu_server.is_none()
+            && let Some(server) = MENU_SERVER.with_borrow_mut(Option::take)
+        {
+            let proxy = std::sync::Mutex::new(self.proxy.clone());
+            match server.set_sink(move |event| {
+                if let Ok(proxy) = proxy.lock() {
+                    let _ = proxy.send_event(UserEvent::Ui(event));
+                }
+            }) {
+                Ok(()) => self.menu_server = Some(server),
+                Err(error) => eprintln!("telescreen: no applet: {error}"),
+            }
+        }
         let trusted = paths::trust_file().and_then(|path| {
             telescreen_transport::TrustStore::load(&path).map_err(|e| e.to_string())
         });
@@ -700,9 +803,8 @@ impl App {
         self.controller.evaluate_displays();
     }
 
-    #[cfg(target_os = "macos")]
-    fn ui_event(&mut self, event_loop: &ActiveEventLoop, event: telescreen_ui_macos::UiEvent) {
-        use telescreen_ui_macos::UiEvent;
+    fn ui_event(&mut self, event_loop: &ActiveEventLoop, event: platform::UiEvent) {
+        use platform::UiEvent;
         match event {
             UiEvent::Intent(intent) => self.handle_intents(event_loop, vec![intent]),
             UiEvent::Quit => {
@@ -713,6 +815,12 @@ impl App {
             }
             UiEvent::OpenSettings => {
                 eprintln!("telescreen: the settings window is not implemented yet");
+            }
+            #[cfg(target_os = "linux")]
+            UiEvent::ShowMainWindow => {
+                if let Some(native) = &self.native {
+                    native.show_main_window();
+                }
             }
         }
     }
@@ -794,13 +902,7 @@ impl App {
 
     fn draw(&mut self, event_loop: &ActiveEventLoop, id: WindowId) {
         let mut intents = Vec::new();
-        if let Some(control) = self.control.as_mut().filter(|c| c.window.id() == id) {
-            let screen = self.controller.control_screen();
-            if let Some(renderer) = &mut control.renderer {
-                intents = renderer.draw_control(&screen);
-            }
-            self.drawn_control = Some(screen);
-        } else if let Some(portal) = self
+        if let Some(portal) = self
             .portals
             .values_mut()
             .find(|p| p.surface.window.id() == id)
@@ -956,9 +1058,6 @@ impl App {
         match request {
             Request::State => {
                 let mut windows = Vec::new();
-                if let Some(control) = &self.control {
-                    windows.push(window_facts(WindowRole::Control, &control.window));
-                }
                 for portal in self.portals.values() {
                     windows.push(window_facts(WindowRole::Portal, &portal.surface.window));
                 }
@@ -1004,15 +1103,7 @@ impl App {
                 debug::ok_response()
             }
             Request::ChooseComputer { .. } => debug::error_response("no start window is open"),
-            Request::MoveControl { x, y } => match &self.control {
-                Some(control) => {
-                    control
-                        .window
-                        .set_outer_position(LogicalPosition::new(x, y));
-                    debug::ok_response()
-                }
-                None => debug::error_response("no control window"),
-            },
+            Request::MoveControl { .. } => debug::error_response("no control window"),
             Request::Quit => {
                 self.controller.shutdown();
                 self.close_portal_windows();
@@ -1050,6 +1141,21 @@ impl App {
                         "ok": true,
                         "visible": native.main_window_visible(),
                         "dock_icon": native.dock_icon_visible(),
+                    })
+                    .to_string();
+                }
+                #[cfg(target_os = "linux")]
+                if let Some(native) = &self.native {
+                    match show {
+                        Some(true) => native.show_main_window(),
+                        Some(false) => native.close_main_window(),
+                        None => {}
+                    }
+                    // The Qt thread runs the request later; `visible` is the
+                    // state before the request.
+                    return serde_json::json!({
+                        "ok": true,
+                        "visible": native.main_window_visible(),
                     })
                     .to_string();
                 }
@@ -1107,11 +1213,7 @@ fn debug_server(
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.control.is_some() {
-            return;
-        }
-        // macOS: the native main window replaces the egui control window (UI-13).
-        #[cfg(target_os = "macos")]
+        // The native main window replaces the egui control window (UI-13).
         if self.native.is_none() {
             self.start_native_ui();
             match &self.native {
@@ -1119,11 +1221,6 @@ impl ApplicationHandler<UserEvent> for App {
                 None => event_loop.exit(),
             }
             self.sync(event_loop);
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            self.start_native_ui();
-            self.open_control_window(event_loop);
         }
     }
 
@@ -1181,7 +1278,6 @@ impl ApplicationHandler<UserEvent> for App {
                 let response = self.debug_request(event_loop, request);
                 let _ = reply.send(response);
             }
-            #[cfg(target_os = "macos")]
             UserEvent::Ui(event) => self.ui_event(event_loop, event),
         }
         self.sync(event_loop);
@@ -1198,27 +1294,17 @@ impl ApplicationHandler<UserEvent> for App {
             .find(|p| p.surface.window.id() == id)
             .map(|p| p.portal);
         let is_portal = portal.is_some();
-        let is_control = self.control.as_ref().is_some_and(|c| c.window.id() == id);
         let prompt = self
             .prompts
             .iter()
             .find(|(_, p)| p.surface.window.id() == id)
             .map(|(prompt, _)| *prompt);
         let is_prompt = prompt.is_some();
-        let used = (is_portal || is_control || is_prompt)
-            && self.acknowledgement_event(&event, portal, prompt)
+        let used = (is_portal || is_prompt) && self.acknowledgement_event(&event, portal, prompt)
             || portal.is_some_and(|portal| self.portal_event(portal, &event));
-        if is_control && matches!(event, WindowEvent::CloseRequested) {
-            self.controller.shutdown();
-            self.close_portal_windows();
-            event_loop.exit();
-            return;
-        }
         if !used {
             let surface = if let Some(portal) = portal {
                 self.portals.get_mut(&portal).map(|p| &mut p.surface)
-            } else if is_control {
-                self.control.as_mut()
             } else {
                 self.prompts
                     .values_mut()

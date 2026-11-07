@@ -14,6 +14,8 @@ Item {
     required property string display
     required property string device
     property var controlRequest: null
+    // The device is in a session of this computer as the source (UI-9).
+    property bool inSession: false
     signal intent(var intent)
 
     readonly property bool online: candidate.status === "online"
@@ -39,6 +41,8 @@ Item {
             return i18n("%1 · Waiting for %2…", status, candidate.label)
         if (candidate.switch_and_control && candidate.status === "online")
             return status + " · " + candidate.switch_and_control
+        if (inSession)
+            return i18n("%1 · ends the current session", status)
         return status
     }
 
@@ -76,7 +80,7 @@ Item {
             spacing: Kirigami.Units.largeSpacing
             Kirigami.Icon {
                 source: "computer-symbolic"
-                implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                implicitWidth: Kirigami.Units.iconSizes.medium
                 implicitHeight: implicitWidth
                 opacity: root.online ? 1 : 0.6
             }
@@ -86,6 +90,7 @@ Item {
                 PlasmaComponents3.Label {
                     Layout.fillWidth: true
                     text: root.candidate.label
+                    font.weight: Font.DemiBold
                     elide: Text.ElideRight
                 }
                 PlasmaComponents3.Label {
@@ -100,30 +105,28 @@ Item {
 
         Repeater {
             model: root.actions
-            // The primary action is an accent button, as in the mockup. The
-            // Plasma button style has no highlighted state.
-            delegate: PlasmaComponents3.Button {
-                id: button
+            // The primary action is the accent button of the mockup.
+            delegate: Loader {
+                id: slot
                 required property var modelData
                 required property int index
-                readonly property bool primary: index === 0
-                font.weight: primary ? Font.DemiBold : Font.Normal
-                palette.buttonText: primary ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
-                Component.onCompleted: if (primary) background = accent
-                G2Rect {
-                    id: accent
-                    visible: button.primary
-                    radius: Kirigami.Units.cornerRadius
-                    color: button.down ? Qt.darker(Kirigami.Theme.highlightColor, 1.15)
-                         : button.hovered ? Qt.lighter(Kirigami.Theme.highlightColor, 1.2)
-                         : Kirigami.Theme.highlightColor
-                    borderColor: Kirigami.Theme.focusColor
-                    borderWidth: button.visualFocus ? 2 : 0
-                }
                 Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.iconSizes.smallMedium + Kirigami.Units.largeSpacing
-                text: modelData.text
-                onClicked: root.run(modelData.kind)
+                Layout.leftMargin: Kirigami.Units.iconSizes.medium + Kirigami.Units.largeSpacing
+                sourceComponent: index === 0 ? primaryButton : plainButton
+                Component {
+                    id: primaryButton
+                    PrimaryButton {
+                        text: slot.modelData.text
+                        onClicked: root.run(slot.modelData.kind)
+                    }
+                }
+                Component {
+                    id: plainButton
+                    PlasmaComponents3.Button {
+                        text: slot.modelData.text
+                        onClicked: root.run(slot.modelData.kind)
+                    }
+                }
             }
         }
     }

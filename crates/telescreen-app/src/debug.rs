@@ -41,14 +41,16 @@ pub enum Request {
     /// `{"cmd":"choose_computer","computer":"<id>"}`: the same as the click in the
     /// start window (UI-8).
     ChooseComputer { computer: ComputerId },
-    /// `{"cmd":"move_control","x":<x>,"y":<y>}`: moves the control window, in
-    /// logical pixels. The portal opens on the display of this window.
+    /// `{"cmd":"move_control","x":<x>,"y":<y>}`: an error. The native main
+    /// window replaced the control window (UI-13).
     MoveControl { x: f64, y: f64 },
     /// `{"cmd":"menu","show":<bool>}`: opens or closes the native menu (UI-9), and
     /// returns the last view model and the panel frame. `show` is optional.
     Menu { show: Option<bool> },
     /// `{"cmd":"main_window","show":<bool>}`: opens or closes the native main
     /// window (UI-13), and returns its state and the Dock icon state (UI-14).
+    /// On Linux the Qt thread opens or closes the window later, so `visible` is
+    /// the state before the request, and the Dock icon state is not there.
     MainWindow { show: Option<bool> },
 }
 

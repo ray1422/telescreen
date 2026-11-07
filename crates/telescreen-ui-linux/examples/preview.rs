@@ -22,11 +22,11 @@ fn main() {
             }
         }
     };
-    let (events, received) = std::sync::mpsc::channel();
-    telescreen_ui_linux::set_events(events);
-    std::thread::spawn(move || {
-        for event in received {
-            println!("preview: {event:?}");
+    let ui = telescreen_ui_linux::LinuxUi::new(|event| {
+        println!("preview: {event:?}");
+        // UI-15: the app stops only for "Quit Telescreen".
+        if event == telescreen_ui_linux::UiEvent::Quit {
+            telescreen_ui_linux::quit();
         }
     });
     std::thread::spawn(move || {
@@ -36,7 +36,7 @@ fn main() {
                 && last != Some(modified)
             {
                 last = Some(modified);
-                if let Err(e) = telescreen_ui_linux::push_main(&screen) {
+                if let Err(e) = ui.push_main(&screen) {
                     eprintln!("preview: {e}");
                 }
             }

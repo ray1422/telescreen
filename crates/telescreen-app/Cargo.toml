@@ -39,3 +39,4 @@ telescreen-ui-macos.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 telescreen-platform-linux.workspace = true
+telescreen-ui-linux.workspace = true

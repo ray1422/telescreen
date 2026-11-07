@@ -4267,6 +4267,56 @@ fn pc1_candidate(peer: &Peer) -> telescreen_view::MenuCandidate {
 }
 
 #[test]
+fn ui9_the_target_does_not_list_the_display_of_its_session() {
+    let mut w = World::new();
+    w.pc1.controller.evaluate_displays();
+    w.pump();
+    assert!(
+        w.pc1
+            .controller
+            .menu_screen()
+            .displays
+            .iter()
+            .any(|d| d.token.0 == "HDMI-A-2"),
+        "listed before the session"
+    );
+    w.advance_to_forwarding();
+    let menu = w.pc1.controller.menu_screen();
+    assert_eq!(menu.sessions.len(), 1);
+    // The session card stands for the device (mockup "KDE plasmoid,
+    // controlled by Mac": "Other displays").
+    assert!(menu.displays.is_empty(), "{:?}", menu.displays);
+}
+
+#[test]
+fn ui9_the_source_marks_the_display_of_its_session() {
+    let mut w = World::new();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    w.advance_to_forwarding();
+    let row = lg_row(&w.mac);
+    assert!(row.devices[0].in_session, "{row:?}");
+    // The current target is not a candidate (mockup "macOS menu, controlling
+    // a target").
+    assert!(
+        row.devices[0]
+            .candidates
+            .iter()
+            .all(|c| c.target != ComputerId::from("pc1")),
+        "{row:?}"
+    );
+    let builtin = w
+        .mac
+        .controller
+        .menu_screen()
+        .displays
+        .into_iter()
+        .find(|d| d.token.0 == "builtin")
+        .unwrap();
+    assert!(builtin.devices.iter().all(|d| !d.in_session));
+}
+
+#[test]
 fn ui18_no_display_rows_before_the_first_evaluation() {
     let w = World::new();
     assert!(w.mac.controller.menu_screen().displays.is_empty());

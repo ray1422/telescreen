@@ -51,13 +51,13 @@ On Linux, the build needs the Wayland and xkbcommon development files. On macOS,
 3. On each computer, trust each other computer: `telescreen trust <computer-id> <fingerprint>`.
 4. On each computer, start Telescreen from the launcher, or run `telescreen`. At the first start, select this computer in the window. To select again, run `telescreen forget-computer`. For a different file or computer for one run: `telescreen run --config <file> --computer <id>`.
    On macOS, allow the Local Network request. If the peer stays "offline" with "no answer from", turn on Telescreen in System Settings, Privacy & Security, Local Network.
-5. On the source, in the menu or the control window, find the shared display and select "Switch & control" for the target. The portal opens on that display. When the target shows the prompt, press Return in the portal (or click it).
+5. On the source, in the menu or the main window, find the shared display and select "Switch & control" for the target. The portal opens on that display. When the target shows the prompt, press Return in the portal (or click it).
 
 To go back to the source, use one of these:
 
 - Move the pointer out of the portal to a different display. Forwarding pauses; the session continues.
 - On the source, select "Hand back" in the session row of the portal, in the menu or in the main window. The target switches the display back with its route, and the source shows the prompt. Press Return or click on the source to confirm.
-- On the target, select "Hand back" in the control window.
+- On the target, select "Hand back" in the menu or the main window.
 
 The safety exit (Escape 10 times in 5 seconds) only ends the session. It does not switch the display.
 
@@ -73,7 +73,7 @@ To find a computer when its address changes, add `discovery: mdns` to its `endpo
 endpoint: {host: [192.0.2.10, my-computer.example], port: 24800, discovery: mdns}
 ```
 
-- On the computer to find, select "Allow discovery" in the control window. It is discoverable for 10 minutes.
+- On the computer to find, select "Allow discovery" in the menu or the main window. It is discoverable for 10 minutes.
 - On the source, open a portal. The portal dials and searches at the same time. "Refresh" dials and searches again.
 - Telescreen uses the mDNS responder of the system: Bonjour on macOS, Avahi on Linux. With no responder, a notice gives the cause, and dials to the configured hosts still work.
 - While a computer is discoverable, computers on the same network can read its fingerprint and host name. A false record cannot connect: mutual TLS identifies each peer (`docs/adr/0011-discovery-with-the-system-responder.md`).

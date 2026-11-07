@@ -382,6 +382,7 @@ mod tests {
                         can_refresh: true,
                         devices: vec![
                             MenuDevice {
+                                in_session: false,
                                 device: "no-route".into(),
                                 alias: "Other".into(),
                                 label: "Other".into(),
@@ -389,6 +390,7 @@ mod tests {
                                 candidates: Vec::new(),
                             },
                             MenuDevice {
+                                in_session: false,
                                 device: "shared".into(),
                                 alias: "Monitor".into(),
                                 label: "Monitor".into(),

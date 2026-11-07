@@ -1,6 +1,6 @@
 //! The regular Wayland text clipboard on its own connection (CLIP-7, CLIP-8).
 //! The connection is open only while the clipboard can sync (CLIP-11).
-//! The main thread only reads a channel of changes (IN-2).
+//! The window layer thread only reads a channel of changes (IN-2).
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -117,7 +117,7 @@ impl Clipboard for LinuxClipboard {
 
     fn changed(&mut self) -> Option<ClipboardChange> {
         // The producer also reads this one-slot channel to replace an unread change.
-        // Never wait for its lock on the main thread (IN-2).
+        // Never wait for its lock on the window layer thread (IN-2).
         self.worker
             .as_ref()?
             .changes

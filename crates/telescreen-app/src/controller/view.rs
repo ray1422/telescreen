@@ -201,13 +201,16 @@ impl Controller {
     }
 }
 
+/// The name of a display in the UI. On Linux the name is the output name, so
+/// the model comes first: "LG ULTRAWIDE (HDMI-A-2)", as in the mockup. On
+/// macOS the model is a number, and the name is the name of the display.
 pub(super) fn display_name(display: &DisplayInfo) -> String {
-    display
-        .metadata
-        .get("name")
-        .and_then(|v| v.as_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| display.token.0.clone())
+    let text = |key: &str| display.metadata.get(key).and_then(|v| v.as_str());
+    let name = text("name").map_or_else(|| display.token.0.clone(), str::to_owned);
+    match text("model") {
+        Some(model) if !model.is_empty() && model != name => format!("{model} ({name})"),
+        _ => name,
+    }
 }
 
 pub(super) fn refuse_text(reason: RefuseReason) -> String {
@@ -249,7 +252,38 @@ pub(super) fn target_phase_text(phase: TargetPhase) -> &'static str {
         TargetPhase::AwaitingHandoff => "switching the display",
         TargetPhase::Verifying => "verifying the display",
         TargetPhase::CheckingDisplay => "starting",
-        TargetPhase::Forwarding => "controls this computer",
+        TargetPhase::Forwarding => "forwarding",
         TargetPhase::Ended(reason) => end_text(reason),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use telescreen_core::ids::DisplayToken;
+    use telescreen_core::platform::DisplayInfo;
+
+    use super::display_name;
+
+    fn display(metadata: serde_json::Value) -> DisplayInfo {
+        DisplayInfo {
+            token: DisplayToken::from("HDMI-A-2"),
+            bounds: None,
+            scale: 1.0,
+            metadata: metadata.as_object().cloned().unwrap_or_default(),
+        }
+    }
+
+    #[test]
+    fn ui9_a_linux_display_shows_the_model_and_the_output() {
+        let lg = display(json!({"name": "HDMI-A-2", "model": "LG ULTRAWIDE"}));
+        assert_eq!(display_name(&lg), "LG ULTRAWIDE (HDMI-A-2)");
+    }
+
+    #[test]
+    fn ui9_a_macos_display_shows_its_name() {
+        let lg = display(json!({"name": "Desktop", "model": 30457}));
+        assert_eq!(display_name(&lg), "Desktop");
+        assert_eq!(display_name(&display(json!({}))), "HDMI-A-2");
     }
 }

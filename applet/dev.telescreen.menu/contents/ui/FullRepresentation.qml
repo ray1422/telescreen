@@ -14,6 +14,8 @@ PlasmaExtras.Representation {
 
     // A control request has its own row if its peer is not a candidate of the
     // device on a display (UI-18).
+    readonly property bool targetSession: (menu?.sessions ?? []).some(s => s.role.kind === "target")
+
     readonly property var ownControlRows: (menu?.control_requests ?? []).filter(r =>
         !(menu.displays.some(d => d.devices.some(v => v.device === r.device
             && v.candidates.some(c => c.target === r.peer)))))
@@ -52,12 +54,33 @@ PlasmaExtras.Representation {
                 }
             }
 
+            // A session as the target hides its display (UI-9): the other
+            // displays have their own heading, as in the mockup.
+            PlasmaComponents3.Label {
+                visible: root.targetSession
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.largeSpacing
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                text: i18n("Other displays")
+                font: Kirigami.Theme.smallFont
+                opacity: 0.7
+            }
+            PlasmaComponents3.Label {
+                visible: root.targetSession && (root.menu?.displays ?? []).length === 0
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.largeSpacing
+                text: i18n("No other display has a handoff route")
+                wrapMode: Text.Wrap
+                opacity: 0.7
+            }
+
             Repeater {
                 model: root.menu?.displays ?? []
                 delegate: ColumnLayout {
                     id: displayItem
                     required property var modelData
                     readonly property var shown: modelData.devices.filter(d => d.candidates.length > 0)
+                    readonly property bool inSession: modelData.devices.some(d => d.in_session)
                     Layout.fillWidth: true
                     spacing: Kirigami.Units.smallSpacing
 
@@ -68,7 +91,9 @@ PlasmaExtras.Representation {
                         Layout.topMargin: Kirigami.Units.smallSpacing
                         PlasmaComponents3.Label {
                             Layout.fillWidth: true
-                            text: displayItem.modelData.devices.length === 1
+                            text: displayItem.inSession
+                                ? i18nc("@title display name", "%1 · in this session", displayItem.modelData.name)
+                                : displayItem.modelData.devices.length === 1
                                 && displayItem.modelData.devices[0].state === "confirmed"
                                 ? i18nc("@title display name", "%1 · shows this computer", displayItem.modelData.name)
                                 : displayItem.modelData.name
@@ -98,7 +123,9 @@ PlasmaExtras.Representation {
                                 return i18n("Checking the display…")
                             if (m.kind === "failed")
                                 return i18n("The display check failed: %1", m.error)
-                            return displayItem.shown.length === 0 ? i18n("No handoff routes in the config") : ""
+                            if (displayItem.shown.length > 0)
+                                return ""
+                            return displayItem.inSession ? i18n("No other candidate") : i18n("No handoff routes in the config")
                         }
                         wrapMode: Text.Wrap
                         opacity: 0.7
@@ -116,6 +143,7 @@ PlasmaExtras.Representation {
                                 delegate: CandidateItem {
                                     required property var modelData
                                     candidate: modelData
+                                    inSession: deviceItem.modelData.in_session === true
                                     display: displayItem.modelData.token
                                     device: deviceItem.modelData.device
                                     controlRequest: (root.menu?.control_requests ?? []).find(r =>

@@ -383,6 +383,10 @@ pub struct MenuSession {
     pub peer: ComputerId,
     pub peer_label: String,
     pub device: DeviceId,
+    /// The name of the device on this computer, for the session card: the
+    /// display of a session as the target is not in the list (UI-9).
+    #[serde(default)]
+    pub device_label: String,
     pub role: MenuRole,
 }
 
@@ -399,6 +403,9 @@ pub enum MenuRole {
         state: String,
         /// `None` if "Hand back" is available, else the cause (HB-2).
         hand_back: Option<String>,
+        /// The device state on this computer (VER-6), if it has one.
+        #[serde(default)]
+        video_input: Option<VideoInput>,
     },
 }
 
@@ -436,6 +443,11 @@ pub struct MenuDevice {
     pub state: VideoInput,
     /// Empty: the menu shows "No handoff routes in the config".
     pub candidates: Vec<MenuCandidate>,
+    /// A session of this computer as the source uses the device (UI-9). Its
+    /// target is not in `candidates`. A session as the target hides the
+    /// device: the session card stands for it.
+    #[serde(default)]
+    pub in_session: bool,
 }
 
 /// A candidate with the actions of ACT-1. `None` is available; else the reason.

@@ -19,6 +19,7 @@ fn menu() -> MenuScreen {
                 peer: ComputerId::from("pc1"),
                 peer_label: "Linux".into(),
                 device: DeviceId::from("shared-lg"),
+                device_label: "Desktop".into(),
                 role: MenuRole::Source {
                     phase: SessionPhase::WaitingForAck {
                         key: "Return".into(),
@@ -33,9 +34,11 @@ fn menu() -> MenuScreen {
                 peer: ComputerId::from("pc4"),
                 peer_label: "Desk PC".into(),
                 device: DeviceId::from("usb"),
+                device_label: "USB".into(),
                 role: MenuRole::Target {
                     state: "forwarding".into(),
                     hand_back: Some("No route back".into()),
+                    video_input: None,
                 },
             },
         ],
@@ -45,6 +48,7 @@ fn menu() -> MenuScreen {
             matching: DisplayMatching::Done,
             can_refresh: true,
             devices: vec![MenuDevice {
+                in_session: false,
                 device: DeviceId::from("shared-lg"),
                 alias: "Desktop".into(),
                 label: "Desktop".into(),
@@ -84,6 +88,7 @@ fn ui18_the_menu_json_shape() {
                     "peer": "pc1",
                     "peer_label": "Linux",
                     "device": "shared-lg",
+                    "device_label": "Desktop",
                     "role": {
                         "kind": "source",
                         "phase": {"kind": "waiting_for_ack", "key": "Return"},
@@ -95,7 +100,9 @@ fn ui18_the_menu_json_shape() {
                     "peer": "pc4",
                     "peer_label": "Desk PC",
                     "device": "usb",
-                    "role": {"kind": "target", "state": "forwarding", "hand_back": "No route back"}
+                    "device_label": "USB",
+                    "role": {"kind": "target", "state": "forwarding", "hand_back": "No route back",
+                        "video_input": null}
                 }
             ],
             "displays": [{
@@ -115,7 +122,8 @@ fn ui18_the_menu_json_shape() {
                         "switch_and_control": "offline",
                         "switch_display_only": null,
                         "control_only": "offline"
-                    }]
+                    }],
+                    "in_session": false
                 }]
             }],
             "control_requests": [{

@@ -19,9 +19,10 @@ Each request and each response is one line of JSON. One connection can send more
 | `{"cmd":"intent","intent":<intent>}` | the same as the click in the UI | `{"ok":true}` |
 | `{"cmd":"ack"}` | the same as the acknowledgement key in the focused portal (FLOW-8; the focus check applies, AC-6). If the portal does not accept it, the same as Return on the destination of a hand back (VER-4) | `{"ok":true}`, or an error if nothing waits for an acknowledgement |
 | `{"cmd":"pointer_stats"}` | none (NET-9) | `{"ok":true,"stats":<summary or null>}`: the pointer statistics of the current incoming session, else of the last one |
-| `{"cmd":"quit"}` | the same as closing the control window | `{"ok":true}` |
+| `{"cmd":"quit"}` | the same as "Quit Telescreen" (UI-15) | `{"ok":true}` |
 | `{"cmd":"choose_computer","computer":<id>}` | the same as the click in the start window (UI-8). All other requests except `quit` are errors while the start window is open | `{"ok":true}` |
-| `{"cmd":"move_control","x":<x>,"y":<y>}` | moves the control window, in logical pixels. Wayland ignores it | `{"ok":true}` |
+| `{"cmd":"move_control","x":<x>,"y":<y>}` | none: the native main window replaced the control window (UI-13) | an error |
+| `{"cmd":"main_window","show":<bool>}` | `show` is optional. `true` opens the native main window, `false` closes it as the close button does (UI-13, UI-15) | `{"ok":true,"visible":<bool>,"dock_icon":<bool>}`. On Linux the Qt thread does the request later: `visible` is the state before the request, and `dock_icon` is not there |
 | `{"cmd":"hold_keyboard","display":<display token>}` | calls the focus holder of this peer directly (UI-7), with no session | `{"ok":true}`, or an error if the peer has no focus holder or no such display |
 | `{"cmd":"release_keyboard"}` | removes the focus holder | `{"ok":true}` |
 
