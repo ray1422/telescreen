@@ -26,8 +26,8 @@ cd "$WORK"
 # Qt from the official binaries.
 python3 -m pip install --quiet aqtinstall
 aqt list-qt linux desktop --archives "$QT_VERSION" linux_gcc_64 || true
-aqt list-qt linux desktop --modules "$QT_VERSION" linux_gcc_64 || true
-aqt install-qt --outputdir "$WORK/qt" linux desktop "$QT_VERSION" linux_gcc_64 -m qtshadertools qt5compat qtwayland
+
+aqt install-qt --outputdir "$WORK/qt" linux desktop "$QT_VERSION" linux_gcc_64 -m qtshadertools qt5compat
 QT=$WORK/qt/$QT_VERSION/gcc_64
 ls "$QT/plugins/platforms"
 export PATH=$QT/bin:$PATH
