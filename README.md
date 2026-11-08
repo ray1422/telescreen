@@ -1,5 +1,7 @@
 # Telescreen
 
+![Telescreen cover image: Five Computers, One Monitor.](docs/images/cover.webp)
+
 Telescreen coordinates device switching and keyboard/mouse forwarding through a portal window. It is for environments that have more than one computer and physical connections.
 
 Status: in development. The first release is v0.3.0 (`docs/spec.md` section 2.1).
