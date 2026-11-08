@@ -9,7 +9,8 @@ use super::{Config, Device, Driver, Operation};
 /// Checks: a device `id` is unique in one computer; a handoff target exists, is
 /// not the computer itself, and has a device with the same `id`; a program with a
 /// path, each `cwd`, and each `path` entry are absolute paths in POSIX or Windows
-/// form. The typed model already split the `command` strings.
+/// form; special key groups are not in both lists of one computer. The typed
+/// model already split the `command` strings.
 pub fn errors(config: &Config) -> Vec<String> {
     let mut errors = Vec::new();
     for (computer_id, computer) in &config.computers {
@@ -33,6 +34,16 @@ pub fn errors(config: &Config) -> Vec<String> {
             for operation in operations(device) {
                 program_errors(operation, &where_, &mut errors);
             }
+        }
+        for group in computer
+            .special_keys
+            .send_to_target
+            .intersection(&computer.special_keys.keep_on_source)
+        {
+            errors.push(format!(
+                "{computer_id}.special-keys: {} is in send-to-target and keep-on-source",
+                group.name()
+            ));
         }
         for directory in computer.path.iter().flatten() {
             let directory = directory.to_string_lossy();

@@ -20,6 +20,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
+use telescreen_core::config::{SpecialKeyAction, SpecialKeys};
 use telescreen_core::ids::PortalId;
 use telescreen_core::input::{Button, InputEvent, ScrollPhase};
 use telescreen_core::key_route::{InputRouter, Route};
@@ -69,6 +70,7 @@ struct Slot {
 
 struct Shared {
     start: Instant,
+    special_keys: SpecialKeys,
     slots: [Slot; SLOTS],
     secure_input: AtomicBool,
     heartbeat_ms: AtomicU64,
@@ -115,10 +117,14 @@ impl std::fmt::Debug for MacCapture {
 impl MacCapture {
     /// Starts the tap thread and the watchdog thread. `wake` is called (from those
     /// threads) when events are in the queue; it must not block.
-    pub fn start(wake: impl Fn() + Send + Sync + 'static) -> Result<Self, PlatformError> {
+    pub fn start(
+        special_keys: SpecialKeys,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Result<Self, PlatformError> {
         let (tx, rx) = bounded(QUEUE);
         let shared = Arc::new(Shared {
             start: Instant::now(),
+            special_keys,
             slots: Default::default(),
             secure_input: AtomicBool::new(false),
             heartbeat_ms: AtomicU64::new(0),
@@ -488,6 +494,35 @@ impl Shared {
     }
 }
 
+/// The special key of a system-defined event (IN-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AuxKey {
+    /// `NX_KEYTYPE_*` in `IOKit/hidsystem/ev_keymap.h`.
+    pub key_type: u16,
+    pub down: bool,
+    /// An auto-repeated key down.
+    pub repeat: bool,
+}
+
+/// Decodes the `subtype` and `data1` of a system-defined event
+/// (`NSEventTypeSystemDefined`). Returns `None` unless it is a special key
+/// down or up (subtype 8).
+pub fn aux_key(subtype: i16, data1: i64) -> Option<AuxKey> {
+    if subtype != 8 {
+        return None;
+    }
+    let down = match (data1 >> 8) & 0xFF {
+        0x0A => true,
+        0x0B => false,
+        _ => return None,
+    };
+    Some(AuxKey {
+        key_type: ((data1 >> 16) & 0xFFFF) as u16,
+        down,
+        repeat: data1 & 1 != 0,
+    })
+}
+
 fn run_tap(shared: Arc<Shared>, ready: std::sync::mpsc::Sender<Result<(), PlatformError>>) {
     // The callback gets a pointer to the shared state. This thread keeps one
     // reference for the life of the process.
@@ -720,10 +755,57 @@ fn forward(shared: &Shared, kind: u32, event: CGEventRef, field: &dyn Fn(u32) ->
             );
             route(shared, &mut keys, InputEvent::Scroll { dx, dy, phase }) || shared.blocked_now()
         }
-        // Gestures (Space swipes, Mission Control), system-defined events, and all
+        ffi::SYSTEM_DEFINED => {
+            // SAFETY: the callback event is valid and has type SYSTEM_DEFINED.
+            unsafe { ffi::system_defined(event) }
+                .and_then(|(subtype, data1)| aux_key(subtype, data1))
+                .and_then(|special| {
+                    forward_special(shared, &mut keys, special, &shared.special_keys)
+                })
+                .unwrap_or_else(|| shared.forward_now() || shared.blocked_now())
+        }
+        // Gestures (Space swipes, Mission Control) and all
         // other types: in the portal, suppress and do not forward (IN-10, ADR 0003).
         _ => shared.forward_now() || shared.blocked_now(),
     }
+}
+
+/// Handles a decoded special key (IN-20), or returns `None` for a key with no
+/// group so that it keeps the behavior of other system-defined events.
+fn forward_special(
+    shared: &Shared,
+    keys: &mut KeyState,
+    special: AuxKey,
+    special_keys: &SpecialKeys,
+) -> Option<bool> {
+    let (group, key) = keys::from_mac_special(special.key_type)?;
+    let focus = keys
+        .router
+        .keyboard()
+        .is_some_and(|portal| shared.forwarding_slot(portal).is_some());
+    let held = keys.router.key_forwarded(key).is_some();
+    Some(match special_keys.action(group) {
+        SpecialKeyAction::SendToTarget => {
+            if special.down && special.repeat {
+                return Some(held);
+            }
+            if (special.down && focus) || (!special.down && held) {
+                route(
+                    shared,
+                    keys,
+                    InputEvent::Key {
+                        key,
+                        down: special.down,
+                    },
+                );
+                true
+            } else {
+                false
+            }
+        }
+        SpecialKeyAction::KeepOnSource => false,
+        SpecialKeyAction::Suppress => focus,
+    })
 }
 
 /// The phase of a scroll from the trackpad fields (IN-18). A mouse wheel has
@@ -805,12 +887,14 @@ fn modifier_events(keys: &mut KeyState, code: i64, flags: u64) -> Vec<InputEvent
 #[cfg(test)]
 mod tests {
     use super::*;
+    use telescreen_core::keys::SpecialKeyGroup;
 
     /// A capture with no tap: the tests call the callback code directly.
     fn shared_with_slot(mode: u8, guarded: bool) -> (Shared, Receiver<CapturedEvent>) {
         let (tx, rx) = bounded(QUEUE);
         let shared = Shared {
             start: Instant::now(),
+            special_keys: SpecialKeys::default(),
             slots: Default::default(),
             secure_input: AtomicBool::new(false),
             heartbeat_ms: AtomicU64::new(0),
@@ -836,6 +920,177 @@ mod tests {
         rx.try_iter()
             .filter(|e| matches!(e, CapturedEvent::PointerMoved { .. }))
             .count()
+    }
+
+    fn special_config(action: SpecialKeyAction) -> SpecialKeys {
+        let mut config = SpecialKeys::default();
+        match action {
+            SpecialKeyAction::SendToTarget => {
+                config.send_to_target.insert(SpecialKeyGroup::Brightness);
+            }
+            SpecialKeyAction::KeepOnSource => {
+                config.keep_on_source.insert(SpecialKeyGroup::Brightness);
+            }
+            SpecialKeyAction::Suppress => {}
+        }
+        config
+    }
+
+    fn special(down: bool, repeat: bool) -> AuxKey {
+        AuxKey {
+            key_type: 2, // BRIGHTNESS_UP
+            down,
+            repeat,
+        }
+    }
+
+    #[test]
+    fn in20_actions_require_keyboard_focus_of_a_forwarding_portal() {
+        for action in [
+            SpecialKeyAction::SendToTarget,
+            SpecialKeyAction::KeepOnSource,
+            SpecialKeyAction::Suppress,
+        ] {
+            let config = special_config(action);
+            for mode in [FORWARDING, ARMED] {
+                for focused in [false, true] {
+                    for decoded in [
+                        special(true, false),
+                        special(true, true),
+                        special(false, false),
+                        special(false, true),
+                    ] {
+                        let (shared, rx) = shared_with_slot(mode, false);
+                        // Pointer focus must not decide what a special key does.
+                        shared.slots[0].entered.store(true, SeqCst);
+                        let mut keys = KeyState::default();
+                        keys.router.set_window_focus(PortalId(1), focused);
+                        let focus = focused && mode == FORWARDING;
+                        let routed = action == SpecialKeyAction::SendToTarget
+                            && focus
+                            && decoded.down
+                            && !decoded.repeat;
+                        let suppressed = routed || (action == SpecialKeyAction::Suppress && focus);
+                        assert_eq!(
+                            forward_special(&shared, &mut keys, decoded, &config),
+                            Some(suppressed),
+                            "{action:?}, mode {mode}, focused {focused}, {decoded:?}"
+                        );
+                        if routed {
+                            assert!(matches!(
+                                rx.try_recv(),
+                                Ok(CapturedEvent::Input {
+                                    portal: PortalId(1),
+                                    event: InputEvent::Key {
+                                        key: Key(225),
+                                        down: true
+                                    },
+                                })
+                            ));
+                            assert_eq!(keys.router.key_forwarded(Key(225)), Some(PortalId(1)));
+                        } else {
+                            assert_eq!(keys.router.key_forwarded(Key(225)), None);
+                        }
+                        assert!(rx.is_empty(), "only a first down with focus is routed");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn in20_repeats_are_suppressed_and_up_goes_to_the_portal_of_down() {
+        let config = special_config(SpecialKeyAction::SendToTarget);
+        for next_focus in [None, Some(PortalId(1)), Some(PortalId(2))] {
+            let (shared, rx) = shared_with_slot(FORWARDING, false);
+            shared.slots[1].id.store(2, SeqCst);
+            shared.slots[1].mode.store(FORWARDING, SeqCst);
+            let mut keys = KeyState::default();
+            keys.router.set_window_focus(PortalId(1), true);
+            assert_eq!(
+                forward_special(&shared, &mut keys, special(true, false), &config),
+                Some(true)
+            );
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(CapturedEvent::Input {
+                    portal: PortalId(1),
+                    event: InputEvent::Key {
+                        key: Key(225),
+                        down: true
+                    },
+                })
+            ));
+            keys.router.set_window_focus(PortalId(1), false);
+            if let Some(portal) = next_focus {
+                keys.router.set_window_focus(portal, true);
+            }
+            assert_eq!(
+                forward_special(&shared, &mut keys, special(true, true), &config),
+                Some(true)
+            );
+            assert!(rx.is_empty(), "the repeat is not routed");
+            assert_eq!(keys.router.key_forwarded(Key(225)), Some(PortalId(1)));
+            assert_eq!(
+                forward_special(&shared, &mut keys, special(false, false), &config),
+                Some(true)
+            );
+            assert!(matches!(
+                rx.try_recv(),
+                Ok(CapturedEvent::Input {
+                    portal: PortalId(1),
+                    event: InputEvent::Key {
+                        key: Key(225),
+                        down: false
+                    },
+                })
+            ));
+            assert_eq!(keys.router.key_forwarded(Key(225)), None);
+            for decoded in [special(true, true), special(false, false)] {
+                assert_eq!(
+                    forward_special(&shared, &mut keys, decoded, &config),
+                    Some(false),
+                    "an event with no forwarded down stays on the source"
+                );
+            }
+            assert!(rx.is_empty());
+        }
+    }
+
+    #[test]
+    fn in20_a_down_without_focus_does_not_create_a_forwarded_press() {
+        let config = special_config(SpecialKeyAction::SendToTarget);
+        let (shared, rx) = shared_with_slot(FORWARDING, false);
+        let mut keys = KeyState::default();
+        assert_eq!(
+            forward_special(&shared, &mut keys, special(true, false), &config),
+            Some(false)
+        );
+        keys.router.set_window_focus(PortalId(1), true);
+        for decoded in [special(true, true), special(false, false)] {
+            assert_eq!(
+                forward_special(&shared, &mut keys, decoded, &config),
+                Some(false)
+            );
+        }
+        assert_eq!(keys.router.key_forwarded(Key(225)), None);
+        assert!(rx.is_empty());
+    }
+
+    #[test]
+    fn in20_a_key_with_no_group_keeps_the_system_defined_fallback() {
+        let (shared, rx) = shared_with_slot(FORWARDING, false);
+        let mut keys = KeyState::default();
+        keys.router.set_window_focus(PortalId(1), true);
+        let decoded = AuxKey {
+            key_type: 6, // POWER_KEY has no group.
+            ..special(true, false)
+        };
+        assert_eq!(
+            forward_special(&shared, &mut keys, decoded, &SpecialKeys::default()),
+            None
+        );
+        assert!(rx.is_empty());
     }
 
     #[test]

@@ -72,12 +72,12 @@ impl InputCapture for NoCapture {
     fn disarm(&mut self, _: telescreen_core::ids::PortalId) {}
 }
 
-pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, _local: &Computer) -> Result<Parts, String> {
+pub(crate) fn parts(proxy: EventLoopProxy<UserEvent>, local: &Computer) -> Result<Parts, String> {
     telescreen_platform_macos::request_permissions();
     let mut notices = Vec::new();
     let capabilities = telescreen_platform_macos::capabilities();
     let discovery_proxy = proxy.clone();
-    let capture = match MacCapture::start(move || {
+    let capture = match MacCapture::start(local.special_keys.clone(), move || {
         let _ = proxy.send_event(UserEvent::Captured);
     }) {
         Ok(capture) => Some(capture),

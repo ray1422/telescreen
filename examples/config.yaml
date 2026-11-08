@@ -6,6 +6,9 @@ computers:
   mac:
     label: MacBook
     path: [/opt/homebrew/bin, /usr/local/bin, /usr/bin, /bin]   # finds lg-helper
+    special-keys:                    # only as the source, while a portal forwards (IN-20)
+      send-to-target: [brightness]   # these keys go to the target, not to this Mac
+      keep-on-source: [volume, media]  # these keys stay on this Mac; other groups go nowhere
     endpoint: {host: mac.local, port: 24800}
     devices:
       Desktop:                         # Only a local alias. It is not for matching OS names.

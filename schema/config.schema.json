@@ -25,6 +25,14 @@
   ],
   "additionalProperties": false,
   "$defs": {
+    "specialKeyGroups": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["brightness", "volume", "media", "keyboard-light"]
+      },
+      "default": []
+    },
     "handoff": {
       "type": "object",
       "properties": {
@@ -118,6 +126,21 @@
           },
           "default": [],
           "description": "The platform workarounds that this computer does not use. Each workaround is on, unless this list has it (IN-16)."
+        },
+        "special-keys": {
+          "type": "object",
+          "properties": {
+            "send-to-target": {
+              "$ref": "#/$defs/specialKeyGroups",
+              "description": "As the source: the special key groups that go to the target and not to this computer (IN-20)."
+            },
+            "keep-on-source": {
+              "$ref": "#/$defs/specialKeyGroups",
+              "description": "As the source: the special key groups that go to this computer and not to the target (IN-20)."
+            }
+          },
+          "additionalProperties": false,
+          "description": "As the source only: where each special key group goes while this computer forwards. A group in neither list goes to neither computer (IN-20)."
         },
         "path": {
           "type": "array",

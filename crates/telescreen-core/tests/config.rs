@@ -5,8 +5,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use telescreen_core::config::{Config, ConfigError, Driver, Program, Quirk, yaml};
+use telescreen_core::config::{
+    Config, ConfigError, Driver, Program, Quirk, SpecialKeyAction, yaml,
+};
 use telescreen_core::ids::{ComputerId, DeviceId};
+use telescreen_core::keys::SpecialKeyGroup;
 
 fn example_text() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/config.yaml");
@@ -182,6 +185,23 @@ fn invalid_configurations() {
         }),
         ("verify on a route", Layer::Schema, |c| {
             device(c)["handoff"]["pc1"]["verify"] = json!({"driver": "prompt"})
+        }),
+        ("unknown special key group", Layer::Schema, |c| {
+            c["computers"]["mac"]["special-keys"] = json!({"send-to-target": ["power"]})
+        }),
+        ("duplicate special key group", Layer::Schema, |c| {
+            c["computers"]["mac"]["special-keys"] =
+                json!({"send-to-target": ["brightness", "brightness"]})
+        }),
+        ("special key group in both lists", Layer::Semantic, |c| {
+            c["computers"]["mac"]["special-keys"] =
+                json!({"send-to-target": ["media"], "keep-on-source": ["media"]})
+        }),
+        ("unknown special keys field", Layer::Schema, |c| {
+            c["computers"]["mac"]["special-keys"] = json!({"forward": ["brightness"]})
+        }),
+        ("non-list special key groups", Layer::Schema, |c| {
+            c["computers"]["mac"]["special-keys"] = json!({"keep-on-source": "volume"})
         }),
         ("unknown built-in driver", Layer::Schema, |c| {
             device(c)["portal-match"]["driver"] = json!("shell")
@@ -377,6 +397,73 @@ fn in16_each_quirk_is_on_unless_the_list_has_it() {
     let config: Config = serde_json::from_value(value).unwrap();
     assert!(!config.computers[&ComputerId("pc1".into())].uses_quirk(Quirk::KwinButtonScroll));
     assert!(config.computers[&ComputerId("mac".into())].uses_quirk(Quirk::KwinButtonScroll));
+}
+
+#[test]
+fn in20_each_special_key_group_is_suppressed_unless_a_list_has_it() {
+    let mut value = example_value();
+    let computers = value["computers"].as_object_mut().unwrap();
+    for computer in computers.values_mut() {
+        computer.as_object_mut().unwrap().remove("special-keys");
+    }
+    computers["mac"]["special-keys"] =
+        json!({"send-to-target": ["brightness"], "keep-on-source": ["volume", "media"]});
+    computers["pc1"]["special-keys"] = json!({});
+    let config = Config::from_value(value).unwrap();
+    let action = |id: &str, group| {
+        config
+            .computer(&ComputerId::from(id))
+            .unwrap()
+            .special_keys
+            .action(group)
+    };
+    assert_eq!(
+        action("mac", SpecialKeyGroup::Brightness),
+        SpecialKeyAction::SendToTarget
+    );
+    assert_eq!(
+        action("mac", SpecialKeyGroup::Volume),
+        SpecialKeyAction::KeepOnSource
+    );
+    assert_eq!(
+        action("mac", SpecialKeyGroup::Media),
+        SpecialKeyAction::KeepOnSource
+    );
+    assert_eq!(
+        action("mac", SpecialKeyGroup::KeyboardLight),
+        SpecialKeyAction::Suppress
+    );
+    for group in [
+        SpecialKeyGroup::Brightness,
+        SpecialKeyGroup::Volume,
+        SpecialKeyGroup::Media,
+        SpecialKeyGroup::KeyboardLight,
+    ] {
+        assert_eq!(
+            action("pc1", group),
+            SpecialKeyAction::Suppress,
+            "an empty key"
+        );
+        assert_eq!(action("pc2", group), SpecialKeyAction::Suppress, "no key");
+    }
+}
+
+#[test]
+fn in20_a_special_key_group_in_both_lists_names_the_computer() {
+    let mut value = example_value();
+    value["computers"]["mac"]["special-keys"] =
+        json!({"send-to-target": ["media"], "keep-on-source": ["media"]});
+    match Config::from_value(value) {
+        Err(ConfigError::Semantic(errors)) => {
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.contains("mac.special-keys") && e.contains("media")),
+                "{errors:?}"
+            );
+        }
+        other => panic!("wrong result {other:?}"),
+    }
 }
 
 #[test]

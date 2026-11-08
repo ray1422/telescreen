@@ -8,6 +8,7 @@
 
 use crate::ids::PortalId;
 use crate::input::{Button, InputEvent};
+use crate::keys::Key;
 
 const KEY_COUNT: usize = u16::MAX as usize + 1;
 const KEY_WORDS: usize = KEY_COUNT / u64::BITS as usize;
@@ -132,6 +133,14 @@ impl KeyRoutes {
     pub fn any_forwarded(&self) -> bool {
         self.forwarded_buttons.iter().any(|&s| s != 0)
             || self.forwarded_keys.iter().any(|&s| s != 0)
+    }
+
+    /// The portal of a key that is down with the route `Forward`, else `None`.
+    pub fn key_forwarded(&self, key: Key) -> Option<PortalId> {
+        self.forwarded_keys
+            .get(usize::from(key.0))
+            .copied()
+            .and_then(portal_of)
     }
 
     /// True if a key or button with the route `Forward(portal)` is down.
@@ -274,6 +283,11 @@ impl InputRouter {
     /// The portal with the keyboard focus (FLOW-22).
     pub fn keyboard(&self) -> Option<PortalId> {
         self.keyboard
+    }
+
+    /// The portal of a key that is down with the route `Forward`, else `None`.
+    pub fn key_forwarded(&self, key: Key) -> Option<PortalId> {
+        self.routes.key_forwarded(key)
     }
 
     /// True if a key or button with the route `Forward(portal)` is down.

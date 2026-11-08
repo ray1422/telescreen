@@ -143,3 +143,15 @@ fn clear_forgets_all() {
     // Key 31 is not down any more, so a new down takes the current route.
     assert_eq!(r.route(&key(31, true), INSIDE), Route::Forward(A));
 }
+
+#[test]
+fn in20_the_route_of_one_forwarded_key() {
+    let mut r = KeyRoutes::new();
+    assert_eq!(r.key_forwarded(Key(225)), None, "not down");
+    r.route(&key(225, true), INSIDE);
+    r.route(&key(30, true), OUTSIDE);
+    assert_eq!(r.key_forwarded(Key(225)), Some(A));
+    assert_eq!(r.key_forwarded(Key(30)), None, "a local key");
+    r.route(&key(225, false), OUTSIDE);
+    assert_eq!(r.key_forwarded(Key(225)), None, "up");
+}

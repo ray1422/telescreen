@@ -79,6 +79,16 @@ class ConfigContract(unittest.TestCase):
             'duplicate quirk': lambda c: c['computers']['pc1'].update(
                 {'disabled-quirks': ['kwin-button-scroll', 'kwin-button-scroll']}),
             'non-list quirks': lambda c: c['computers']['pc1'].update({'disabled-quirks': 'kwin-button-scroll'}),
+            'unknown special key group': lambda c: c['computers']['mac'].update(
+                {'special-keys': {'send-to-target': ['power']}}),
+            'duplicate special key group': lambda c: c['computers']['mac'].update(
+                {'special-keys': {'send-to-target': ['brightness', 'brightness']}}),
+            'special key group in both lists': lambda c: c['computers']['mac'].update(
+                {'special-keys': {'send-to-target': ['media'], 'keep-on-source': ['media']}}),
+            'unknown special keys field': lambda c: c['computers']['mac'].update(
+                {'special-keys': {'forward': ['brightness']}}),
+            'non-list special key groups': lambda c: c['computers']['mac'].update(
+                {'special-keys': {'keep-on-source': 'volume'}}),
             'version': lambda c: c.update(version=2),
             'unknown field': lambda c: device(c).update(portal_match={}),
             'duplicate device id': lambda c: c['computers']['mac']['devices'].update(

@@ -45,6 +45,7 @@ pub const KEY_DOWN: u32 = 10;
 pub const KEY_UP: u32 = 11;
 pub const FLAGS_CHANGED: u32 = 12;
 pub const SCROLL_WHEEL: u32 = 22;
+pub const SYSTEM_DEFINED: u32 = 14;
 pub const OTHER_DOWN: u32 = 25;
 pub const OTHER_UP: u32 = 26;
 pub const OTHER_DRAGGED: u32 = 27;
@@ -61,6 +62,9 @@ pub const FIELD_SCROLL_POINT_DELTA_1: u32 = 96;
 pub const FIELD_SCROLL_POINT_DELTA_2: u32 = 97;
 pub const FIELD_SCROLL_PHASE: u32 = 99;
 pub const FIELD_MOMENTUM_PHASE: u32 = 123;
+// Not public: see `system_defined`.
+pub const FIELD_SYSTEM_DEFINED_SUBTYPE: u32 = 83;
+pub const FIELD_SYSTEM_DEFINED_DATA1: u32 = 149;
 
 // Event flags (CGEventFlags) and the device-dependent bits of IOLLEvent.h.
 pub const FLAG_ALPHA_SHIFT: u64 = 0x0001_0000;
@@ -199,4 +203,25 @@ pub fn cursor_position() -> CGPoint {
         release(event);
         point
     }
+}
+
+/// The `subtype` and `data1` of a system-defined event (IN-20). CoreGraphics
+/// has no public field for them. The event stores them in the fields 83 and
+/// 149 (measured on macOS 27 for each special key and Caps Lock, 2026-11-09).
+/// Do not read them with `+[NSEvent eventWithCGEvent:]`: on the event tap
+/// thread, AppKit asserts the main queue for a Caps Lock event and the
+/// process stops (seen on 2026-11-09).
+///
+/// # Safety
+///
+/// `event` must be a valid event of the type `SYSTEM_DEFINED`.
+pub unsafe fn system_defined(event: CGEventRef) -> Option<(i16, i64)> {
+    // SAFETY: the caller gives a valid event.
+    let (subtype, data1) = unsafe {
+        (
+            CGEventGetIntegerValueField(event, FIELD_SYSTEM_DEFINED_SUBTYPE),
+            CGEventGetIntegerValueField(event, FIELD_SYSTEM_DEFINED_DATA1),
+        )
+    };
+    Some((i16::try_from(subtype).ok()?, data1))
 }

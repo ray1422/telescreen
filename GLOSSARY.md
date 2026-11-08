@@ -124,6 +124,10 @@ _Avoid_: streaming, sharing
 Removed (spec IN-7, user, 2026-11-07). Telescreen has no key combination that starts a hand back. On the source, "Hand back" in the session row of a portal starts it (HB-3).
 _Avoid_: release shortcut, release chord, hotkey
 
+**Special key**:
+A brightness, volume, media, or keyboard light key that macOS reports as a system-defined event, not as a key event (spec IN-20). The `special-keys` config of the source selects where each group goes.
+_Avoid_: fn key, media key (for the whole set)
+
 **Safety exit**:
 Escape pressed 10 times in 5 seconds. It ends suppression also when the rest of the program does not respond.
 _Avoid_: panic key, kill switch

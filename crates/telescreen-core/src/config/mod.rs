@@ -23,6 +23,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
 use crate::ids::{ComputerId, DeviceId};
+use crate::keys::SpecialKeyGroup;
 
 /// The only config format version that this build accepts.
 pub const CONFIG_VERSION: u64 = 1;
@@ -86,6 +87,9 @@ pub struct Computer {
     /// The platform workarounds that this computer does not use (IN-16).
     #[serde(default)]
     pub disabled_quirks: BTreeSet<Quirk>,
+    /// Where each special key goes while this computer is the source (IN-20).
+    #[serde(default)]
+    pub special_keys: SpecialKeys,
     pub endpoint: Endpoint,
     /// Keys are local aliases. They have no OS meaning.
     /// In the order of the config file (UI-18: the menu lists the displays
@@ -105,6 +109,44 @@ pub struct ClipboardConfig {
 impl Default for ClipboardConfig {
     fn default() -> Self {
         Self { text: on() }
+    }
+}
+
+/// The `special-keys` key of a computer (IN-20). It applies only when this
+/// computer is the source.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct SpecialKeys {
+    /// The groups that go to the target and not to this computer.
+    #[serde(default)]
+    pub send_to_target: BTreeSet<SpecialKeyGroup>,
+    /// The groups that go to this computer and not to the target.
+    #[serde(default)]
+    pub keep_on_source: BTreeSet<SpecialKeyGroup>,
+}
+
+/// What the source does with a special key while a forwarding portal has the
+/// keyboard focus (IN-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialKeyAction {
+    /// Forward the key, and suppress it on the source.
+    SendToTarget,
+    /// Let the key go to the source, and do not forward it.
+    KeepOnSource,
+    /// Suppress the key, and do not forward it.
+    Suppress,
+}
+
+impl SpecialKeys {
+    /// The action for a group.
+    pub fn action(&self, group: SpecialKeyGroup) -> SpecialKeyAction {
+        if self.send_to_target.contains(&group) {
+            SpecialKeyAction::SendToTarget
+        } else if self.keep_on_source.contains(&group) {
+            SpecialKeyAction::KeepOnSource
+        } else {
+            SpecialKeyAction::Suppress
+        }
     }
 }
 
