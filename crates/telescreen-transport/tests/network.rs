@@ -527,3 +527,41 @@ fn net11_a_joined_target_is_in_the_one_failure() {
     assert!(reason.contains("second.invalid"), "{reason}");
     assert_eq!(drain(&mac), [], "one failure");
 }
+
+#[test]
+fn act7_the_magic_packet_has_six_ff_bytes_and_16_copies_of_the_mac() {
+    let mac = [0xaa, 0xbb, 0xcc, 0x01, 0x02, 0x03];
+    let packet = telescreen_transport::magic_packet(mac);
+    assert_eq!(&packet[..6], &[0xff; 6]);
+    for copy in packet[6..].chunks(6) {
+        assert_eq!(copy, &mac);
+    }
+    assert_eq!(packet[6..].len(), 16 * 6);
+}
+
+#[test]
+fn act7_wake_sends_one_datagram_with_no_connection() {
+    let peer = start("mac", Identity::generate().unwrap(), TrustStore::empty());
+    let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    receiver.set_read_timeout(Some(WAIT)).unwrap();
+    let mac = [0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
+    // A unicast address on loopback stands for the broadcast address.
+    peer.network.send(NetCommand::Wake {
+        peer: ComputerId::from("pc1"),
+        mac,
+        broadcast: "127.0.0.1".parse().unwrap(),
+        port: receiver.local_addr().unwrap().port(),
+    });
+    let mut buffer = [0u8; 200];
+    let (size, _) = receiver.recv_from(&mut buffer).unwrap();
+    assert_eq!(
+        &buffer[..size],
+        &telescreen_transport::magic_packet(mac)[..]
+    );
+    assert_eq!(
+        next(&peer),
+        NetEvent::WakeSent {
+            peer: ComputerId::from("pc1")
+        }
+    );
+}

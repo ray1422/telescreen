@@ -1,5 +1,5 @@
 // One candidate of a display (UI-18): the computer, its status, the primary
-// action as a push button, and the other actions in an overflow menu. A
+// action on a row click, and the other actions in an overflow menu. A
 // right-click on the row opens the same menu.
 import QtQuick
 import QtQuick.Layouts
@@ -22,9 +22,11 @@ ColumnLayout {
         { kind: "switch_display_only", text: qsTr("Switch Display Only"), reason: candidate.switch_display_only },
         { kind: "control_only", text: qsTr("Control Only"), reason: candidate.control_only },
     ]
-    readonly property var primary: actions.find(a => a.reason === null) ?? null
+    readonly property var primary: actions.find(a => a.kind === candidate.primary) ?? null
     readonly property bool canLetControl: controlRequest !== null && !controlRequest.waiting
-    readonly property int available: actions.filter(a => a.reason === null).length + (canLetControl ? 1 : 0)
+    readonly property int available: actions.filter(a => a.reason === null).length
+        + (canLetControl ? 1 : 0) + (candidate.wake.kind === "available" ? 1 : 0)
+    readonly property bool hasMore: available !== 1 || primary === null
     readonly property bool online: candidate.status === "online"
 
     function statusText() {
@@ -34,17 +36,19 @@ ColumnLayout {
             searching: qsTr("Searching…"),
             offline: qsTr("Offline"),
         }[candidate.status] ?? candidate.status
+        // Rust selects the primary action. With none, show the reason.
+        const detail = primary?.text ?? candidate.switch_and_control
+        let text = detail ? status + " · " + detail : status
         if (controlRequest !== null && controlRequest.waiting)
-            return qsTr("%1 · Waiting for %2…").arg(status).arg(candidate.label)
-        // With no action, the subtitle gives the reason of "Switch & control".
-        if (primary === null && candidate.switch_and_control)
-            return status + " · " + candidate.switch_and_control
-        return status
+            text += qsTr(" · Waiting for %1…").arg(candidate.label)
+        return text
     }
 
     function run(kind) {
         if (kind === "let_control")
             intent({ kind: kind, peer: candidate.target, device: device })
+        else if (kind === "wake")
+            intent({ kind: kind, target: candidate.target })
         else
             intent({ kind: kind, display: display, device: device, target: candidate.target })
     }
@@ -67,41 +71,56 @@ ColumnLayout {
 
         TapHandler {
             acceptedButtons: Qt.RightButton
-            onTapped: if (root.available > 0) menu.popup()
+            onTapped: menu.popup()
         }
 
-        Kirigami.Icon {
-            source: "computer-symbolic"
-            implicitWidth: Kirigami.Units.iconSizes.smallMedium
-            implicitHeight: implicitWidth
-            opacity: root.online ? 1 : 0.6
-        }
-        ColumnLayout {
+        Item {
             Layout.fillWidth: true
-            spacing: 0
-            QQC2.Label {
-                Layout.fillWidth: true
-                text: root.candidate.label
-                color: root.online ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
-                elide: Text.ElideRight
+            Layout.fillHeight: true
+            implicitHeight: content.implicitHeight
+
+            HoverHandler { id: hover }
+            TapHandler {
+                acceptedButtons: Qt.LeftButton
+                onTapped: if (root.primary !== null) root.run(root.primary.kind)
             }
-            QQC2.Label {
-                Layout.fillWidth: true
-                text: root.statusText()
-                color: root.online && root.primary !== null ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.disabledTextColor
-                font: Kirigami.Theme.smallFont
-                wrapMode: Text.Wrap
+            Rectangle {
+                anchors.fill: parent
+                color: hover.hovered ? Qt.alpha(Kirigami.Theme.textColor, 0.05) : "transparent"
             }
-        }
-        QQC2.Button {
-            visible: root.primary !== null
-            text: root.primary?.text ?? ""
-            onClicked: root.run(root.primary.kind)
+            RowLayout {
+                id: content
+                anchors.fill: parent
+                spacing: Kirigami.Units.largeSpacing
+                Kirigami.Icon {
+                    source: "computer-symbolic"
+                    implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                    implicitHeight: implicitWidth
+                    opacity: root.online ? 1 : 0.6
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+                    QQC2.Label {
+                        Layout.fillWidth: true
+                        text: root.candidate.label
+                        color: root.online ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
+                        elide: Text.ElideRight
+                    }
+                    QQC2.Label {
+                        Layout.fillWidth: true
+                        text: root.statusText()
+                        color: Kirigami.Theme.disabledTextColor
+                        font: Kirigami.Theme.smallFont
+                        wrapMode: Text.Wrap
+                    }
+                }
+            }
         }
         QQC2.ToolButton {
-            // No overflow menu when it has only one available item (UI-18).
-            opacity: root.available > 1 ? 1 : 0
-            enabled: root.available > 1
+            // Hide only when the primary action is the sole available item.
+            opacity: root.hasMore ? 1 : 0
+            enabled: root.hasMore
             icon.name: "overflow-menu"
             display: QQC2.AbstractButton.IconOnly
             text: qsTr("More Actions for %1").arg(root.candidate.label)
@@ -144,7 +163,7 @@ ColumnLayout {
             }
         }
         QQC2.MenuSeparator {
-            visible: root.controlRequest !== null
+            visible: root.controlRequest !== null || root.candidate.wake.kind !== "hidden"
             height: visible ? implicitHeight : 0
         }
         QQC2.MenuItem {
@@ -155,6 +174,31 @@ ColumnLayout {
                 ? qsTr("Waiting for %1…").arg(root.candidate.label)
                 : qsTr("Let %1 Control This Display").arg(root.candidate.label)
             onTriggered: root.run("let_control")
+        }
+        QQC2.MenuItem {
+            visible: root.candidate.wake.kind !== "hidden"
+            height: visible ? implicitHeight : 0
+            enabled: root.candidate.wake.kind === "available"
+            text: qsTr("Wake %1").arg(root.candidate.label)
+            onTriggered: root.run("wake")
+            contentItem: ColumnLayout {
+                spacing: 0
+                QQC2.Label {
+                    Layout.fillWidth: true
+                    leftPadding: Kirigami.Units.largeSpacing
+                    text: qsTr("Wake %1").arg(root.candidate.label)
+                    color: root.candidate.wake.kind === "available"
+                        ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
+                }
+                QQC2.Label {
+                    Layout.fillWidth: true
+                    leftPadding: Kirigami.Units.largeSpacing
+                    visible: root.candidate.wake.kind === "unavailable"
+                    text: root.candidate.wake.reason ?? ""
+                    color: Kirigami.Theme.disabledTextColor
+                    font: Kirigami.Theme.smallFont
+                }
+            }
         }
     }
 }

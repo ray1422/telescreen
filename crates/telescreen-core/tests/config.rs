@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use telescreen_core::config::{
-    Config, ConfigError, Driver, Program, Quirk, SpecialKeyAction, yaml,
+    Config, ConfigError, Driver, MacAddress, Program, Quirk, SpecialKeyAction, yaml,
 };
 use telescreen_core::ids::{ComputerId, DeviceId};
 use telescreen_core::keys::SpecialKeyGroup;
@@ -202,6 +202,32 @@ fn invalid_configurations() {
         }),
         ("non-list special key groups", Layer::Schema, |c| {
             c["computers"]["mac"]["special-keys"] = json!({"keep-on-source": "volume"})
+        }),
+        ("wake with no mac", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] = json!({"broadcast": "192.168.1.255"})
+        }),
+        ("wake with no broadcast", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] = json!({"mac": "aa:bb:cc:dd:ee:ff"})
+        }),
+        ("short wake mac", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] =
+                json!({"mac": "aa:bb:cc:dd:ee", "broadcast": "192.168.1.255"})
+        }),
+        ("mixed wake mac separators", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] =
+                json!({"mac": "aa:bb-cc:dd:ee:ff", "broadcast": "192.168.1.255"})
+        }),
+        ("limited broadcast for wake", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] =
+                json!({"mac": "aa:bb:cc:dd:ee:ff", "broadcast": "255.255.255.255"})
+        }),
+        ("zero wake port", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] =
+                json!({"mac": "aa:bb:cc:dd:ee:ff", "broadcast": "192.168.1.255", "port": 0})
+        }),
+        ("unknown wake field", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] = json!(
+                {"mac": "aa:bb:cc:dd:ee:ff", "broadcast": "192.168.1.255", "interface": "en0"})
         }),
         ("unknown built-in driver", Layer::Schema, |c| {
             device(c)["portal-match"]["driver"] = json!("shell")
@@ -533,4 +559,32 @@ fn net13_host_is_optional_only_with_discovery() {
     );
     assert!(endpoint_of("{port: 1}").is_err());
     assert!(endpoint_of("{host: a.test, port: 1, discovery: dns}").is_err());
+}
+
+#[test]
+fn act7_wake_parses_the_mac_the_broadcast_and_the_port() {
+    let mut value = example_value();
+    value["computers"]["pc1"]["wake"] =
+        json!({"mac": "AA-bb-0C-dd-EE-01", "broadcast": "10.0.0.255"});
+    value["computers"]["mac"]["wake"] =
+        json!({"mac": "01:02:03:04:05:06", "broadcast": "192.168.1.255", "port": 7});
+    let config = Config::from_value(value).unwrap();
+    let wake = |id: &str| {
+        config
+            .computer(&ComputerId::from(id))
+            .unwrap()
+            .wake
+            .unwrap()
+    };
+    assert_eq!(
+        wake("pc1").mac,
+        MacAddress([0xaa, 0xbb, 0x0c, 0xdd, 0xee, 0x01])
+    );
+    assert_eq!(
+        wake("pc1").broadcast,
+        std::net::Ipv4Addr::new(10, 0, 0, 255)
+    );
+    assert_eq!(wake("pc1").port, 9, "the default port");
+    assert_eq!(wake("mac").mac, MacAddress([1, 2, 3, 4, 5, 6]));
+    assert_eq!(wake("mac").port, 7);
 }

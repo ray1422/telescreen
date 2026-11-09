@@ -290,6 +290,35 @@ impl Shared {
                     link.connection.close(0u32.into(), b"closed");
                 }
             }
+            NetCommand::Wake {
+                peer,
+                mac,
+                broadcast,
+                port,
+            } => {
+                // A nonblocking socket keeps a single broadcast from delaying
+                // the network task. Wake needs no authenticated connection.
+                let result = (|| -> std::io::Result<()> {
+                    if broadcast == std::net::Ipv4Addr::BROADCAST {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "wake broadcast must not be 255.255.255.255",
+                        ));
+                    }
+                    let socket = std::net::UdpSocket::bind((std::net::Ipv4Addr::UNSPECIFIED, 0))?;
+                    socket.set_nonblocking(true)?;
+                    socket.set_broadcast(true)?;
+                    socket.send_to(&crate::magic_packet(mac), (broadcast, port))?;
+                    Ok(())
+                })();
+                self.emit(match result {
+                    Ok(()) => NetEvent::WakeSent { peer },
+                    Err(error) => NetEvent::WakeFailed {
+                        peer,
+                        reason: error.to_string(),
+                    },
+                });
+            }
         }
     }
 

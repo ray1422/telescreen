@@ -128,6 +128,10 @@ struct Log {
     prompt_cursor_on: Vec<(PromptId, Option<Normalized>)>,
     /// Peers of each `NetCommand::Close`.
     closed: Vec<ComputerId>,
+    /// Each `NetCommand::Wake`: the peer, the MAC, the broadcast address, the port (ACT-7).
+    wakes: Vec<(ComputerId, [u8; 6], std::net::Ipv4Addr, u16)>,
+    /// The next `NetCommand::Wake` reports `WakeFailed`.
+    wake_fails: bool,
     /// The number of `NetPort::shutdown` calls.
     net_shutdowns: usize,
     /// Injected events and focus holder calls, in sequence (FLOW-23).
@@ -566,11 +570,36 @@ impl World {
                     let next = peers[i].log.borrow_mut().net.pop_front();
                     let Some(command) = next else { break };
                     progress = true;
+                    // ACT-7: a wake needs no peer in the world.
+                    if let NetCommand::Wake {
+                        peer,
+                        mac,
+                        broadcast,
+                        port,
+                    } = command
+                    {
+                        let fails = {
+                            let mut log = peers[i].log.borrow_mut();
+                            log.wakes.push((peer.clone(), mac, broadcast, port));
+                            std::mem::take(&mut log.wake_fails)
+                        };
+                        let event = if fails {
+                            NetEvent::WakeFailed {
+                                peer,
+                                reason: "Network is unreachable".into(),
+                            }
+                        } else {
+                            NetEvent::WakeSent { peer }
+                        };
+                        peers[i].controller.on_net(event, self.now);
+                        continue;
+                    }
                     let to = match &command {
                         NetCommand::Dial { peer, .. }
                         | NetCommand::Send { peer, .. }
                         | NetCommand::SendPointer { peer, .. }
                         | NetCommand::Close { peer } => peer.clone(),
+                        NetCommand::Wake { .. } => unreachable!("handled above"),
                     };
                     let j = peers
                         .iter()
@@ -621,6 +650,7 @@ impl World {
                                 self.now,
                             );
                         }
+                        NetCommand::Wake { .. } => unreachable!("handled above"),
                     }
                 }
                 let a = &mut *peers[i];
@@ -5222,4 +5252,176 @@ fn flow8_a_portal_with_no_session_takes_no_acknowledgement() {
     assert!(!w.mac.controller.awaiting_ack());
     assert!(!w.mac.controller.acknowledge(AckOrigin::Portal(portal)));
     assert!(!w.mac.controller.acknowledge(AckOrigin::Computer));
+}
+
+// ACT-7 and the primary action of UI-18 (user, 2026-11-09).
+
+fn pc1_wake() -> telescreen_core::config::WakeConfig {
+    telescreen_core::config::WakeConfig {
+        mac: telescreen_core::config::MacAddress([0xaa, 0xbb, 0xcc, 0x01, 0x02, 0x03]),
+        broadcast: std::net::Ipv4Addr::new(192, 168, 1, 255),
+        port: 9,
+    }
+}
+
+fn with_pc1_wake(config: &mut Config) {
+    config
+        .computers
+        .get_mut(&ComputerId::from("pc1"))
+        .unwrap()
+        .wake = Some(pc1_wake());
+}
+
+fn offline_world_with_wake() -> World {
+    let mut w = world_with(|config| {
+        endpoint_of(config, "pc1").hosts.clear();
+        with_pc1_wake(config);
+    });
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    w
+}
+
+#[test]
+fn ui18_ac58_an_offline_candidate_has_no_primary_action() {
+    let mut w = world_with(|config| endpoint_of(config, "pc1").hosts.clear());
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.status, "offline");
+    assert_eq!(candidate.switch_display_only, None, "still in the menu");
+    assert_eq!(candidate.primary, None, "a row click runs nothing");
+}
+
+#[test]
+fn ui18_a_connected_candidate_has_switch_and_control_as_the_primary_action() {
+    let mut w = World::new();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.status, "online");
+    assert_eq!(
+        candidate.primary,
+        Some(telescreen_view::CandidateAction::SwitchAndControl)
+    );
+}
+
+#[test]
+fn ui18_a_connected_candidate_with_no_capture_has_switch_display_only_as_the_primary_action() {
+    let mut w = World::new();
+    w.mac = peer_with(
+        "mac",
+        vec![display("lg", 0.0, 3400.0)],
+        InputCapabilities {
+            capture: Capability::Missing("grant Input Monitoring".into()),
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+    );
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.status, "online");
+    assert_eq!(
+        candidate.primary,
+        Some(telescreen_view::CandidateAction::SwitchDisplayOnly)
+    );
+}
+
+#[test]
+fn act7_a_candidate_with_no_wake_config_hides_wake() {
+    let mut w = world_with(|config| endpoint_of(config, "pc1").hosts.clear());
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    assert_eq!(
+        pc1_candidate(&w.mac).wake,
+        telescreen_view::WakeAction::Hidden
+    );
+}
+
+#[test]
+fn act7_ac59_wake_sends_one_packet_and_does_not_dial() {
+    let mut w = offline_world_with_wake();
+    let pc1 = ComputerId::from("pc1");
+    assert_eq!(
+        pc1_candidate(&w.mac).wake,
+        telescreen_view::WakeAction::Available
+    );
+    w.mac.controller.on_intent(Intent::Wake {
+        target: pc1.clone(),
+    });
+    {
+        let log = w.mac.log.borrow();
+        assert!(
+            !log.net.iter().any(|c| matches!(c, NetCommand::Dial { .. })),
+            "no dial after the wake (ACT-7)"
+        );
+        let wakes = log
+            .net
+            .iter()
+            .filter(|c| matches!(c, NetCommand::Wake { .. }))
+            .count();
+        assert_eq!(wakes, 1);
+    }
+    w.pump();
+    let wake = pc1_wake();
+    assert_eq!(
+        w.mac.log.borrow().wakes,
+        vec![(pc1, wake.mac.0, wake.broadcast, wake.port)]
+    );
+    assert!(
+        has_notice(&w.mac, "Wake request sent to"),
+        "{:?}",
+        w.mac.controller.control_screen().notices
+    );
+    assert_eq!(pc1_candidate(&w.mac).status, "offline");
+}
+
+#[test]
+fn act7_a_failed_wake_shows_the_error() {
+    let mut w = offline_world_with_wake();
+    w.mac.log.borrow_mut().wake_fails = true;
+    w.mac.controller.on_intent(Intent::Wake {
+        target: ComputerId::from("pc1"),
+    });
+    w.pump();
+    assert!(
+        has_notice(&w.mac, "Could not send the wake request to"),
+        "{:?}",
+        w.mac.controller.control_screen().notices
+    );
+    assert!(has_notice(&w.mac, "Network is unreachable"));
+}
+
+#[test]
+fn act7_wake_is_unavailable_while_connected() {
+    let mut w = world_with(with_pc1_wake);
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.status, "online");
+    assert_eq!(
+        candidate.wake,
+        telescreen_view::WakeAction::Unavailable {
+            reason: "Connected".into()
+        }
+    );
+    // An intent for a connected candidate sends nothing.
+    w.mac.controller.on_intent(Intent::Wake {
+        target: ComputerId::from("pc1"),
+    });
+    w.pump();
+    assert!(w.mac.log.borrow().wakes.is_empty());
+}
+
+#[test]
+fn act7_a_wake_intent_with_no_wake_config_sends_nothing() {
+    let mut w = world_with(|config| endpoint_of(config, "pc1").hosts.clear());
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    w.mac.controller.on_intent(Intent::Wake {
+        target: ComputerId::from("pc1"),
+    });
+    w.pump();
+    assert!(w.mac.log.borrow().wakes.is_empty());
 }
