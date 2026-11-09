@@ -50,6 +50,11 @@ enum Command {
     /// Show the displays, their metadata for driver helpers, and the input
     /// capabilities, as JSON. It opens no window.
     Displays,
+    /// Check that the Qt and KDE modules of the UI exist: load the QML of the
+    /// main window with no window on a screen, then stop (DIST-10). It uses no
+    /// network.
+    #[cfg(target_os = "linux")]
+    SelfCheck,
 }
 
 fn main() -> ExitCode {
@@ -113,6 +118,12 @@ fn run(command: Command) -> Result<(), String> {
             } else {
                 println!("{fingerprint} was already trusted for {computer}");
             }
+            Ok(())
+        }
+        #[cfg(target_os = "linux")]
+        Command::SelfCheck => {
+            telescreen_app::ui::self_check()?;
+            println!("self-check: the UI loads");
             Ok(())
         }
         Command::Displays => {

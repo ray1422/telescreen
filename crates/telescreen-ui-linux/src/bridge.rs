@@ -62,6 +62,11 @@ pub mod qobject {
 
         /// Stops the Qt event loop. Qt thread only.
         fn ts_ui_quit();
+
+        /// Makes a `QApplication` on the offscreen platform and loads
+        /// `dev.telescreen.ui/App` with no event loop (DIST-10). Returns 0 if
+        /// QML made the main window.
+        fn ts_ui_self_check() -> i32;
     }
 }
 
@@ -234,6 +239,19 @@ pub fn quit() {
 /// Runs the Qt event loop on this thread until the application quits. Call it
 /// on the main thread of the process. If the loop stops for a cause other than
 /// [`quit`], the sink of [`LinuxUi::new`] gets [`UiEvent::Quit`].
+/// Checks that the QML of the main window loads: the Qt and KDE modules that
+/// the binary needs at runtime exist (DIST-10). It opens no window on a screen
+/// and uses no network. Call it on the main thread, before any other Qt call,
+/// and do not call [`run`] after it in the same process.
+pub fn self_check() -> Result<(), String> {
+    cxx_qt::init_crate!(telescreen_ui_linux);
+    cxx_qt::init_qml_module!("dev.telescreen.ui");
+    match qobject::ts_ui_self_check() {
+        0 => Ok(()),
+        _ => Err("the QML of the main window does not load; see the QML errors above".into()),
+    }
+}
+
 pub fn run() -> i32 {
     cxx_qt::init_crate!(telescreen_ui_linux);
     cxx_qt::init_qml_module!("dev.telescreen.ui");
