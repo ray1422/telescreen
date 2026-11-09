@@ -1,16 +1,21 @@
 #!/bin/sh
-# Install or upgrade the Telescreen Plasma applet for the current user (UI-11).
-#
-#   scripts/install-plasma-applet.sh
-#
-# The script installs the package in ~/.local/share/plasma/plasmoids. It does not
-# add the applet to a panel: the system tray shows it while Telescreen runs.
-# To remove it: kpackagetool6 -t Plasma/Applet --remove dev.telescreen.menu
+# Install or upgrade the current user's Plasma applet (UI-11).
+# The system tray shows it while Telescreen runs; this does not add it to a panel.
+# Remove it with: kpackagetool6 -t Plasma/Applet --remove dev.telescreen.menu
 set -eu
 
-package=$(dirname "$0")/../applet/dev.telescreen.menu
-if kpackagetool6 -t Plasma/Applet --show dev.telescreen.menu >/dev/null 2>&1; then
-  kpackagetool6 -t Plasma/Applet --upgrade "$package"
-else
-  kpackagetool6 -t Plasma/Applet --install "$package"
-fi
+fail() {
+  echo "telescreen: $*" >&2
+  exit 1
+}
+
+install_applet() {
+  package=$(dirname "$0")/../applet/dev.telescreen.menu
+  if kpackagetool6 -t Plasma/Applet --show dev.telescreen.menu >/dev/null 2>&1; then
+    kpackagetool6 -t Plasma/Applet --upgrade "$package" || fail 'cannot upgrade Plasma applet'
+  else
+    kpackagetool6 -t Plasma/Applet --install "$package" || fail 'cannot install Plasma applet'
+  fi
+}
+
+install_applet

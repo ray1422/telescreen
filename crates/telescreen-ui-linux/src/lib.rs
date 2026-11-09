@@ -24,7 +24,7 @@ mod bridge;
 mod menu_service;
 
 #[cfg(target_os = "linux")]
-pub use bridge::{LinuxUi, quit, run};
+pub use bridge::{LinuxUi, quit, run, self_check};
 #[cfg(target_os = "linux")]
 pub use menu_service::{Claim, MenuServer, MenuService, claim};
 

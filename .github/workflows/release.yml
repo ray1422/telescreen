@@ -1,4 +1,6 @@
-# Make a GitHub release when a commit arrives on the release branch (DIST-3).
+# Make a GitHub release when a commit arrives on the release branch (DIST-3):
+# the macOS archive, the generic Linux archive with the applet and the manifest
+# (DIST-7, DIST-10), the Arch archive and package (DIST-6), and the AppImage (DIST-9).
 #
 # Optional secrets: MACOS_SIGN_P12 (base64 of a .p12 file) and MACOS_SIGN_PASSWORD.
 # They contain the "Telescreen Dev" code signing identity, so that macOS keeps the
@@ -58,6 +60,83 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  arch:
+    needs: version
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm --needed git rust qt6-base qt6-declarative qt6-wayland kirigami qqc2-desktop-style libxkbcommon wayland
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-arch-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-arch-
+      - run: cargo test --workspace
+      - run: scripts/package-release.sh dist
+        env:
+          TELESCREEN_VARIANT: arch
+      # makepkg refuses to run as root.
+      - name: Make the pacman package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          useradd -m builder
+          chown -R builder dist
+          su builder -c "packaging/aur/make-package.sh dist/telescreen-arch-x86_64.tar.gz $VERSION dist"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: dist/
+          if-no-files-found: error
+
+  # The same build as .github/workflows/appimage.yml (mode app).
+  appimage:
+    needs: version
+    runs-on: ubuntu-24.04
+    container: almalinux:9
+    env:
+      CARGO_HOME: /usr/local/cargo
+      RUSTUP_HOME: /usr/local/rustup
+    steps:
+      - run: |
+          dnf -y install epel-release dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf -y --setopt=install_weak_deps=False install git gcc gcc-c++ cmake ninja-build python3-pip gettext \
+            xz bzip2 file findutils which binutils patchelf desktop-file-utils pkgconf-pkg-config \
+            zlib-devel bzip2-devel xz-devel libzstd-devel openssl-devel hunspell-devel \
+            mesa-libGL-devel mesa-libEGL-devel libxkbcommon-devel libxkbcommon-x11-devel wayland-devel \
+            fontconfig-devel freetype-devel dbus-devel libX11-devel libxcb-devel \
+            xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil xcb-util-cursor
+      - uses: actions/checkout@v4
+      - run: |
+          curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+      # Qt and the KDE Frameworks. The caches of pull requests are not visible
+      # here, so the release branch keeps its own.
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/appimage
+          key: appimage-alma9-${{ hashFiles('packaging/appimage/build.sh') }}-${{ github.run_id }}
+          restore-keys: |
+            appimage-alma9-${{ hashFiles('packaging/appimage/build.sh') }}-
+            appimage-alma9-
+      - run: sh packaging/appimage/build.sh "$PWD/dist"
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: target/appimage
+          key: appimage-alma9-${{ hashFiles('packaging/appimage/build.sh') }}-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: dist/Telescreen-x86_64.AppImage
+          if-no-files-found: error
+
   macos:
     needs: version
     runs-on: macos-latest
@@ -106,7 +185,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [version, linux, macos]
+    needs: [version, linux, arch, appimage, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -122,7 +201,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           cp scripts/install.sh artifacts/install.sh
-          sha=$(sha256sum artifacts/telescreen-linux-x86_64.tar.gz | cut -d' ' -f1)
-          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256@/$sha/" packaging/aur/PKGBUILD.in >artifacts/PKGBUILD
-          (cd artifacts && sha256sum telescreen-*.tar.gz >sha256sums.txt)
+          # The arch job filled the PKGBUILD with the Qt version of its build (DIST-6).
+          (cd artifacts && sha256sum telescreen-*.tar.gz telescreen-arch-x86_64.pkg.tar.zst telescreen-linux-x86_64.deps \
+            Telescreen-x86_64.AppImage dev.telescreen.menu.plasmoid >sha256sums.txt)
           gh release create "v$VERSION" artifacts/* --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes

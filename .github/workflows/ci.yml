@@ -1,5 +1,6 @@
 # Run the tests for each pull request to the release branch (DIST-3). The checks
-# "linux" and "macos" are required on that branch, so that auto-merge waits for them.
+# "linux", "arch", and "macos" are required on that branch, so that auto-merge
+# waits for them (DIST-6).
 name: ci
 
 on:
@@ -27,6 +28,26 @@ jobs:
             target
           key: cargo-linux-${{ hashFiles('Cargo.lock') }}
           restore-keys: cargo-linux-
+      - run: cargo test --workspace
+      # The install methods and the release files (DIST-6 to DIST-11), with stubs.
+      - run: sh scripts/tests/install_test.sh && sh scripts/tests/package_release_test.sh
+
+  # The Qt of Arch is newer than the Qt of Ubuntu (DIST-6).
+  arch:
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm --needed git rust qt6-base qt6-declarative qt6-wayland kirigami qqc2-desktop-style libxkbcommon wayland
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-arch-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-arch-
       - run: cargo test --workspace
 
   macos:

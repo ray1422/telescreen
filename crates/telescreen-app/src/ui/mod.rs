@@ -1350,6 +1350,12 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
+/// `telescreen self-check`: the QML of the Linux UI loads (DIST-10).
+#[cfg(target_os = "linux")]
+pub fn self_check() -> Result<(), String> {
+    telescreen_ui_linux::self_check()
+}
+
 /// `telescreen displays`: the display list, the capabilities, and the monitors of
 /// the window system with their tokens, as JSON. It opens no window and asks for
 /// no permission.
