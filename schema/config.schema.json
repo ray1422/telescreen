@@ -127,6 +127,32 @@
           "default": [],
           "description": "The platform workarounds that this computer does not use. Each workaround is on, unless this list has it (IN-16)."
         },
+        "wake": {
+          "type": "object",
+          "description": "Wake-on-LAN of this computer (ACT-7). A different computer reads it to wake this computer.",
+          "properties": {
+            "mac": {
+              "type": "string",
+              "pattern": "^[0-9A-Fa-f]{2}([:-])[0-9A-Fa-f]{2}(\\1[0-9A-Fa-f]{2}){4}$",
+              "description": "The MAC address of the network interface that wakes this computer."
+            },
+            "broadcast": {
+              "type": "string",
+              "format": "ipv4",
+              "pattern": "^((25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.){3}(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$",
+              "not": { "const": "255.255.255.255" },
+              "description": "The IPv4 broadcast address of the subnet of this computer."
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535,
+              "default": 9
+            }
+          },
+          "required": ["mac", "broadcast"],
+          "additionalProperties": false
+        },
         "special-keys": {
           "type": "object",
           "properties": {

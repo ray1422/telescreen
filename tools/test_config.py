@@ -23,6 +23,17 @@ class ConfigContract(unittest.TestCase):
     def test_lg_example(self):
         self.assertEqual(validate(load_config(ROOT / 'contrib/example-lg.yaml'), self.schema), [])
 
+    def test_valid_wake(self):
+        for name, wake in {
+            'colon mac': {'mac': 'aa:bb:cc:dd:ee:ff', 'broadcast': '192.168.1.255'},
+            'dash upper mac and port': {
+                'mac': 'AA-BB-CC-DD-EE-FF', 'broadcast': '10.0.0.255', 'port': 7},
+        }.items():
+            with self.subTest(name):
+                config = copy.deepcopy(self.example)
+                config['computers']['pc1']['wake'] = wake
+                self.assertEqual(validate(config, self.schema), [])
+
     def test_valid_commands(self):
         def device(config):
             return config['computers']['mac']['devices']['Desktop']
@@ -60,6 +71,22 @@ class ConfigContract(unittest.TestCase):
             return config['computers']['mac']['devices']['Desktop']
 
         mutations = {
+            'wake with no mac': lambda c: c['computers']['pc1'].update(
+                wake={'broadcast': '192.168.1.255'}),
+            'wake with no broadcast': lambda c: c['computers']['pc1'].update(
+                wake={'mac': 'aa:bb:cc:dd:ee:ff'}),
+            'short wake mac': lambda c: c['computers']['pc1'].update(
+                wake={'mac': 'aa:bb:cc:dd:ee', 'broadcast': '192.168.1.255'}),
+            'mixed wake mac separators': lambda c: c['computers']['pc1'].update(
+                wake={'mac': 'aa:bb-cc:dd:ee:ff', 'broadcast': '192.168.1.255'}),
+            'limited broadcast for wake': lambda c: c['computers']['pc1'].update(
+                wake={'mac': 'aa:bb:cc:dd:ee:ff', 'broadcast': '255.255.255.255'}),
+            'host name as wake broadcast': lambda c: c['computers']['pc1'].update(
+                wake={'mac': 'aa:bb:cc:dd:ee:ff', 'broadcast': 'lan.local'}),
+            'zero wake port': lambda c: c['computers']['pc1'].update(
+                wake={**{'mac': 'aa:bb:cc:dd:ee:ff', 'broadcast': '192.168.1.255'}, 'port': 0}),
+            'unknown wake field': lambda c: c['computers']['pc1'].update(
+                wake={**{'mac': 'aa:bb:cc:dd:ee:ff', 'broadcast': '192.168.1.255'}, 'interface': 'en0'}),
             'empty hint': lambda c: c['computers']['pc1'].update(hint=''),
             'no host and no discovery': lambda c: c['computers']['pc1'].update(
                 endpoint={'port': 24800}),
