@@ -402,6 +402,8 @@ mod tests {
                                     switch_and_control: Some("Target peer is offline".into()),
                                     switch_display_only: None,
                                     control_only: Some("Target peer is offline".into()),
+                                    primary: None,
+                                    wake: Default::default(),
                                 }],
                             },
                         ],

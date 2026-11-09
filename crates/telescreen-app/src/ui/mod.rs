@@ -1415,6 +1415,10 @@ pub(crate) struct Parts {
 fn log_net_event(event: &NetEvent) {
     match event {
         NetEvent::Pointer { .. } => {}
+        NetEvent::WakeSent { peer } => eprintln!("telescreen: wake request sent to {peer}"),
+        NetEvent::WakeFailed { peer, reason } => {
+            eprintln!("telescreen: wake request to {peer} failed: {reason}")
+        }
         NetEvent::Message {
             message:
                 Message::Heartbeat

@@ -148,6 +148,9 @@ def validate(config, schema):
                     errors.append(f'{where}: a program with a path must be absolute: {program}')
                 if 'cwd' in operation and not is_absolute(operation['cwd']):
                     errors.append(f'{where}: cwd must be absolute: {operation["cwd"]}')
+        special = computer.get('special-keys', {})
+        for group in sorted(set(special.get('send-to-target', [])) & set(special.get('keep-on-source', []))):
+            errors.append(f'{computer_id}.special-keys: {group} is in send-to-target and keep-on-source')
         for directory in computer.get('path', []):
             if not is_absolute(directory):
                 errors.append(f'{computer_id}.path: the directory must be absolute: {directory}')

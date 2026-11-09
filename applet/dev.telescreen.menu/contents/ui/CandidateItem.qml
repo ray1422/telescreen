@@ -1,5 +1,5 @@
 // One candidate in the applet: the computer and its status, then a button for
-// each available action. The first one is the primary action (UI-18). An
+// each available action. Rust selects the primary action (UI-18). An
 // unavailable action has no button; if "Switch & control" is unavailable, the
 // status line gives its reason.
 import QtQuick
@@ -27,6 +27,8 @@ Item {
         ].filter(a => a.reason === null)
         if (controlRequest !== null && !controlRequest.waiting)
             all.push({ kind: "let_control", text: i18nc("@action:button", "Let %1 control this display", candidate.label) })
+        if (candidate.wake.kind === "available")
+            all.push({ kind: "wake", text: i18nc("@action:button", "Wake %1", candidate.label) })
         return all
     }
 
@@ -49,6 +51,8 @@ Item {
     function run(kind) {
         if (kind === "let_control")
             intent({ kind: kind, peer: candidate.target, device: device })
+        else if (kind === "wake")
+            intent({ kind: kind, target: candidate.target })
         else
             intent({ kind: kind, display: display, device: device, target: candidate.target })
     }
@@ -109,10 +113,9 @@ Item {
             delegate: Loader {
                 id: slot
                 required property var modelData
-                required property int index
                 Layout.fillWidth: true
                 Layout.leftMargin: Kirigami.Units.iconSizes.medium + Kirigami.Units.largeSpacing
-                sourceComponent: index === 0 ? primaryButton : plainButton
+                sourceComponent: modelData.kind === root.candidate.primary ? primaryButton : plainButton
                 Component {
                     id: primaryButton
                     PrimaryButton {

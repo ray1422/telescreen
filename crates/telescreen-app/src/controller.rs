@@ -675,6 +675,15 @@ impl Controller {
 
     pub fn on_net(&mut self, event: NetEvent, now: Instant) {
         match event {
+            NetEvent::WakeSent { peer } => {
+                self.notice(format!("Wake request sent to {}", self.label_of(&peer)));
+            }
+            NetEvent::WakeFailed { peer, reason } => {
+                self.notice(format!(
+                    "Could not send the wake request to {}: {reason}",
+                    self.label_of(&peer)
+                ));
+            }
             NetEvent::Connected { peer } => {
                 self.dialing.remove(&peer);
                 self.connected.insert(peer.clone());
@@ -950,6 +959,18 @@ impl Controller {
 
     pub fn on_intent(&mut self, intent: Intent) {
         match intent {
+            Intent::Wake { target } => {
+                if !self.connected.contains(&target)
+                    && let Some(wake) = self.config.computer(&target).and_then(|c| c.wake)
+                {
+                    self.ports.net.send(NetCommand::Wake {
+                        peer: target,
+                        mac: wake.mac.0,
+                        broadcast: wake.broadcast,
+                        port: wake.port,
+                    });
+                }
+            }
             Intent::DeviceIsBack { device } => {
                 if let Some(state) = self.device_states.get_mut(&device)
                     && *state == VideoInput::Unknown

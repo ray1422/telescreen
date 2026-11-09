@@ -15,6 +15,20 @@ The default file is `$XDG_CONFIG_HOME/telescreen/config.yaml`, else `~/.config/t
 - `scroll-speed`: optional number, larger than 0 and not larger than 10 (default `1`). This computer multiplies each scroll that it receives from a source by this number (spec IN-14). Example: `0.4` on the Linux computer makes the scroll from the Mac slower.
 - `disabled-quirks`: optional list of workaround names, with no duplicates (default: an empty list). This computer uses each platform workaround, unless this list has its name (spec IN-16). An unknown name is an error. The change takes effect when the app starts. The names:
   - `kwin-button-scroll`: on KWin, a forwarded scroll is a button scroll (spec IN-15). If this list has the name, a forwarded scroll on KWin is a wheel scroll, and applications can animate it.
+- `wake`: optional mapping for Wake-on-LAN of this computer (spec ACT-7). A different computer reads it to wake this computer. It has these keys, and no other key is permitted:
+  - `mac`: required. The MAC address of the network interface that wakes this computer, as six pairs of hexadecimal digits separated by `:` or `-`, for example `"aa:bb:cc:dd:ee:ff"`. Write it in quotes: YAML can read some unquoted values as numbers.
+  - `broadcast`: required. The IPv4 broadcast address of the subnet of this computer, for example `192.168.1.255`. Telescreen does not use `255.255.255.255`, because macOS refuses it.
+  - `port`: optional UDP port, 1 to 65535 (default `9`).
+- `special-keys`: optional mapping. It applies only when this computer is the source: it is not a setting of the target. It has the optional keys `send-to-target` and `keep-on-source`. Each is a list of special key group names, with no duplicates (default: an empty list). A name must not be in both lists. An unknown name is an error. No other key is permitted in `special-keys`. The change takes effect when the app starts. When this computer is a macOS source and a forwarding portal has the keyboard focus (spec IN-20):
+  - `send-to-target`: the keys of these groups go to the target, and not to this computer.
+  - `keep-on-source`: the keys of these groups go to this computer, and not to the target.
+  - The keys of a group in neither list go to neither computer.
+  - Example: `special-keys: {send-to-target: [brightness], keep-on-source: [volume, media]}`.
+  The group names:
+  - `brightness`: the display brightness keys.
+  - `volume`: the volume keys and the mute key.
+  - `media`: the previous track, play/pause, and next track keys.
+  - `keyboard-light`: the keyboard backlight keys.
 - `path`: optional list of absolute directories. Telescreen finds a program name with no `/` in these directories, in this sequence (see "Programs and the search path"). If `path` is absent, Telescreen uses the `PATH` of the login shell of the user.
 - `endpoint: {host, port, discovery}`: the connection address of the agent. It does not represent a trusted identity. Keep the pairing identity in local runtime data. Do not write secrets to this file. `host` is one IP address or DNS name, or a list of them. Telescreen resolves each host at each dial and uses its first IPv4 address (spec NET-11). `port` is the UDP port where this computer listens. `discovery: mdns` lets the other computers find this computer with the mDNS responder of the system (spec NET-12 to NET-16). `host` is optional only with `discovery`. A connection from a different address is accepted if its fingerprint is trusted (spec NET-3).
 - `devices`: a mapping. Its keys are local aliases. The aliases have no OS-identification semantics at all.

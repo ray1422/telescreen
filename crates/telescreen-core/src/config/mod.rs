@@ -23,6 +23,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 
 use crate::ids::{ComputerId, DeviceId};
+use crate::keys::SpecialKeyGroup;
 
 /// The only config format version that this build accepts.
 pub const CONFIG_VERSION: u64 = 1;
@@ -86,11 +87,79 @@ pub struct Computer {
     /// The platform workarounds that this computer does not use (IN-16).
     #[serde(default)]
     pub disabled_quirks: BTreeSet<Quirk>,
+    /// Where each special key goes while this computer is the source (IN-20).
+    #[serde(default)]
+    pub special_keys: SpecialKeys,
+    /// Wake-on-LAN of this computer (ACT-7). A different computer reads it to
+    /// wake this computer.
+    #[serde(default)]
+    pub wake: Option<WakeConfig>,
     pub endpoint: Endpoint,
     /// Keys are local aliases. They have no OS meaning.
     /// In the order of the config file (UI-18: the menu lists the displays
     /// in this order).
     pub devices: IndexMap<String, Device>,
+}
+
+/// The `wake` key of a computer (ACT-7, docs/config.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeConfig {
+    pub mac: MacAddress,
+    /// The subnet broadcast address. Never `255.255.255.255`.
+    #[serde(deserialize_with = "wake_broadcast")]
+    pub broadcast: std::net::Ipv4Addr,
+    #[serde(default = "wake_port")]
+    pub port: u16,
+}
+
+fn wake_port() -> u16 {
+    9
+}
+
+fn wake_broadcast<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<std::net::Ipv4Addr, D::Error> {
+    let address = std::net::Ipv4Addr::deserialize(deserializer)?;
+    if address == std::net::Ipv4Addr::BROADCAST {
+        return Err(serde::de::Error::custom(
+            "wake.broadcast must not be 255.255.255.255",
+        ));
+    }
+    Ok(address)
+}
+
+/// A MAC address: six pairs of hexadecimal digits separated by `:` or `-`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "String")]
+pub struct MacAddress(pub [u8; 6]);
+
+impl TryFrom<String> for MacAddress {
+    type Error = String;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        let invalid = || {
+            "MAC address must be six pairs of hexadecimal digits separated by ':' or '-'".to_owned()
+        };
+        let bytes = text.as_bytes();
+        if bytes.len() != 17 || !matches!(bytes[2], b':' | b'-') {
+            return Err(invalid());
+        }
+        let separator = bytes[2];
+        let mut mac = [0; 6];
+        for (index, octet) in mac.iter_mut().enumerate() {
+            let offset = index * 3;
+            let high = char::from(bytes[offset]).to_digit(16).ok_or_else(invalid)?;
+            let low = char::from(bytes[offset + 1])
+                .to_digit(16)
+                .ok_or_else(invalid)?;
+            if index < 5 && bytes[offset + 2] != separator {
+                return Err(invalid());
+            }
+            *octet = (high * 16 + low) as u8;
+        }
+        Ok(Self(mac))
+    }
 }
 
 /// The `clipboard` key of a computer (CLIP-1).
@@ -105,6 +174,44 @@ pub struct ClipboardConfig {
 impl Default for ClipboardConfig {
     fn default() -> Self {
         Self { text: on() }
+    }
+}
+
+/// The `special-keys` key of a computer (IN-20). It applies only when this
+/// computer is the source.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct SpecialKeys {
+    /// The groups that go to the target and not to this computer.
+    #[serde(default)]
+    pub send_to_target: BTreeSet<SpecialKeyGroup>,
+    /// The groups that go to this computer and not to the target.
+    #[serde(default)]
+    pub keep_on_source: BTreeSet<SpecialKeyGroup>,
+}
+
+/// What the source does with a special key while a forwarding portal has the
+/// keyboard focus (IN-20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecialKeyAction {
+    /// Forward the key, and suppress it on the source.
+    SendToTarget,
+    /// Let the key go to the source, and do not forward it.
+    KeepOnSource,
+    /// Suppress the key, and do not forward it.
+    Suppress,
+}
+
+impl SpecialKeys {
+    /// The action for a group.
+    pub fn action(&self, group: SpecialKeyGroup) -> SpecialKeyAction {
+        if self.send_to_target.contains(&group) {
+            SpecialKeyAction::SendToTarget
+        } else if self.keep_on_source.contains(&group) {
+            SpecialKeyAction::KeepOnSource
+        } else {
+            SpecialKeyAction::Suppress
+        }
     }
 }
 

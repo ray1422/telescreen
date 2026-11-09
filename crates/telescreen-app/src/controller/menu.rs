@@ -11,8 +11,9 @@ use telescreen_core::platform::DisplayInfo;
 use telescreen_core::routes;
 use telescreen_core::session::VideoInput;
 use telescreen_view::{
-    ComputerRow, ControlRequestRow, DeviceRow, DisplayMatching, Glyph, MainScreen, MenuCandidate,
-    MenuDevice, MenuDisplay, MenuRole, MenuScreen, MenuSession, MenuSessionId,
+    CandidateAction, ComputerRow, ControlRequestRow, DeviceRow, DisplayMatching, Glyph, MainScreen,
+    MenuCandidate, MenuDevice, MenuDisplay, MenuRole, MenuScreen, MenuSession, MenuSessionId,
+    WakeAction,
 };
 
 use super::portal_match::{Candidate, MatchOwner};
@@ -264,7 +265,7 @@ impl Controller {
                             .iter()
                             .map(|route| {
                                 let session = self.route_unavailable(device, route.target);
-                                MenuCandidate {
+                                let mut candidate = MenuCandidate {
                                     target: route.target.clone(),
                                     label: self.label_of(route.target),
                                     status: self.peer_status(route.target).into(),
@@ -272,7 +273,40 @@ impl Controller {
                                     // ACT-6: only the route.
                                     switch_display_only: None,
                                     control_only: session,
+                                    primary: None,
+                                    wake: WakeAction::Hidden,
+                                };
+                                if candidate.status == "online" {
+                                    candidate.primary = [
+                                        (
+                                            CandidateAction::SwitchAndControl,
+                                            &candidate.switch_and_control,
+                                        ),
+                                        (
+                                            CandidateAction::SwitchDisplayOnly,
+                                            &candidate.switch_display_only,
+                                        ),
+                                        (CandidateAction::ControlOnly, &candidate.control_only),
+                                    ]
+                                    .into_iter()
+                                    .find_map(|(action, reason)| {
+                                        reason.is_none().then_some(action)
+                                    });
                                 }
+                                if self
+                                    .config
+                                    .computer(route.target)
+                                    .is_some_and(|c| c.wake.is_some())
+                                {
+                                    candidate.wake = if candidate.status == "online" {
+                                        WakeAction::Unavailable {
+                                            reason: "Connected".into(),
+                                        }
+                                    } else {
+                                        WakeAction::Available
+                                    };
+                                }
+                                candidate
                             })
                             .collect(),
                     })

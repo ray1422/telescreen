@@ -165,3 +165,51 @@ pub fn to_mac(key: Key) -> Option<u16> {
         .find(|&&(_, evdev_code)| evdev_code == key.0)
         .map(|&(mac_code, _)| mac_code)
 }
+
+/// A group of special keys (IN-20). The `special-keys` lists of the config
+/// name these groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SpecialKeyGroup {
+    /// The display brightness keys.
+    Brightness,
+    /// The volume keys and the mute key.
+    Volume,
+    /// The previous track, play/pause, and next track keys.
+    Media,
+    /// The keyboard backlight keys.
+    KeyboardLight,
+}
+
+impl SpecialKeyGroup {
+    /// The name in the config (`docs/config.md`).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Brightness => "brightness",
+            Self::Volume => "volume",
+            Self::Media => "media",
+            Self::KeyboardLight => "keyboard-light",
+        }
+    }
+}
+
+/// Maps a macOS special key (`NX_KEYTYPE_*` in `IOKit/hidsystem/ev_keymap.h`)
+/// to its group and its key (IN-20). Returns `None` for a special key that
+/// has no group.
+pub fn from_mac_special(key_type: u16) -> Option<(SpecialKeyGroup, Key)> {
+    let (group, code) = match key_type {
+        0 => (SpecialKeyGroup::Volume, 115), // SOUND_UP, KEY_VOLUMEUP
+        1 => (SpecialKeyGroup::Volume, 114), // SOUND_DOWN, KEY_VOLUMEDOWN
+        2 => (SpecialKeyGroup::Brightness, 225), // BRIGHTNESS_UP, KEY_BRIGHTNESSUP
+        3 => (SpecialKeyGroup::Brightness, 224), // BRIGHTNESS_DOWN, KEY_BRIGHTNESSDOWN
+        7 => (SpecialKeyGroup::Volume, 113), // MUTE, KEY_MUTE
+        16 => (SpecialKeyGroup::Media, 164), // PLAY, KEY_PLAYPAUSE
+        17 | 19 => (SpecialKeyGroup::Media, 163), // NEXT / FAST, KEY_NEXTSONG
+        18 | 20 => (SpecialKeyGroup::Media, 165), // PREVIOUS / REWIND, KEY_PREVIOUSSONG
+        21 => (SpecialKeyGroup::KeyboardLight, 230), // ILLUMINATION_UP, KEY_KBDILLUMUP
+        22 => (SpecialKeyGroup::KeyboardLight, 229), // ILLUMINATION_DOWN, KEY_KBDILLUMDOWN
+        23 => (SpecialKeyGroup::KeyboardLight, 228), // ILLUMINATION_TOGGLE, KEY_KBDILLUMTOGGLE
+        _ => return None,
+    };
+    Some((group, Key(code)))
+}

@@ -67,6 +67,8 @@ struct MenuCandidate: Decodable, Equatable, Identifiable {
     let switchAndControl: String?
     let switchDisplayOnly: String?
     let controlOnly: String?
+    let primary: String?
+    let wake: Tagged
     var id: String { target }
 }
 

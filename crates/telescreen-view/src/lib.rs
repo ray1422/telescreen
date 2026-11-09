@@ -284,6 +284,8 @@ pub enum Intent {
     },
     /// "Let <peer> control this display": send a control request (ACT-4).
     LetControl { peer: ComputerId, device: DeviceId },
+    /// "Wake <peer>": send a Wake-on-LAN magic packet (ACT-7).
+    Wake { target: ComputerId },
     /// "Hand back" in the session part of the menu, on the source (UI-9, HB-3).
     /// `None`: as for `EndSession`.
     SourceHandBack {
@@ -460,6 +462,37 @@ pub struct MenuCandidate {
     pub switch_and_control: Option<String>,
     pub switch_display_only: Option<String>,
     pub control_only: Option<String>,
+    /// The action that a click on the row runs (UI-18). `None` while the
+    /// candidate is not connected, or if no action is available. The platform
+    /// UIs use this value; they do not select the action themselves.
+    #[serde(default)]
+    pub primary: Option<CandidateAction>,
+    /// "Wake <peer>" in the "⋯" menu (ACT-7).
+    #[serde(default)]
+    pub wake: WakeAction,
+}
+
+/// An action of ACT-1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateAction {
+    SwitchAndControl,
+    SwitchDisplayOnly,
+    ControlOnly,
+}
+
+/// The state of "Wake <peer>" (ACT-7).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WakeAction {
+    /// The config of the peer has no `wake`. The menu does not show the action.
+    #[default]
+    Hidden,
+    Available,
+    /// The menu shows the action disabled, with the reason.
+    Unavailable {
+        reason: String,
+    },
 }
 
 /// "Let <peer> control this display" for one device (ACT-4, UI-18).

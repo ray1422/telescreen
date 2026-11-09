@@ -448,7 +448,7 @@ struct RefreshButton: View {
     }
 }
 
-/// The actions of a candidate (ACT-1) and "Let <peer> control this display".
+/// The actions of a candidate (ACT-1, ACT-7).
 @MainActor struct CandidateActions {
     let display: MenuDisplay
     let device: MenuDevice
@@ -471,22 +471,25 @@ struct RefreshButton: View {
         ]
     }
 
-    /// The first available action (UI-18).
-    var primary: Action? { actions.first { $0.unavailable == nil } }
+    /// Rust selects the primary action (UI-18).
+    var primary: Action? { actions.first { $0.kind == candidate.primary } }
 
     var online: Bool { candidate.status == "online" }
 
     var subtitle: String {
         let status = candidate.status.capitalized
-        if let request, request.waiting { return "Waiting for \(request.peerLabel)…" }
-        if let primary { return "\(status) · \(primary.title)" }
-        return [status, candidate.switchAndControl].compactMap { $0 }.joined(separator: " · ")
+        let detail = primary?.title ?? candidate.switchAndControl
+        var text = [status, detail].compactMap { $0 }.joined(separator: " · ")
+        if let request, request.waiting { text += " · Waiting for \(request.peerLabel)…" }
+        return text
     }
 
-    /// The menu has more than one available item: the row shows "⋯".
+    /// Hide "⋯" only when the primary action is the only available item.
     var hasMore: Bool {
         let available = actions.filter { $0.unavailable == nil }.count
-        return available + (request.map { $0.waiting ? 0 : 1 } ?? 0) > 1
+            + (request.map { $0.waiting ? 0 : 1 } ?? 0)
+            + (candidate.wake.kind == "available" ? 1 : 0)
+        return available != 1 || primary == nil
     }
 
     func run(_ action: Action) {
@@ -508,17 +511,28 @@ struct RefreshButton: View {
             }
             .disabled(action.unavailable != nil)
         }
-        if let request {
+        if request != nil || candidate.wake.kind != "hidden" {
             Divider()
+        }
+        if let request {
             Button("Let \(request.peerLabel) control this display") {
                 sendIntent(["kind": "let_control", "peer": request.peer, "device": request.device])
             }
             .disabled(request.waiting)
         }
+        if candidate.wake.kind != "hidden" {
+            Button {
+                sendIntent(["kind": "wake", "target": candidate.target])
+            } label: {
+                Text("Wake \(candidate.label)")
+                if let reason = candidate.wake.reason { Text(reason) }
+            }
+            .disabled(candidate.wake.kind != "available")
+        }
     }
 }
 
-/// One candidate row: a click runs the first available action, and "⋯" holds
+/// One candidate row: a click runs the primary action, and "⋯" holds
 /// all actions (UI-18). The menu and the main window have different sizes.
 struct CandidateRow: View {
     enum Style { case menu, window }
@@ -611,7 +625,7 @@ struct CandidateRow: View {
             }
         }
         .onHover { hover.on = $0 }
-        .contextMenu { if model.hasMore { model.menuItems } }
+        .contextMenu { model.menuItems }
     }
 }
 

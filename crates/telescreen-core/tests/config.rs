@@ -5,8 +5,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use telescreen_core::config::{Config, ConfigError, Driver, Program, Quirk, yaml};
+use telescreen_core::config::{
+    Config, ConfigError, Driver, MacAddress, Program, Quirk, SpecialKeyAction, yaml,
+};
 use telescreen_core::ids::{ComputerId, DeviceId};
+use telescreen_core::keys::SpecialKeyGroup;
 
 fn example_text() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/config.yaml");
@@ -182,6 +185,49 @@ fn invalid_configurations() {
         }),
         ("verify on a route", Layer::Schema, |c| {
             device(c)["handoff"]["pc1"]["verify"] = json!({"driver": "prompt"})
+        }),
+        ("unknown special key group", Layer::Schema, |c| {
+            c["computers"]["mac"]["special-keys"] = json!({"send-to-target": ["power"]})
+        }),
+        ("duplicate special key group", Layer::Schema, |c| {
+            c["computers"]["mac"]["special-keys"] =
+                json!({"send-to-target": ["brightness", "brightness"]})
+        }),
+        ("special key group in both lists", Layer::Semantic, |c| {
+            c["computers"]["mac"]["special-keys"] =
+                json!({"send-to-target": ["media"], "keep-on-source": ["media"]})
+        }),
+        ("unknown special keys field", Layer::Schema, |c| {
+            c["computers"]["mac"]["special-keys"] = json!({"forward": ["brightness"]})
+        }),
+        ("non-list special key groups", Layer::Schema, |c| {
+            c["computers"]["mac"]["special-keys"] = json!({"keep-on-source": "volume"})
+        }),
+        ("wake with no mac", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] = json!({"broadcast": "192.168.1.255"})
+        }),
+        ("wake with no broadcast", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] = json!({"mac": "aa:bb:cc:dd:ee:ff"})
+        }),
+        ("short wake mac", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] =
+                json!({"mac": "aa:bb:cc:dd:ee", "broadcast": "192.168.1.255"})
+        }),
+        ("mixed wake mac separators", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] =
+                json!({"mac": "aa:bb-cc:dd:ee:ff", "broadcast": "192.168.1.255"})
+        }),
+        ("limited broadcast for wake", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] =
+                json!({"mac": "aa:bb:cc:dd:ee:ff", "broadcast": "255.255.255.255"})
+        }),
+        ("zero wake port", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] =
+                json!({"mac": "aa:bb:cc:dd:ee:ff", "broadcast": "192.168.1.255", "port": 0})
+        }),
+        ("unknown wake field", Layer::Schema, |c| {
+            c["computers"]["pc1"]["wake"] = json!(
+                {"mac": "aa:bb:cc:dd:ee:ff", "broadcast": "192.168.1.255", "interface": "en0"})
         }),
         ("unknown built-in driver", Layer::Schema, |c| {
             device(c)["portal-match"]["driver"] = json!("shell")
@@ -380,6 +426,73 @@ fn in16_each_quirk_is_on_unless_the_list_has_it() {
 }
 
 #[test]
+fn in20_each_special_key_group_is_suppressed_unless_a_list_has_it() {
+    let mut value = example_value();
+    let computers = value["computers"].as_object_mut().unwrap();
+    for computer in computers.values_mut() {
+        computer.as_object_mut().unwrap().remove("special-keys");
+    }
+    computers["mac"]["special-keys"] =
+        json!({"send-to-target": ["brightness"], "keep-on-source": ["volume", "media"]});
+    computers["pc1"]["special-keys"] = json!({});
+    let config = Config::from_value(value).unwrap();
+    let action = |id: &str, group| {
+        config
+            .computer(&ComputerId::from(id))
+            .unwrap()
+            .special_keys
+            .action(group)
+    };
+    assert_eq!(
+        action("mac", SpecialKeyGroup::Brightness),
+        SpecialKeyAction::SendToTarget
+    );
+    assert_eq!(
+        action("mac", SpecialKeyGroup::Volume),
+        SpecialKeyAction::KeepOnSource
+    );
+    assert_eq!(
+        action("mac", SpecialKeyGroup::Media),
+        SpecialKeyAction::KeepOnSource
+    );
+    assert_eq!(
+        action("mac", SpecialKeyGroup::KeyboardLight),
+        SpecialKeyAction::Suppress
+    );
+    for group in [
+        SpecialKeyGroup::Brightness,
+        SpecialKeyGroup::Volume,
+        SpecialKeyGroup::Media,
+        SpecialKeyGroup::KeyboardLight,
+    ] {
+        assert_eq!(
+            action("pc1", group),
+            SpecialKeyAction::Suppress,
+            "an empty key"
+        );
+        assert_eq!(action("pc2", group), SpecialKeyAction::Suppress, "no key");
+    }
+}
+
+#[test]
+fn in20_a_special_key_group_in_both_lists_names_the_computer() {
+    let mut value = example_value();
+    value["computers"]["mac"]["special-keys"] =
+        json!({"send-to-target": ["media"], "keep-on-source": ["media"]});
+    match Config::from_value(value) {
+        Err(ConfigError::Semantic(errors)) => {
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.contains("mac.special-keys") && e.contains("media")),
+                "{errors:?}"
+            );
+        }
+        other => panic!("wrong result {other:?}"),
+    }
+}
+
+#[test]
 fn clip1_the_clipboard_switch_starts_on_by_default() {
     let mut value = example_value();
     let computers = value["computers"].as_object_mut().unwrap();
@@ -446,4 +559,32 @@ fn net13_host_is_optional_only_with_discovery() {
     );
     assert!(endpoint_of("{port: 1}").is_err());
     assert!(endpoint_of("{host: a.test, port: 1, discovery: dns}").is_err());
+}
+
+#[test]
+fn act7_wake_parses_the_mac_the_broadcast_and_the_port() {
+    let mut value = example_value();
+    value["computers"]["pc1"]["wake"] =
+        json!({"mac": "AA-bb-0C-dd-EE-01", "broadcast": "10.0.0.255"});
+    value["computers"]["mac"]["wake"] =
+        json!({"mac": "01:02:03:04:05:06", "broadcast": "192.168.1.255", "port": 7});
+    let config = Config::from_value(value).unwrap();
+    let wake = |id: &str| {
+        config
+            .computer(&ComputerId::from(id))
+            .unwrap()
+            .wake
+            .unwrap()
+    };
+    assert_eq!(
+        wake("pc1").mac,
+        MacAddress([0xaa, 0xbb, 0x0c, 0xdd, 0xee, 0x01])
+    );
+    assert_eq!(
+        wake("pc1").broadcast,
+        std::net::Ipv4Addr::new(10, 0, 0, 255)
+    );
+    assert_eq!(wake("pc1").port, 9, "the default port");
+    assert_eq!(wake("mac").mac, MacAddress([1, 2, 3, 4, 5, 6]));
+    assert_eq!(wake("mac").port, 7);
 }

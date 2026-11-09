@@ -60,6 +60,8 @@ fn menu() -> MenuScreen {
                     switch_and_control: Some("offline".into()),
                     switch_display_only: None,
                     control_only: Some("offline".into()),
+                    primary: None,
+                    wake: WakeAction::Available,
                 }],
             }],
         }],
@@ -121,7 +123,9 @@ fn ui18_the_menu_json_shape() {
                         "status": "offline",
                         "switch_and_control": "offline",
                         "switch_display_only": null,
-                        "control_only": "offline"
+                        "control_only": "offline",
+                        "primary": null,
+                        "wake": {"kind": "available"}
                     }],
                     "in_session": false
                 }]
@@ -174,6 +178,7 @@ fn ui18_each_intent_round_trips_as_json() {
             device: dev(),
             target: pc1(),
         },
+        Intent::Wake { target: pc1() },
         Intent::ControlOnly {
             display: lg(),
             device: dev(),
@@ -279,4 +284,30 @@ fn flow25_the_source_intents_name_their_portal() {
     );
     let unnamed: Intent = serde_json::from_value(json!({"kind": "source_hand_back"})).unwrap();
     assert_eq!(unnamed, Intent::SourceHandBack { portal: None });
+}
+
+#[test]
+fn act7_ui18_the_primary_and_wake_json_shape() {
+    assert_eq!(
+        serde_json::to_value(Intent::Wake {
+            target: ComputerId::from("pc1")
+        })
+        .unwrap(),
+        json!({"kind": "wake", "target": "pc1"})
+    );
+    assert_eq!(
+        serde_json::to_value(CandidateAction::SwitchAndControl).unwrap(),
+        json!("switch_and_control")
+    );
+    assert_eq!(
+        serde_json::to_value(WakeAction::Unavailable {
+            reason: "Connected".into()
+        })
+        .unwrap(),
+        json!({"kind": "unavailable", "reason": "Connected"})
+    );
+    assert_eq!(
+        serde_json::to_value(WakeAction::Hidden).unwrap(),
+        json!({"kind": "hidden"})
+    );
 }

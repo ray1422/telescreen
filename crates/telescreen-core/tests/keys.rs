@@ -1,7 +1,7 @@
 //! Physical key identity (IN-5): macOS virtual key codes and evdev key codes.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // Tests may panic on a failed setup.
 
-use telescreen_core::keys::{self, Key};
+use telescreen_core::keys::{self, Key, SpecialKeyGroup};
 
 /// (macOS kVK_* code, evdev KEY_* code) pairs from `HIToolbox/Events.h` and
 /// `linux/input-event-codes.h`.
@@ -111,4 +111,92 @@ fn unknown_codes() {
     assert_eq!(keys::from_mac(0x80), None);
     assert_eq!(keys::to_mac(Key(0)), None, "KEY_RESERVED");
     assert_eq!(keys::to_mac(Key(0x2FF)), None);
+}
+
+/// IN-20: (`NX_KEYTYPE_*` from `IOKit/hidsystem/ev_keymap.h`, group, evdev KEY_* code).
+const SPECIAL: &[(u16, SpecialKeyGroup, u16, &str)] = &[
+    (0, SpecialKeyGroup::Volume, 115, "SOUND_UP -> KEY_VOLUMEUP"),
+    (
+        1,
+        SpecialKeyGroup::Volume,
+        114,
+        "SOUND_DOWN -> KEY_VOLUMEDOWN",
+    ),
+    (
+        2,
+        SpecialKeyGroup::Brightness,
+        225,
+        "BRIGHTNESS_UP -> KEY_BRIGHTNESSUP",
+    ),
+    (
+        3,
+        SpecialKeyGroup::Brightness,
+        224,
+        "BRIGHTNESS_DOWN -> KEY_BRIGHTNESSDOWN",
+    ),
+    (7, SpecialKeyGroup::Volume, 113, "MUTE -> KEY_MUTE"),
+    (16, SpecialKeyGroup::Media, 164, "PLAY -> KEY_PLAYPAUSE"),
+    (17, SpecialKeyGroup::Media, 163, "NEXT -> KEY_NEXTSONG"),
+    (
+        18,
+        SpecialKeyGroup::Media,
+        165,
+        "PREVIOUS -> KEY_PREVIOUSSONG",
+    ),
+    (
+        19,
+        SpecialKeyGroup::Media,
+        163,
+        "FAST (Apple F9) -> KEY_NEXTSONG",
+    ),
+    (
+        20,
+        SpecialKeyGroup::Media,
+        165,
+        "REWIND (Apple F7) -> KEY_PREVIOUSSONG",
+    ),
+    (
+        21,
+        SpecialKeyGroup::KeyboardLight,
+        230,
+        "ILLUMINATION_UP -> KEY_KBDILLUMUP",
+    ),
+    (
+        22,
+        SpecialKeyGroup::KeyboardLight,
+        229,
+        "ILLUMINATION_DOWN -> KEY_KBDILLUMDOWN",
+    ),
+    (
+        23,
+        SpecialKeyGroup::KeyboardLight,
+        228,
+        "ILLUMINATION_TOGGLE -> KEY_KBDILLUMTOGGLE",
+    ),
+];
+
+#[test]
+fn in20_special_keys_map_to_their_group_and_evdev_key() {
+    for &(key_type, group, code, name) in SPECIAL {
+        assert_eq!(
+            keys::from_mac_special(key_type),
+            Some((group, Key(code))),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn in20_other_special_keys_have_no_group() {
+    for key_type in 0..=64u16 {
+        if SPECIAL.iter().any(|&(t, ..)| t == key_type) {
+            continue;
+        }
+        // For example CAPS_LOCK (4), POWER_KEY (6), NUM_LOCK (10), EJECT (14).
+        assert_eq!(
+            keys::from_mac_special(key_type),
+            None,
+            "NX_KEYTYPE {key_type}"
+        );
+    }
 }

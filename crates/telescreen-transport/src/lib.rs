@@ -42,6 +42,25 @@ pub enum NetCommand {
     },
     /// Close the connection to a peer.
     Close { peer: ComputerId },
+    /// Send one Wake-on-LAN magic packet ([`magic_packet`]) as a UDP broadcast
+    /// to `broadcast:port` (ACT-7). It needs no connection to the peer. The
+    /// transport sends [`NetEvent::WakeSent`] or [`NetEvent::WakeFailed`].
+    Wake {
+        peer: ComputerId,
+        mac: [u8; 6],
+        broadcast: std::net::Ipv4Addr,
+        port: u16,
+    },
+}
+
+/// The Wake-on-LAN magic packet: 6 bytes `0xFF`, then 16 copies of the MAC
+/// address (ACT-7).
+pub fn magic_packet(mac: [u8; 6]) -> [u8; 102] {
+    let mut packet = [0xff; 102];
+    for copy in packet[6..].as_chunks_mut::<6>().0 {
+        copy.copy_from_slice(&mac);
+    }
+    packet
 }
 
 /// A report from the transport.
@@ -65,6 +84,15 @@ pub enum NetEvent {
         reason: String,
     },
     DialFailed {
+        peer: ComputerId,
+        reason: String,
+    },
+    /// The magic packet of [`NetCommand::Wake`] was sent (ACT-7).
+    WakeSent {
+        peer: ComputerId,
+    },
+    /// The magic packet of [`NetCommand::Wake`] could not be sent (ACT-7).
+    WakeFailed {
         peer: ComputerId,
         reason: String,
     },
