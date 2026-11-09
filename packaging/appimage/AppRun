@@ -1,13 +1,22 @@
 #!/bin/sh
 # The entry point of the Telescreen AppImage (packaging/appimage/build.sh).
-HERE=$(dirname "$(readlink -f "$0")")
-# The bundled KDE style, unless the user selected a different one.
-export QT_QUICK_CONTROLS_STYLE=${QT_QUICK_CONTROLS_STYLE:-org.kde.desktop}
-# The icon themes and the fonts of the host, after the files of the AppImage.
-export XDG_DATA_DIRS="$HERE/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
-if [ -x "$HERE/usr/bin/telescreen" ]; then
-    exec "$HERE/usr/bin/telescreen" "$@"
-fi
-# The preview AppImage: Preview.qml reads the fixture with XMLHttpRequest.
-export QML_XHR_ALLOW_FILE_READ=1
-exec "$HERE/usr/bin/qml" -a widget "$HERE/usr/share/telescreen/qml/preview/Preview.qml" -- "$@"
+
+configure_environment() {
+  here=$(dirname "$(readlink -f "$0")")
+  # Use the bundled KDE style unless the user selected another style.
+  export QT_QUICK_CONTROLS_STYLE="${QT_QUICK_CONTROLS_STYLE:-org.kde.desktop}"
+  # Search bundled data before the host's icon themes and fonts.
+  export XDG_DATA_DIRS="$here/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+}
+
+launch() {
+  if [ -x "$here/usr/bin/telescreen" ]; then
+    exec "$here/usr/bin/telescreen" "$@"
+  fi
+  # Preview.qml reads the fixture with XMLHttpRequest.
+  export QML_XHR_ALLOW_FILE_READ=1
+  exec "$here/usr/bin/qml" -a widget "$here/usr/share/telescreen/qml/preview/Preview.qml" -- "$@"
+}
+
+configure_environment
+launch "$@"
