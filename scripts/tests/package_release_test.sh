@@ -56,7 +56,10 @@ STUB
 #!/bin/sh
 case "$1" in -s) echo Linux ;; -m) echo x86_64 ;; esac
 STUB
-  chmod +x "$tools/"*
+  # Only the stubs: chmod follows a symbolic link to a system tool.
+  for stub in "$tools/"*; do
+    [ -L "$stub" ] || chmod +x "$stub"
+  done
 }
 
 check_generic() {

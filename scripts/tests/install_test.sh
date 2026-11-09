@@ -22,7 +22,7 @@ make_tools() {
   tools=$test_root/tools
   mkdir -p "$tools"
   # An isolated PATH makes the absence of sudo, FUSE and optional tools real.
-  for utility in awk cat chmod cp curl cut head ln mkdir mktemp mv rm sed sh sort tail tar tr sha256sum shasum unzip python3; do
+  for utility in awk cat chmod cp curl cut head ln mkdir mktemp mv rm sed sh sort tail tar gzip tr sha256sum shasum unzip python3; do
     found=$(command -v "$utility" 2>/dev/null || :)
     if [ -n "$found" ]; then ln -s "$found" "$tools/$utility"; fi
   done
@@ -86,7 +86,10 @@ STUB
 printf 'pgrep %s\n' "$*" >>"$T_LOG"
 case "$2" in plasmashell) exit 0 ;; telescreen) [ "${T_RUNNING:-0}" = 1 ] ;; esac
 STUB
-  chmod +x "$tools/"*
+  # Only the stubs: chmod follows a symbolic link to a system tool.
+  for stub in "$tools/"*; do
+    [ -L "$stub" ] || chmod +x "$stub"
+  done
 }
 
 make_sudo() {
