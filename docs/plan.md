@@ -56,12 +56,17 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M19 | `kde-scroll`: Chrome animates the scroll on KDE, thus the scroll feels slow (user, 2026-11-05) | Button scroll on KWin (IN-15, spike 5); one wheel unit at each scroll end releases the scroll target (spike 10, 2026-11-08) | done; the user checked the pointer shape and the scroll feel with a real trackpad; the wheel unit: code complete, the hardware test did not run |
 | M20 | `ui-redesign` (v0.600.0): spec section 4.7, ADR 0012, ADR 0013 (user, 2026-11-06) | The steps of M20 are done, and the user accepts the UI on macOS and on KDE | spec and ADRs done (2026-11-06); mockups continue |
 | M21 | `focus-scroll`: in v0.5.0 the keys went to the target with no end after Mission Control, and one application did not scroll (user, 2026-11-07) | The native focus is the only keyboard focus state (FLOW-22); the target warns while the portal is not on screen, and shows the source cursor on the warning (FLOW-26); macOS suppresses forwarded buttons (IN-17); each forwarded scroll has an end (IN-18); AC-51 to AC-54 pass | code done (2026-11-07): tests pass on macOS and Linux; the hardware tests AC-51 to AC-54 are open |
+| M22 | `arch-release`: the Arch package, the AppImage in the release, the applet in the Linux archives, the install methods of `install.sh` | DIST-6 to DIST-11: the `arch` jobs pass in CI; `install.sh` selects and installs each method on the Arch computer, interactive and with `--yes`; each user install has the applet; `README.md` has the options | code done (2026-11-10): the scripts, the workflows, and `telescreen self-check`. Tested in Docker on the Linux computer: the Arch package and the pacman install (also from `cat install.sh \| sh`), generic on Arch, native-user, the AppImage on Ubuntu 24.04, all checks failed, the change from a user install to native. Not tested: the workflows on GitHub, the tray with a new applet |
 
 ### M16: first binary release
 
 v0.3.0 is the current code (user, 2026-11-04). Steps f and g of M12 move to a later version. See DIST-3.
 
 Tested locally: the archive and `install.sh` on both computers (also a wrong checksum on macOS), and `makepkg` on Linux. `actionlint` reports no problem. The workflow itself did not run yet.
+
+### M22: Arch package and the applet in the release
+
+The Arch prebuild, the AppImage in the release, the applet in the Linux archives, and the install methods of `install.sh` (native, generic, appimage) (DIST-6 to DIST-11, user, 2026-11-09). Status: see the milestone table. The cleanup of the shell scripts kept the changes to `install.sh`, `package-release.sh`, `install-plasma-applet.sh`, and `AppRun`. The cleanup of `make-macos-app.sh`, `make-macos-control.sh`, and `packaging/appimage/build.sh` was not kept: it removed Info.plist keys and comments that explain the build.
 
 ### M17: start from a launcher
 

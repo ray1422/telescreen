@@ -8,13 +8,33 @@ Status: in development. The first release is v0.3.0 (`docs/spec.md` section 2.1)
 
 ## Install
 
-macOS on Apple silicon, or Linux on x86_64. The script needs no sudo:
+macOS on Apple silicon, or Linux on x86_64:
 
 ```sh
 curl -fsSL https://github.com/ray1422/telescreen/releases/latest/download/install.sh | sh
 ```
 
-Each release also has a `PKGBUILD` for Arch Linux. Run `makepkg -si` in the directory of that file.
+On Linux, the script selects one of three install methods. It checks each method in this order, and installs the first one that can run on the computer:
+
+| Method | Option | What it installs | sudo |
+| --- | --- | --- | --- |
+| native | `--native` | Arch Linux: the pacman package `telescreen-bin`, with `pacman -U` | yes |
+| generic | `--generic` | The binary for the Qt 6 of the system, in `~/.local` | no |
+| appimage | `--appimage` | The AppImage with its own Qt and KDE Frameworks, in `~/.local` | no |
+
+Give an option after `sh -s --`, for example:
+
+```sh
+curl -fsSL https://github.com/ray1422/telescreen/releases/latest/download/install.sh | sh -s -- --appimage
+```
+
+With an option, the script checks and installs only that method. Other options:
+
+- `--native --user`: on Arch Linux, install the Arch build in `~/.local`, with no sudo. The Qt packages must be installed.
+- `--yes`: answer yes to each question (for example the pacman confirmation, or the removal of an old install in `~/.local`). sudo can still ask for a password. With no `--yes`, the script asks on the terminal. With no terminal, it stops and installs nothing.
+- The environment variables `TELESCREEN_METHOD` (`native`, `generic`, or `appimage`), `TELESCREEN_USER=1`, and `TELESCREEN_YES=1` do the same as the options.
+
+Each method also installs the Plasma applet. The system tray shows it while Telescreen runs. Each release also has the applet as `dev.telescreen.menu.plasmoid` ("Install Widget From Local File" in Plasma), and a `PKGBUILD` for Arch Linux (run `makepkg -si` in the directory of that file).
 
 The macOS app is not notarized. Use the script: a download with a browser is blocked by Gatekeeper.
 
