@@ -5638,20 +5638,42 @@ fn act8_ui18_the_menu_has_the_switch_back_row_only_with_reclaim() {
 }
 
 #[test]
-fn act8_hand_back_does_not_use_reclaim_when_the_route_back_fails() {
-    let mut w = reclaim_world();
+fn hb4_a_failed_hand_back_runs_the_reclaim_steps() {
+    // "Hand back" on the source: the target has no route back.
+    let mut w = world_with_no_route_back();
+    w.mac = mac_with(reclaim_config());
     w.advance_to_forwarding();
-    w.handoff = HandoffResult::Failed { completed_steps: 0 };
     w.mac
         .controller
         .on_intent(Intent::SourceHandBack { portal: None });
     w.pump();
-    assert!(
-        !handoff_programs(&w.mac).contains(&"/bin/reclaim".to_owned()),
-        "{:?}",
-        handoff_programs(&w.mac)
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1", "/bin/reclaim"]);
+    assert!(w.mac.controller.awaiting_local_ack(), "ACT-8: verify here");
+
+    // "Hand back" on the target: its route back fails.
+    let mut w = reclaim_world();
+    w.advance_to_forwarding();
+    w.handoff = HandoffResult::Failed { completed_steps: 0 };
+    hand_back_on_pc1(&mut w);
+    assert_eq!(handoff_programs(&w.pc1), ["/bin/to-mac"]);
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim"),
+        "the source runs its own steps"
     );
-    assert!(!w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn hb1_a_hand_back_that_works_does_not_run_the_reclaim_steps() {
+    let mut w = reclaim_world();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_intent(Intent::SourceHandBack { portal: None });
+    w.pump();
+    assert_eq!(handoff_programs(&w.pc1), ["/bin/to-mac"]);
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1"], "no reclaim");
+    assert!(w.mac.controller.awaiting_local_ack());
 }
 
 // ----- STG-6 to STG-10: the login stage of a target, on the source -----

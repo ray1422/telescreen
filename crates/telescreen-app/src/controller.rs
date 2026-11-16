@@ -308,10 +308,11 @@ pub struct Controller {
     verifications: Verifications,
     next_prompt: u64,
     pending_hand_backs: BTreeSet<(ComputerId, DeviceId)>,
-    /// The hand backs that this computer requested because it cannot send
-    /// input to the target (FLOW-27), with the display of the portal. If such
-    /// a hand back is not possible, this computer runs its `reclaim` steps.
-    recovering: BTreeMap<(ComputerId, DeviceId), DisplayToken>,
+    /// The display of the portal of each hand back that this computer waits
+    /// for (`pending_hand_backs`). If the hand back is not possible, this
+    /// computer runs its `reclaim` steps for the device on that display
+    /// (HB-4).
+    hand_back_displays: BTreeMap<(ComputerId, DeviceId), DisplayToken>,
     /// Control requests that this peer sent, with their deadline (ACT-6). A
     /// request waits in `unsent_control` until its peer connects.
     control_requests: BTreeMap<(ComputerId, DeviceId), Instant>,
@@ -478,7 +479,7 @@ impl Controller {
             verifications,
             next_prompt: 1,
             pending_hand_backs: BTreeSet::new(),
-            recovering: BTreeMap::new(),
+            hand_back_displays: BTreeMap::new(),
             control_requests: BTreeMap::new(),
             unsent_control: BTreeSet::new(),
             control_matches: BTreeMap::new(),
@@ -536,7 +537,7 @@ impl Controller {
             self.stop_hand_back_verification(&device);
         }
         self.pending_hand_backs.clear();
-        self.recovering.clear();
+        self.hand_back_displays.clear();
         self.update_clipboard();
         for peer in std::mem::take(&mut self.connected) {
             self.ports.net.send(NetCommand::Close { peer });
@@ -752,15 +753,15 @@ impl Controller {
     }
 
     fn peer_lost(&mut self, peer: &ComputerId) {
-        // FLOW-27: the target cannot answer the hand back request.
+        // HB-4: the target cannot answer the hand back any more.
         let stranded: Vec<_> = self
-            .recovering
+            .hand_back_displays
             .keys()
             .filter(|(target, _)| target == peer)
             .cloned()
             .collect();
         for key in stranded {
-            if let Some(display) = self.recovering.remove(&key) {
+            if let Some(display) = self.hand_back_displays.remove(&key) {
                 let label = self.label_of(peer);
                 self.reclaim_after_failed_recovery(&display, key.1, &label);
             }
@@ -879,6 +880,10 @@ impl Controller {
         let actions = session.on_message(message, now);
         if let Some(device) = hand_back_device {
             self.stop_hand_back_verification(&device);
+            if let Some(display) = self.portals.get(&id).map(|p| p.display.token.clone()) {
+                self.hand_back_displays
+                    .insert((peer.clone(), device.clone()), display);
+            }
             self.pending_hand_backs.insert((peer.clone(), device));
         }
         if let Message::SessionRefused { reason, .. } = message

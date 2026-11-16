@@ -508,7 +508,6 @@ impl Controller {
             self.notice(format!(
                 "Telescreen cannot send the input to {label}: {cause}. It asks {label} to hand the display back."
             ));
-            self.recovering.insert((target, device), display);
             self.request_hand_back(id);
             return;
         }
@@ -522,7 +521,7 @@ impl Controller {
         }
     }
 
-    /// FLOW-27: a hand back is not possible, or it failed. This computer runs
+    /// HB-4: a hand back is not possible, or it failed. This computer runs
     /// its `reclaim` steps for the device, or it tells the user what to do.
     pub(super) fn reclaim_after_failed_recovery(
         &mut self,
@@ -647,6 +646,7 @@ impl Controller {
     pub(super) fn end_device_sessions(&mut self, device: &DeviceId) {
         self.stop_hand_back_verification(device);
         self.pending_hand_backs.retain(|(_, id)| id != device);
+        self.hand_back_displays.retain(|(_, id), _| id != device);
         self.end_portal_session_of(device);
         let incoming: Vec<_> = self
             .targets()
@@ -672,6 +672,12 @@ impl Controller {
                     if matches!(message, Message::HandBackRequest { .. }) {
                         let device = session.device().clone();
                         self.stop_hand_back_verification(&device);
+                        if let Some(display) =
+                            self.portals.get(&id).map(|p| p.display.token.clone())
+                        {
+                            self.hand_back_displays
+                                .insert((target.clone(), device.clone()), display);
+                        }
                         self.pending_hand_backs.insert((target.clone(), device));
                     }
                     self.ports.net.send(NetCommand::Send {
