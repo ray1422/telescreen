@@ -131,10 +131,10 @@ The login stage sends the keys of the Mac to the login screen of a Linux compute
 3. Run the command on the Linux computer, for example through SSH:
 
    ```sh
-   telescreen run --stage login
+   ssh -t <the Linux computer> telescreen run --stage login
    ```
 
-   The command also makes the Linux computer discoverable for 10 minutes, if its section has `discovery: mdns`. It stops when you log in, when the terminal closes, and with Control+C.
+   The command also makes the Linux computer discoverable for 10 minutes, if its section has `discovery: mdns`. It stops when you log in, when the terminal closes, and with Control+C. Use `ssh -t`: with no terminal, the command does not get a signal when the SSH connection closes.
 4. When the Linux computer connects, select "Switch & log in" in the window. The display switches, and the keys go to the login screen.
 5. Log in. The Mac waits until Telescreen runs in the desktop session, then it continues as a usual session. Configure Telescreen to start at the login; else the Mac waits until you end the session.
 

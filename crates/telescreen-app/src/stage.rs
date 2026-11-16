@@ -64,6 +64,14 @@ impl Drop for SignalWatch {
     }
 }
 
+/// Prints a line for the user. The terminal can be gone (an SSH connection
+/// that closed): then the line is lost, and the process continues to its
+/// usual end, so that it releases the keys and tells the source.
+fn say(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stdout(), "{line}");
+}
+
 pub fn run(config: Option<PathBuf>, computer: Option<String>) -> Result<(), String> {
     let config_path = match config {
         Some(path) => path,
@@ -158,13 +166,20 @@ pub fn run(config: Option<PathBuf>, computer: Option<String>) -> Result<(), Stri
     )
     .map_err(|e| e.to_string())?;
     for line in agent.start(Instant::now()) {
-        println!("{line}");
+        say(&line);
     }
     while !agent.is_finished() {
         match receiver.recv_timeout(Duration::from_millis(100)) {
             Ok(Event::Net(event)) => agent.on_net(event, Instant::now()),
             Ok(Event::Login) => {
-                println!("Login complete. The login stage stops.");
+                say("Login complete. The login stage stops.");
+                agent.on_login();
+            }
+            // STG-11: the Telescreen of the desktop session can stop this
+            // process before the logind event comes. That stop is a login
+            // too: the source must wait for the desktop session (STG-9).
+            Ok(Event::Stop) if matches!(logind::desktop_session_exists(), Ok(true)) => {
+                say("Login complete. The login stage stops.");
                 agent.on_login();
             }
             Ok(Event::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => agent.stop(),

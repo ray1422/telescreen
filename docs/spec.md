@@ -167,7 +167,7 @@ Actions:
   - The destination is the subnet broadcast address in the config. Telescreen does not send to `255.255.255.255`, and it does not list the network interfaces (Claude decides, 2026-11-09). Reason: macOS refused `255.255.255.255` from a socket with no bound interface with `EHOSTUNREACH` (measured 2026-11-09), and the subnet broadcast woke the Linux computer from suspend and from power off (measured 2026-11-09).
   - Only the same LAN is supported. A peer in a different subnet needs a router that forwards directed broadcasts or a wake relay. Telescreen does not do this.
   - After the send, the source shows the notice "Wake request sent to <peer>". If the send fails, the notice is "Could not send the wake request to <peer>: <error>".
-  - The source does not dial after the send (user, 2026-11-09). Reason: Telescreen on the peer starts only after the user logs in to the desktop, so a dial after the boot fails. The user selects "Refresh" (NET-10) when the peer runs Telescreen. This can change when Telescreen runs on the login screen.
+  - The source does not dial after the send (user, 2026-11-09). Reason: Telescreen on the peer starts only after the user logs in to the desktop, so a dial after the boot fails. The user selects "Refresh" (NET-10) when the peer runs Telescreen. The login stage (section 4.9) does not change this: the user starts it by hand after the wake.
   - The target must permit Wake-on-LAN: the firmware setting, and the network interface setting (on Linux, `ethtool -s <interface> wol g`, or `802-3-ethernet.wake-on-lan magic` in NetworkManager). Telescreen does not change these settings.
   - On macOS, the send needs the Local Network permission (NET-7, AC-25).
 
@@ -287,7 +287,7 @@ ADR 0015 has the reasons. A stage is a state of a computer before its desktop se
   - makes this computer discoverable for the time of NET-14 if its section has `endpoint.discovery: mdns`, and prints a line that says so, because discovery is not a part of the login (user, 2026-11-16);
   - prints how to stop it.
 - **STG-3** The stage process does not start if the user already has a desktop session (a logind session of the user with a seat), or if the endpoint port is in use. It prints the cause, for example "You are logged in on this computer. Use Telescreen in the desktop session."
-- **STG-4** The stage process stops: when the user logs in to a desktop session (STG-9), when it gets an interrupt, a terminate, or a hangup signal (for example the terminal closes), and when the Telescreen of the desktop session stops it (STG-11). It has no time limit. Before it stops, it ends its session, releases all held keys, closes its connections, and frees the port.
+- **STG-4** The stage process stops: when the user logs in to a desktop session (STG-9), when it gets an interrupt, a terminate, or a hangup signal (for example the terminal closes), and when the Telescreen of the desktop session stops it (STG-11). A stop signal while a desktop session of the user exists is a login (STG-9), because the Telescreen of the desktop session can send it before the logind event comes (Claude decides, 2026-11-17). An SSH command with no terminal gets no signal when the connection closes, so the user starts the stage with a terminal (`ssh -t`). It has no time limit. Before it stops, it ends its session, releases all held keys, closes its connections, and frees the port.
 - **STG-5** Protocol. The wire protocol is version 7. The handshake tells the stage of each peer: no stage (a desktop session), or `login`. A peer in the login stage:
   - grants a session only to a source that `from` lists; else it refuses with `NoRoute` (NET-4);
   - grants one session at a time; a second request gets `Busy`;
@@ -554,7 +554,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Drivers for the output format of one tool (for example `betterDisplay` or `ddcutil`, with `expect`): a later version, after their output is measured on the hardware (user, 2026-10-27). The other driver decisions are in `docs/config.md`.
 - UI redesign (section 4.7, ADR 0012):
   - A key test with the user that the inhibit of a cxx-qt window blocks a compositor shortcut (spike 6 saw only the `active` event).
-- Login screen control (a memo, not planned; user, 2026-11-06). Example: the Linux computer shows SDDM, and no user session runs. A system service that starts before the login can inject keys through uinput, because uinput is in the kernel and the greeter reads it through libinput. Limits: the service is not a client of the greeter compositor, so it does not know the output geometry, and the absolute pointer position is approximate; no clipboard; no `prompt` verifier. Open: the handover between the system service and the app of the user session (port, identity, trust keys), and the security of remote keys at a password field. A decision needs its own ADR.
+- Login screen control: section 4.9 and ADR 0015 have the login stage (v0.506.0), which sends keys only. Still open: a picture of the login screen, and a stage before the operating system starts (a boot loader).
 
 Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:
 

@@ -167,14 +167,14 @@ Decisions of the user (2026-11-14):
 - The config can get stages before the desktop session (login screen, later the boot loader). Not designed.
 - Use an existing project where one fits. Do not write a new implementation of a part that a good project has.
 
-Not decided (ask the user; do not use a default):
+Questions of 2026-11-14 and their answers:
 
-- Does item 1 support only the X11 greeter of SDDM first, with a Wayland greeter later?
-- The identity and the trust keys of a service that starts before the login. The keys are in the home directory now.
-- The handover between that service and the Telescreen of the user session (port, connection).
-- The security rules for remote keys at a password field.
-- The handoff confirmation before the login: the `prompt` verifier cannot show.
-- The test environment: a virtual machine on the Mac, or a rented virtual server. `endpoint.host` accepts each address that the source can dial (NET-11), so a VPN address works. Only mDNS discovery and Wake-on-LAN need the same LAN.
+- X11 greeter only, or a Wayland greeter too: not applicable to the first version, which has no picture. The uinput keyboard does not depend on the greeter.
+- The identity and the trust keys before the login: the stage process runs with the account of the user, so it uses the usual files.
+- The handover to the Telescreen of the desktop session: STG-9 and STG-11.
+- The security rules for remote keys at a password field: STG-1 (`from`) and STG-5 (keys only, the target enforces it).
+- The handoff confirmation before the login: no `verify`; the device state is unverified (STG-8).
+- The test environment: the Linux test computer (user, 2026-11-17).
 
 The measured facts of the Linux test computer (2026-11-14) are in the local hardware notes. The local hardware notes are not in the repository.
 
@@ -211,13 +211,13 @@ States of the source for a login stage (proposal of Claude, 2026-11-16; the user
 - The acknowledgement of the `prompt` verifier in state 5 is a key in the portal on the source (VER-4). Thus the user does not need the pointer on the target.
 - The continuation is general: a stage ends, and the source waits for the same computer in its next state. A later boot loader stage can use it.
 
-Not decided after these decisions:
+State after the implementation (2026-11-17; M23 and M24 in the table have the details):
 
-- The mockups are in the design canvas of the user (the row for the login stage). The user did not confirm them.
-- The implementation method.
+- The mockups are in the design canvas of the user (the row for the login stage). The user selected the name "Switch & log in" and agreed to continue; the user did not see the built UI.
+- The version numbers: v0.505.0 and v0.506.0 (user, 2026-11-17). The version in `Cargo.toml` is not set yet.
 - Measured on the test computer (2026-11-17; the details are in the local hardware notes): a uinput keyboard of a process that the user starts through SSH reaches the login screen. logind sends `SessionNew` for the desktop login, and its properties (`Class=user` with a seat) separate it from an SSH login. Desktop programs start less than 1 second after that event. Thus the stage process cannot always free the port before the Telescreen of the desktop session starts: that Telescreen must be able to stop the stage process and to bind again.
 - Not measured: keys with Shift and symbols on the login screen (the keyboard layout of the login screen), and the selection of the desktop session with keys.
-- The version numbers.
+- Not run: `telescreen run --stage login` past the check of STG-3. The test computer had a desktop session, so the command refused to start, as specified.
 
 Findings from documents (not tested on the hardware):
 
