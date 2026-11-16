@@ -180,7 +180,7 @@ Decisions of the user for the first version (2026-11-16). They replace the items
 - The first version is remote control of the login screen with keys only. The picture comes later.
 - No service runs in the background. The user starts Telescreen on the target by hand when it is necessary, for example through SSH. It runs with the account of the user, so it reads the usual identity and trust keys. Thus the questions about the identity and the keys of a service before the login do not apply.
 - The start command is `telescreen run --stage login` (the name is a proposal of Claude). It also makes the computer discoverable, and it prints a notice about this, because discovery is not a part of the login.
-- Config: `stages` in the section of the computer that is controlled. The key is the name of the stage. A stage has `label`, `input` (a list; only `keyboard` now), and `from` (the source computers that can control the stage, because a trusted fingerprint does not authorize, NET-4). A stage belongs to a computer, not to a device. The desktop session is not a stage, and a config with no `stages` does not change. A later stage (for example a boot loader) can get a `driver` key. The current stage is runtime state and is not in the config.
+- Config: `stages` in the section of the computer that is controlled. The key is a built-in stage kind. Only `login` exists now, and a different key is an error. A computer has one stage of each kind at most. A stage has one key, `from`: the source computers that can control the stage, because a trusted fingerprint does not authorize (NET-4). Example: `stages: {login: {from: [mac]}}`. A stage has no `label` and no `input`: the display text and the permitted input are fixed for each kind. A stage belongs to a computer, not to a device. The desktop session is not a stage, and a config with no `stages` does not change. A later kind (for example a boot loader) is a new built-in key. The current stage is runtime state and is not in the config.
 - The config has no hint text and no start command for the source. The source shows the command with a copy button. The text comes from Telescreen.
 - The login stage has no `verify`. Forwarding starts after the connection, and the state is unverified (VER-2).
 - Tentative: the login stage sends keys only, with no pointer and no clipboard.
@@ -208,7 +208,7 @@ States of the source for a login stage (proposal of Claude, 2026-11-16; the user
 
 Not decided after these decisions:
 
-- The texts of the action. Proposal of Claude: the item in the overflow menu is the `label` of the stage with an ellipsis ("Login screen…"), and the button and the row subtitle are "Switch & control".
+- The texts of the action. Proposal of Claude: the item in the overflow menu is the built-in name of the stage kind with an ellipsis ("Login screen…"), and the button and the row subtitle are "Switch & control".
 - The mockups are in the design canvas of the user (the row for the login stage). The user did not confirm them.
 - The implementation method.
 - Not measured: a uinput keyboard on the login screen, the keyboard layout of the login screen, and the start of the stage process through SSH.
