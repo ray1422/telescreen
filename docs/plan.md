@@ -175,6 +175,26 @@ Not decided (ask the user; do not use a default):
 
 The measured facts of the Linux test computer (2026-11-14) are in the local hardware notes. The local hardware notes are not in the repository.
 
+Decisions of the user for the first version (2026-11-16). They replace the items above where they differ:
+
+- The first version is remote control of the login screen with keys only. The picture comes later.
+- No service runs in the background. The user starts Telescreen on the target by hand when it is necessary, for example through SSH. It runs with the account of the user, so it reads the usual identity and trust keys. Thus the questions about the identity and the keys of a service before the login do not apply.
+- The start command is `telescreen run --stage login` (the name is a proposal of Claude). It also makes the computer discoverable, and it prints a notice about this, because discovery is not a part of the login.
+- Config: `stages` in the section of the computer that is controlled. The key is the name of the stage. A stage has `label`, `input` (a list; only `keyboard` now), and `from` (the source computers that can control the stage, because a trusted fingerprint does not authorize, NET-4). A stage belongs to a computer, not to a device. The desktop session is not a stage, and a config with no `stages` does not change. A later stage (for example a boot loader) can get a `driver` key. The current stage is runtime state and is not in the config.
+- The config has no hint text and no start command for the source. The source shows the command with a copy button. The text comes from Telescreen.
+- The login stage has no `verify`. Forwarding starts after the connection, and the state is unverified (VER-2).
+- Tentative: the login stage sends keys only, with no pointer and no clipboard.
+- A switch of the display with the login stage uses the existing "Switch display only". The config does not relate a stage to a device.
+- A new device key `reclaim` with `steps`: how this computer switches the device back to itself. The new action "Switch back" runs it. The other computer does not have to run Telescreen. "Hand back" does not use `reclaim` when it fails; the two actions stay separate.
+- Sequence that the user asked for: config, then mockups for the menu, then the implementation method, then the work.
+
+Not decided after these decisions:
+
+- The place of "Control login screen", the hint window, and "Switch back" in the menu (the mockups are with the user).
+- The implementation method, and when the stage process stops (after the login, after a timeout, or when the terminal closes).
+- The window on the source that takes the keys during the control of a login stage. A stage has no device, so the portal of a display does not apply directly.
+- The version numbers.
+
 Findings from documents (not tested on the hardware):
 
 - SDDM has no remote login and no remote control interface. A screen reader does not start on the SDDM greeter, so AT-SPI is not a reliable input path.
