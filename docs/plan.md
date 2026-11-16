@@ -212,7 +212,8 @@ Not decided after these decisions:
 
 - The mockups are in the design canvas of the user (the row for the login stage). The user did not confirm them.
 - The implementation method.
-- Not measured: a uinput keyboard on the login screen, the keyboard layout of the login screen, and the start of the stage process through SSH.
+- Measured on the test computer (2026-11-17; the details are in the local hardware notes): a uinput keyboard of a process that the user starts through SSH reaches the login screen. logind sends `SessionNew` for the desktop login, and its properties (`Class=user` with a seat) separate it from an SSH login. Desktop programs start less than 1 second after that event. Thus the stage process cannot always free the port before the Telescreen of the desktop session starts: that Telescreen must be able to stop the stage process and to bind again.
+- Not measured: keys with Shift and symbols on the login screen (the keyboard layout of the login screen), and the selection of the desktop session with keys.
 - The version numbers.
 
 Findings from documents (not tested on the hardware):
