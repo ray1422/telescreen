@@ -185,6 +185,7 @@ Decisions of the user for the first version (2026-11-16). They replace the items
 - The login stage has no `verify`. Forwarding starts after the connection, and the state is unverified (VER-2).
 - Tentative: the login stage sends keys only, with no pointer and no clipboard.
 - The control of a login stage also switches the display. The source runs its handoff steps for the device, then it opens the portal on that display, as "Switch & control". The portal takes the keys; there is no separate window for the keys. The user starts the action from the row of the target below a display, in the menu or in the main window, and that display gets the portal. The config does not relate a stage to a device.
+- The name of the action is "Switch & log in" (user, 2026-11-16: "switch & login"; Claude writes the verb as "log in"). The item in the overflow menu has an ellipsis, because it opens the hint window. The button in the hint window and the row subtitle have the same name.
 - The hint window has two states. First it shows the command and waits. When the target connects in the login stage, the wait line becomes a button. The display switches only after the user selects the button.
 - After the login, the control continues with no new action of the user (see the states below). The source waits with no time limit, until the Telescreen of the desktop session connects or the user ends the session.
 - The session of a login stage has "Switch back" (`reclaim`) and "End session". It has no "Hand back", because the target possibly cannot switch the display before the login.
@@ -208,7 +209,6 @@ States of the source for a login stage (proposal of Claude, 2026-11-16; the user
 
 Not decided after these decisions:
 
-- The texts of the action. Proposal of Claude: the item in the overflow menu is the built-in name of the stage kind with an ellipsis ("Login screen…"), and the button and the row subtitle are "Switch & control".
 - The mockups are in the design canvas of the user (the row for the login stage). The user did not confirm them.
 - The implementation method.
 - Not measured: a uinput keyboard on the login screen, the keyboard layout of the login screen, and the start of the stage process through SSH.
