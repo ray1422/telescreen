@@ -184,15 +184,34 @@ Decisions of the user for the first version (2026-11-16). They replace the items
 - The config has no hint text and no start command for the source. The source shows the command with a copy button. The text comes from Telescreen.
 - The login stage has no `verify`. Forwarding starts after the connection, and the state is unverified (VER-2).
 - Tentative: the login stage sends keys only, with no pointer and no clipboard.
-- A switch of the display with the login stage uses the existing "Switch display only". The config does not relate a stage to a device.
+- The control of a login stage also switches the display. The source runs its handoff steps for the device, then it opens the portal on that display, as "Switch & control". The portal takes the keys; there is no separate window for the keys. The user starts the action from the row of the target below a display, in the menu or in the main window, and that display gets the portal. The config does not relate a stage to a device.
+- The hint window has two states. First it shows the command and waits. When the target connects in the login stage, the wait line becomes a button. The display switches only after the user selects the button.
+- After the login, the control continues with no new action of the user (see the states below). The source waits with no time limit, until the Telescreen of the desktop session connects or the user ends the session.
+- The session of a login stage has "Switch back" (`reclaim`) and "End session". It has no "Hand back", because the target possibly cannot switch the display before the login.
 - A new device key `reclaim` with `steps`: how this computer switches the device back to itself. The new action "Switch back" runs it. The other computer does not have to run Telescreen. "Hand back" does not use `reclaim` when it fails; the two actions stay separate.
 - Sequence that the user asked for: config, then mockups for the menu, then the implementation method, then the work.
 
+States of the source for a login stage (proposal of Claude, 2026-11-16; the user agreed to the automatic continuation and to the wait with no time limit):
+
+| State | What the user sees | Next state |
+| --- | --- | --- |
+| 1. Wait for the stage | The hint window with the command | The target connects in the login stage: 2 |
+| 2. Stage connected | The hint window with the button | The user selects the button: 3 |
+| 3. Control of the login screen | The portal is open. Keys only. The device state is unverified | The target reports the login: 4. A wrong password stays in 3 |
+| 4. Wait for the desktop | The portal stays open. Keys stay on the source. The session card shows the wait | The Telescreen of the desktop session connects: 5 |
+| 5. Usual control | The same as an attach ("Control only", ACT-3): the target grants the lease, resolves `input-target`, and runs its `verify` | The usual rules |
+
+- Each state has "End session" and "Switch back". States 3 and 4 also end when the stage process stops, when the connection breaks, and with the safety exit (IN-8). Each end releases all held keys.
+- The target finds the login from the login manager service of the system (logind): a new session of the user on the seat. Then it tells the source, releases the keys, and stops, so that the Telescreen of the desktop session can listen on the same port.
+- The acknowledgement of the `prompt` verifier in state 5 is a key in the portal on the source (VER-4). Thus the user does not need the pointer on the target.
+- The continuation is general: a stage ends, and the source waits for the same computer in its next state. A later boot loader stage can use it.
+
 Not decided after these decisions:
 
-- The place of "Control login screen", the hint window, and "Switch back" in the menu (the mockups are with the user).
-- The implementation method, and when the stage process stops (after the login, after a timeout, or when the terminal closes).
-- The window on the source that takes the keys during the control of a login stage. A stage has no device, so the portal of a display does not apply directly.
+- The texts of the action. Proposal of Claude: the item in the overflow menu is the `label` of the stage with an ellipsis ("Login screen…"), and the button and the row subtitle are "Switch & control".
+- The mockups are in the design canvas of the user (the row for the login stage). The user did not confirm them.
+- The implementation method.
+- Not measured: a uinput keyboard on the login screen, the keyboard layout of the login screen, and the start of the stage process through SSH.
 - The version numbers.
 
 Findings from documents (not tested on the hardware):
