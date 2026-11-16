@@ -77,6 +77,9 @@
             "$ref": "#/$defs/handoff"
           }
         },
+        "reclaim": {
+          "$ref": "#/$defs/handoff"
+        },
         "verify": {
           "$ref": "#/$defs/verifier"
         }

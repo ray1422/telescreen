@@ -135,6 +135,18 @@ fn invalid_configurations() {
         ("empty steps", Layer::Schema, |c| {
             device(c)["handoff"]["pc1"]["steps"] = json!([])
         }),
+        ("empty reclaim steps", Layer::Schema, |c| {
+            device(c)["reclaim"]["steps"] = json!([])
+        }),
+        ("verify in reclaim", Layer::Schema, |c| {
+            device(c)["reclaim"]["verify"] = json!({"driver": "prompt"})
+        }),
+        ("reclaim with no steps", Layer::Schema, |c| {
+            device(c)["reclaim"] = json!({})
+        }),
+        ("relative program in reclaim", Layer::Semantic, |c| {
+            device(c)["reclaim"]["steps"][0]["command"] = json!("bin/lg-helper select usb-c")
+        }),
         ("bad timeout", Layer::Schema, |c| {
             device(c)["portal-match"]["timeout-ms"] = json!(0)
         }),
@@ -587,4 +599,25 @@ fn act7_wake_parses_the_mac_the_broadcast_and_the_port() {
     assert_eq!(wake("pc1").port, 9, "the default port");
     assert_eq!(wake("mac").mac, MacAddress([1, 2, 3, 4, 5, 6]));
     assert_eq!(wake("mac").port, 7);
+}
+
+#[test]
+fn act8_reclaim_is_optional_steps_of_a_device() {
+    let config = Config::parse(&example_text()).unwrap();
+    let mac = config.computer(&ComputerId::from("mac")).unwrap();
+    let reclaim = mac.devices["Desktop"].reclaim.as_ref().expect("reclaim");
+    assert_eq!(reclaim.steps.len(), 1);
+    assert_eq!(
+        reclaim.steps[0].driver,
+        Driver::Exec(Program {
+            argv: vec!["lg-helper".into(), "select".into(), "usb-c".into()],
+            cwd: None,
+            env: Default::default(),
+        })
+    );
+    // The steps have the default timeout of an operation.
+    assert_eq!(reclaim.steps[0].timeout, Duration::from_millis(5000));
+    assert!(mac.devices["BuiltIn"].reclaim.is_none());
+    let pc1 = config.computer(&ComputerId::from("pc1")).unwrap();
+    assert!(pc1.devices["Monitor1"].reclaim.is_none());
 }

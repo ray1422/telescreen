@@ -31,6 +31,10 @@ computers:
             steps:
               - driver: exec
                 command: [lg-helper, select, hdmi]
+        reclaim:                       # "Switch back": this Mac switches the display to itself (ACT-8)
+          steps:
+            - driver: exec
+              command: lg-helper select usb-c
       BuiltIn:
         id: mac-internal               # Connects only to the Mac. It has no switchable targets.
         portal-match:

@@ -94,6 +94,8 @@ def operations(device):
             yield device[key]
     for handoff in device.get('handoff', {}).values():
         yield from handoff['steps']
+    if 'reclaim' in device:
+        yield from device['reclaim']['steps']
 
 
 def is_absolute(path):

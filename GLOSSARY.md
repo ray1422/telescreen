@@ -48,7 +48,11 @@ _Avoid_: receiver, new owner
 
 **Hand back**:
 A handoff of the device of a session back to the source: the session ends, the target runs its own route to the source, and the source verifies.
-_Avoid_: switch back, revert, rollback
+_Avoid_: revert, rollback. "Switch back" is a different action
+
+**Switch back**:
+A computer switches a device back to itself with its own `reclaim` steps, then it verifies. No other computer takes part, and no session is necessary.
+_Avoid_: take back, reclaim (as the name of the action; `reclaim` is only the config key)
 
 **Verifier**:
 The program that the destination runs after a handoff to check that the device arrived, for example that a user sees the switched display.

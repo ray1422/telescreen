@@ -69,6 +69,12 @@ fn operations(device: &Device) -> impl Iterator<Item = &Operation> {
                 .values()
                 .flat_map(|handoff| handoff.steps.iter()),
         )
+        .chain(
+            device
+                .reclaim
+                .iter()
+                .flat_map(|reclaim| reclaim.steps.iter()),
+        )
 }
 
 fn program_errors(operation: &Operation, where_: &str, errors: &mut Vec<String>) {

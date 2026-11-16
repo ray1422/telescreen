@@ -274,6 +274,9 @@ pub struct Device {
     pub verify: Option<Operation>,
     #[serde(default)]
     pub handoff: BTreeMap<ComputerId, Handoff>,
+    /// The steps of this computer to switch the device back to itself (ACT-8).
+    #[serde(default)]
+    pub reclaim: Option<Handoff>,
 }
 
 /// The route of this computer to switch a device to a different computer. It has
