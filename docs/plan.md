@@ -150,6 +150,50 @@ The pairing UI is not scheduled. M20 makes the main window where it can go later
 - Screen edges on KWin (user, 2026-11-04). The top-left hot corner does not open the overview through the uinput pointer, (issue 1). Probable cause, from the KWin 6.7 source (`Edge::check`): the first motion on an edge pushes the cursor back by 1 pixel, and the action needs a second motion on the edge 75 to 350 ms later. The source does not send a repeated position (NET-2). The kernel also does not send a repeated absolute axis value to the compositor. Thus the second motion does not arrive. Not confirmed with a measurement. Possible fix: the source sends a repeated position when it is on an edge of the portal, and the uinput pointer changes the value by 1 axis unit on each repeat.
 - The scroll source (user, 2026-10-27). The target injects each scroll as a touchpad scroll (`finger`), so niri binds for the mouse wheel (`Mod+WheelScroll…`) do not apply. Send the source (wheel or touchpad) from the source computer, and inject a wheel with discrete steps. A touchpad scroll stays a touchpad scroll; niri `Mod+TouchpadScroll…` binds apply to it.
 
+### Login screen control and the remote desktop portal (investigation, 2026-11-14)
+
+These are roadmap items with no version and no sequence (user, 2026-11-14). The design is not started. Each item needs an ADR and a change to spec section 2, which lists login screen control and video streaming as out of scope. The memo in the open questions of `docs/spec.md` has the first notes.
+
+Decisions of the user (2026-11-14):
+
+- Roadmap item 1: the user operates the login screen of a Linux peer from the source. It is sufficient that the user can log in. The user must see the login screen; a procedure with no picture is not acceptable.
+- Roadmap item 2: a handoff can open the portal as a remote desktop. The portal shows the picture of the physical display of the device. A remote virtual display is a different feature and is not part of this item.
+- The peer does not use automatic login. KWallet must open at the login. Thus the password must go through PAM at the login screen.
+- Key injection through uinput is accepted for the login screen.
+- The feature can be a separate operation that relates to a device. It does not have to be part of the screen handoff.
+- The config can get stages before the desktop session (login screen, later the boot loader). Not designed.
+- Use an existing project where one fits. Do not write a new implementation of a part that a good project has.
+
+Not decided (ask the user; do not use a default):
+
+- Does item 1 support only the X11 greeter of SDDM first, with a Wayland greeter later?
+- The identity and the trust keys of a service that starts before the login. The keys are in the home directory now.
+- The handover between that service and the Telescreen of the user session (port, connection).
+- The security rules for remote keys at a password field.
+- The handoff confirmation before the login: the `prompt` verifier cannot show.
+- The test environment: a virtual machine on the Mac, or a rented virtual server. `endpoint.host` accepts each address that the source can dial (NET-11), so a VPN address works. Only mDNS discovery and Wake-on-LAN need the same LAN.
+
+The measured facts of the Linux test computer (2026-11-14) are in the local hardware notes. The local hardware notes are not in the repository.
+
+Findings from documents (not tested on the hardware):
+
+- SDDM has no remote login and no remote control interface. A screen reader does not start on the SDDM greeter, so AT-SPI is not a reliable input path.
+- Input: a uinput keyboard does not depend on the greeter (X11, Wayland, or a text console). XTEST works only on an X11 greeter.
+- Picture of the login screen, by greeter:
+  - X11 greeter: an X11 screenshot. The `Xsetup` hook of SDDM runs as root and can start a small capture program. Reports about x11vnc with SDDM say that it works but is not stable.
+  - KWin greeter (SDDM in Wayland mode, Plasma Login Manager): the `org.kde.KWin.ScreenShot2` D-Bus interface. The caller needs an authorization. Its use on a greeter is not confirmed.
+  - All greeters: DRM/KMS capture. It needs `CAP_SYS_ADMIN`, a cursor merge, and a read of the GPU buffer through EGL. The NVIDIA driver is the risk.
+- A picture at 1 or 2 frames each second is sufficient for item 1. A stream is not necessary.
+- Item 2 runs in the user session. The ScreenCast portal with PipeWire is the standard capture path there. It has no GPU buffer problem and needs no privilege. Not measured: the ScreenCast support of the portal backend on niri.
+- Existing projects:
+  - ReFrame (Apache-2.0): DRM/KMS capture and uinput, a privileged streamer process, an unprivileged VNC server, and a session helper. It lists remote login and NVIDIA. Its README does not name SDDM or KWin. It is the model for the process split.
+  - kmsvnc (GPL-3.0): early development, one privileged process, no security. Not recommended.
+  - Sunshine (GPL-3.0): runs only in the user session.
+  - greetd: the login is an IPC protocol (`greetd-ipc(7)`), so a program can log in with no key injection and no picture. It replaces SDDM. The user did not decide on it.
+- Virtual displays: EVDI does not build on kernel 7.1 and later, and a KWin 6.8.2 crash report names it. VKMS needs the compositor to use it as a second GPU. Neither is necessary for items 1 and 2.
+- Before the operating system starts (firmware, GRUB): software cannot get input or a picture. The paths are a serial terminal of GRUB, a KVM-over-IP device, or a next-boot entry that the running system sets.
+- Plasma Login Manager replaces SDDM in KDE from Plasma 6.6. Arch does not change the enabled display manager service; the user changes it.
+
 ## Rules for each milestone
 
 - Write the acceptance tests first, with spec IDs in the test names or comments.
