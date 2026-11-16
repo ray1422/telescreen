@@ -362,6 +362,7 @@ impl Controller {
         }
         self.login_hint = Some((token.clone(), device_id, target.clone()));
         if !self.connected.contains(&target) && !self.dialing.contains(&target) {
+            self.auto_dials.insert(target.clone());
             self.dial_peer(target);
         }
         self.start_search();
@@ -413,6 +414,7 @@ impl Controller {
                     .get(&peer)
                     .is_none_or(|last| self.now.saturating_duration_since(*last) >= LOGIN_RETRY)
             {
+                self.auto_dials.insert(peer.clone());
                 self.dial_peer(peer);
                 self.start_search();
             }

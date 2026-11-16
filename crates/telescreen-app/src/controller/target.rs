@@ -170,7 +170,8 @@ impl Controller {
             Err(_) => return self.refuse(peer, device_id, RefuseReason::Busy),
         };
         self.stop_hand_back_verification(&device_id);
-        self.pending_hand_backs.retain(|(_, id)| id != &device_id);
+        self.pending_hand_backs
+            .retain(|(_, id), _| id != &device_id);
         self.hand_back_displays
             .retain(|(_, id), _| id != &device_id);
         let displays = self.displays();

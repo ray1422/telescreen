@@ -15,7 +15,7 @@ use telescreen_transport::{DialTarget, NetCommand};
 use telescreen_view::{DeviceChoice, Matching};
 
 use super::portal_match::{Candidate, MatchOwner, MatchResult};
-use super::{AckOrigin, Controller, Job, Pending, Portal, SEARCH_TIME};
+use super::{AckOrigin, Controller, HAND_BACK_ANSWER, Job, Pending, Portal, SEARCH_TIME};
 
 impl Controller {
     /// The ids of the portals that exist now (FLOW-25).
@@ -502,7 +502,11 @@ impl Controller {
             return;
         };
         let label = self.label_of(&target);
-        let can_hand_back = matches!(phase, SourcePhase::Verifying | SourcePhase::Forwarding)
+        // STG-5: a login stage has no hand back. The session ends, and the
+        // `End` releases the held keys on the target (STG-10).
+        let keys_only = session.is_keys_only();
+        let can_hand_back = !keys_only
+            && matches!(phase, SourcePhase::Verifying | SourcePhase::Forwarding)
             && self.connected.contains(&target);
         if can_hand_back {
             self.notice(format!(
@@ -645,7 +649,7 @@ impl Controller {
     /// state.
     pub(super) fn end_device_sessions(&mut self, device: &DeviceId) {
         self.stop_hand_back_verification(device);
-        self.pending_hand_backs.retain(|(_, id)| id != device);
+        self.pending_hand_backs.retain(|(_, id), _| id != device);
         self.hand_back_displays.retain(|(_, id), _| id != device);
         self.end_portal_session_of(device);
         let incoming: Vec<_> = self
@@ -678,7 +682,8 @@ impl Controller {
                             self.hand_back_displays
                                 .insert((target.clone(), device.clone()), display);
                         }
-                        self.pending_hand_backs.insert((target.clone(), device));
+                        self.pending_hand_backs
+                            .insert((target.clone(), device), self.now + HAND_BACK_ANSWER);
                     }
                     self.ports.net.send(NetCommand::Send {
                         peer: target,
@@ -687,10 +692,22 @@ impl Controller {
                 }
                 SourceAction::RunHandoff => self.run_handoff(id),
                 SourceAction::StartForwarding => {
+                    let keys_only = session.is_keys_only();
                     self.set_guard(id, false);
                     match self.ports.capture.forward(id) {
                         Ok(()) => {
-                            if self.ports.capture.keys_blocked() {
+                            let blocked = self.ports.capture.keys_blocked();
+                            // A login stage gets keys only. With blocked
+                            // keys it gets no input (FLOW-27).
+                            if blocked && keys_only {
+                                self.recover_display(
+                                    id,
+                                    "an application on this computer holds secure keyboard input",
+                                    EndReason::PermissionLost,
+                                );
+                                return;
+                            }
+                            if blocked {
                                 self.notice(
                                     "The keys do not go to the target now: an application on this computer holds secure keyboard input, for example a password prompt in a terminal or a browser. The pointer works."
                                         .into(),

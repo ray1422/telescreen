@@ -18,6 +18,12 @@ pub fn is_desktop_login(class: &str, seat: &str, uid: u32, own_uid: u32) -> bool
     class == "user" && !seat.is_empty() && uid == own_uid
 }
 
+/// A session in the state `closing` stays after a logout while its processes
+/// run. It is not a desktop session of the user any more.
+pub fn is_open_session(state: &str) -> bool {
+    state != "closing"
+}
+
 fn failed(error: impl std::fmt::Display) -> PlatformError {
     PlatformError::Failed(format!("logind: {error}"))
 }
@@ -48,7 +54,11 @@ pub fn desktop_session_exists() -> Result<bool, PlatformError> {
     for (_, uid, _, seat, path) in sessions {
         let proxy = session_proxy(&connection, path).map_err(failed)?;
         let class: String = proxy.get_property("Class").map_err(failed)?;
-        if is_desktop_login(&class, &seat, uid, own_uid) {
+        if !is_desktop_login(&class, &seat, uid, own_uid) {
+            continue;
+        }
+        let state: String = proxy.get_property("State").map_err(failed)?;
+        if is_open_session(&state) {
             return Ok(true);
         }
     }
@@ -122,7 +132,7 @@ fn new_desktop_session(
 
 #[cfg(test)]
 mod tests {
-    use super::is_desktop_login;
+    use super::{is_desktop_login, is_open_session};
 
     #[test]
     fn only_the_own_desktop_login_matches() {
@@ -131,5 +141,12 @@ mod tests {
         assert!(!is_desktop_login("greeter", "seat0", 1000, 1000));
         assert!(!is_desktop_login("user", "seat0", 1001, 1000));
         assert!(!is_desktop_login("user-early", "seat0", 1000, 1000));
+    }
+
+    #[test]
+    fn a_closing_session_is_not_a_desktop_session() {
+        assert!(is_open_session("active"));
+        assert!(is_open_session("online"));
+        assert!(!is_open_session("closing"));
     }
 }

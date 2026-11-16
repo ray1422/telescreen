@@ -100,9 +100,10 @@ impl Controller {
         device: DeviceId,
         outcome: HandBackOutcome,
     ) {
-        if !self
+        if self
             .pending_hand_backs
             .remove(&(peer.clone(), device.clone()))
+            .is_none()
         {
             return;
         }

@@ -307,7 +307,12 @@ pub struct Controller {
     /// The destination verifications of sessions and hand backs (VER-1).
     verifications: Verifications,
     next_prompt: u64,
-    pending_hand_backs: BTreeSet<(ComputerId, DeviceId)>,
+    /// The hand backs that this computer waits for, with the time at which
+    /// the wait ends (HB-4).
+    pending_hand_backs: BTreeMap<(ComputerId, DeviceId), Instant>,
+    /// The peers of an automatic dial (STG-7, STG-9). A failure of such a
+    /// dial makes no notice: the dial repeats.
+    auto_dials: BTreeSet<ComputerId>,
     /// The display of the portal of each hand back that this computer waits
     /// for (`pending_hand_backs`). If the hand back is not possible, this
     /// computer runs its `reclaim` steps for the device on that display
@@ -340,6 +345,8 @@ const MAX_NOTICES: usize = 8;
 
 /// ADR 0007: the heartbeat interval. The transport closes a connection after 5 s.
 const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(1);
+/// The longest wait for the answer to a hand back request (HB-4).
+const HAND_BACK_ANSWER: std::time::Duration = std::time::Duration::from_secs(30);
 const DISCOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
 const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -478,7 +485,8 @@ impl Controller {
             next_job: 1,
             verifications,
             next_prompt: 1,
-            pending_hand_backs: BTreeSet::new(),
+            pending_hand_backs: BTreeMap::new(),
+            auto_dials: BTreeSet::new(),
             hand_back_displays: BTreeMap::new(),
             control_requests: BTreeMap::new(),
             unsent_control: BTreeSet::new(),
@@ -671,6 +679,7 @@ impl Controller {
             self.stop_discovery();
         }
         self.expire_control_requests(now);
+        self.expire_hand_backs(now);
         self.retry_login_targets();
         if self
             .last_heartbeat
@@ -705,6 +714,7 @@ impl Controller {
                 ));
             }
             NetEvent::Connected { peer, stage } => {
+                self.auto_dials.remove(&peer);
                 self.now = now;
                 self.stages.remove(&peer);
                 if let Some(stage) = stage {
@@ -730,10 +740,12 @@ impl Controller {
             NetEvent::DialFailed { peer, reason } => {
                 self.dialing.remove(&peer);
                 self.dial_failed(&peer);
-                self.notice(format!(
-                    "Cannot connect to {}: {reason}",
-                    self.label_of(&peer)
-                ));
+                if !self.auto_dials.remove(&peer) {
+                    self.notice(format!(
+                        "Cannot connect to {}: {reason}",
+                        self.label_of(&peer)
+                    ));
+                }
             }
             NetEvent::Refused { remote, reason } => {
                 self.notice(format!("Refused a connection from {remote}: {reason}"));
@@ -752,15 +764,36 @@ impl Controller {
         }
     }
 
+    /// HB-4: a target that does not answer a hand back in `HAND_BACK_ANSWER`
+    /// cannot hand the display back. A later disconnect must not run the
+    /// `reclaim` steps: the user can work on the target then.
+    fn expire_hand_backs(&mut self, now: Instant) {
+        let late: Vec<_> = self
+            .pending_hand_backs
+            .iter()
+            .filter(|(_, deadline)| now >= **deadline)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in late {
+            self.pending_hand_backs.remove(&key);
+            let label = self.label_of(&key.0);
+            self.notice(format!("{label} did not answer the hand back."));
+            if let Some(display) = self.hand_back_displays.remove(&key) {
+                self.reclaim_after_failed_recovery(&display, key.1, &label);
+            }
+        }
+    }
+
     fn peer_lost(&mut self, peer: &ComputerId) {
         // HB-4: the target cannot answer the hand back any more.
         let stranded: Vec<_> = self
-            .hand_back_displays
+            .pending_hand_backs
             .keys()
             .filter(|(target, _)| target == peer)
             .cloned()
             .collect();
         for key in stranded {
+            self.pending_hand_backs.remove(&key);
             if let Some(display) = self.hand_back_displays.remove(&key) {
                 let label = self.label_of(peer);
                 self.reclaim_after_failed_recovery(&display, key.1, &label);
@@ -884,7 +917,8 @@ impl Controller {
                 self.hand_back_displays
                     .insert((peer.clone(), device.clone()), display);
             }
-            self.pending_hand_backs.insert((peer.clone(), device));
+            self.pending_hand_backs
+                .insert((peer.clone(), device), now + HAND_BACK_ANSWER);
         }
         if let Message::SessionRefused { reason, .. } = message
             && refused
@@ -1094,7 +1128,10 @@ impl Controller {
             } => self.switch_and_log_in(&display, device, target),
             Intent::SourceHandBack { portal } => {
                 if let Some(id) = portal.or_else(|| self.main_portal()) {
-                    self.request_hand_back(id);
+                    // STG-5: a login stage has no hand back.
+                    if !self.source_session(id).is_some_and(|s| s.is_keys_only()) {
+                        self.request_hand_back(id);
+                    }
                 }
             }
         }

@@ -58,7 +58,7 @@ fn is_stage_command(bytes: &[u8]) -> bool {
     Path::new(std::ffi::OsStr::from_bytes(program))
         .file_name()
         .is_some_and(|name| name == "telescreen")
-        && args.any(|arg| arg == b"--stage")
+        && args.any(|arg| arg == b"--stage" || arg.starts_with(b"--stage="))
 }
 
 #[cfg(test)]
@@ -79,6 +79,7 @@ mod tests {
             b"/usr/bin/telescreen\0run\0--stage\0login\0"
         ));
         assert!(is_stage_command(b"telescreen\0run\0--stage\0login\0"));
+        assert!(is_stage_command(b"telescreen\0run\0--stage=login\0"));
         for bytes in [
             &b""[..],
             &b"telescreen\0run\0"[..],

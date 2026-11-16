@@ -6621,6 +6621,137 @@ fn flow27_an_input_queue_overflow_asks_for_a_hand_back() {
     assert_eq!(handoff_programs(&w.pc1), ["/bin/to-mac"]);
 }
 
+fn is_end(message: &Message) -> bool {
+    matches!(message, Message::End { session, .. } if *session == STAGE_SESSION)
+}
+
+fn is_hand_back_request(message: &Message) -> bool {
+    matches!(message, Message::HandBackRequest { .. })
+}
+
+/// STG-5 and STG-10: a login stage has no hand back. The source ends the
+/// session, so that the target releases the held keys, and it runs its
+/// `reclaim` steps.
+#[test]
+fn flow27_stg10_an_overflow_in_a_stage_session_ends_it_and_runs_the_reclaim_steps() {
+    let mut w = stage_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::Overflow);
+    let step = mac_step(&mut w);
+    assert!(step.sent.iter().any(is_end), "{:?}", step.sent);
+    assert!(
+        !step.sent.iter().any(is_hand_back_request),
+        "{:?}",
+        step.sent
+    );
+    assert!(!w.mac.controller.has_portal());
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+    // A later disconnect of the stage process does not run the steps again.
+    let runs = handoff_programs(&w.mac).len();
+    pc1_disconnects(&mut w);
+    mac_step(&mut w);
+    assert_eq!(handoff_programs(&w.mac).len(), runs);
+}
+
+/// IN-12 and FLOW-27: a login stage gets keys only. With blocked keys the
+/// source cannot send input, so it does not stay on the login screen.
+#[test]
+fn in12_flow27_blocked_keys_end_a_stage_session() {
+    let mut w = stage_world();
+    w.mac.log.borrow_mut().keys_blocked = true;
+    pc1_connects(&mut w, Some(Stage::Login));
+    mac_does(&mut w, switch_and_log_in());
+    pc1_says(
+        &mut w,
+        Message::SessionGranted {
+            session: STAGE_SESSION,
+            device: shared(),
+        },
+    );
+    mac_step(&mut w);
+    pc1_says(
+        &mut w,
+        Message::Started {
+            session: STAGE_SESSION,
+            verified: false,
+        },
+    );
+    let step = mac_step(&mut w);
+    assert!(step.sent.iter().any(is_end), "{:?}", step.sent);
+    assert!(
+        !step.sent.iter().any(is_hand_back_request),
+        "{:?}",
+        step.sent
+    );
+    assert!(!w.mac.controller.has_portal());
+    assert!(has_notice(&w.mac, "holds secure keyboard input"));
+    assert!(!has_notice(&w.mac, "The pointer works"));
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+}
+
+/// HB-4: a target that does not answer the hand back request cannot hand the
+/// display back. The source runs its `reclaim` steps after the wait, and a
+/// disconnect at a later time does not run them again.
+#[test]
+fn hb4_a_hand_back_with_no_answer_runs_the_reclaim_steps_after_the_wait() {
+    let mut w = World::new();
+    w.mac = mac_with(reclaim_config());
+    w.advance_to_forwarding();
+    w.mac.controller.tick(w.now);
+    w.mac.controller.on_captured(CapturedEvent::Overflow);
+    // pc1 does not get the request.
+    w.mac.log.borrow_mut().net.clear();
+    assert!(has_notice(&w.mac, "hand the display back"));
+    let before = handoff_programs(&w.mac).len();
+
+    w.now += Duration::from_secs(29);
+    w.mac.controller.tick(w.now);
+    mac_step(&mut w);
+    assert_eq!(handoff_programs(&w.mac).len(), before, "the wait continues");
+
+    w.now += Duration::from_secs(2);
+    w.mac.controller.tick(w.now);
+    mac_step(&mut w);
+    assert!(has_notice(&w.mac, "did not answer the hand back"));
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+    let runs = handoff_programs(&w.mac).len();
+    assert_eq!(runs, before + 1);
+
+    pc1_disconnects(&mut w);
+    mac_step(&mut w);
+    assert_eq!(handoff_programs(&w.mac).len(), runs, "no second run");
+}
+
+/// STG-7: the dial of an open hint window repeats. Its failures make no
+/// notice, else they push the other notices out of the list.
+#[test]
+fn stg7_a_failed_automatic_dial_makes_no_notice() {
+    let mut w = stage_world();
+    w.mac.controller.tick(w.now);
+    mac_does(&mut w, open_login_hint());
+    for _ in 0..3 {
+        w.mac.controller.on_net(
+            NetEvent::DialFailed {
+                peer: pc1(),
+                reason: "no answer".into(),
+            },
+            w.now,
+        );
+        w.now += Duration::from_secs(6);
+        w.mac.controller.tick(w.now);
+        assert_eq!(mac_step(&mut w).dials, 1);
+    }
+    assert!(!has_notice(&w.mac, "Cannot connect to Linux"));
+}
+
 #[test]
 fn flow27_hb5_the_safety_exit_does_not_switch_the_display_back() {
     let mut w = World::new();
