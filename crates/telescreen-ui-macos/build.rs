@@ -18,6 +18,18 @@ fn run(cmd: &mut Command) -> String {
         .to_owned()
 }
 
+/// A hash of the path, for a directory name. It is the same for each build
+/// in the same place.
+fn path_hash(path: &std::path::Path) -> u64 {
+    // FNV-1a: `DefaultHasher` does not promise the same value in each run.
+    path.as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+}
+
 fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
@@ -49,6 +61,12 @@ fn main() {
             "-target",
             "arm64-apple-macosx27.0",
         ])
+        // The module cache is in the build directory, so that a build in a
+        // sandbox that cannot write to the home directory works. A cache
+        // holds its absolute path, and a copy of the build directory in a
+        // different place cannot use it: the name has a hash of the path.
+        .arg("-module-cache-path")
+        .arg(out.join(format!("module-cache-{:016x}", path_hash(&out))))
         .args(&sources)
         .arg("-o")
         .arg(out.join("libTelescreenUI.a")));
