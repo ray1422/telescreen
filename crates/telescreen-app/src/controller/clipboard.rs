@@ -59,7 +59,7 @@ impl Controller {
             .portals
             .values()
             .filter_map(|p| p.session.as_ref())
-            .filter(|source| source.phase() == SourcePhase::Forwarding)
+            .filter(|source| source.phase() == SourcePhase::Forwarding && !source.is_keys_only())
             .filter_map(|source| Some((source.session()?, source.target().clone())))
             .collect();
         sessions.extend(

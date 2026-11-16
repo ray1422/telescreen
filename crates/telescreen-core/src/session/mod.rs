@@ -7,6 +7,7 @@
 
 pub mod lease;
 pub mod source;
+pub mod stage_target;
 pub mod target;
 
 /// What the source knows about the video input of the shared display (UI-4).

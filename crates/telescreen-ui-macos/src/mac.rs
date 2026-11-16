@@ -25,6 +25,7 @@ unsafe extern "C" {
     fn ts_set_event_callback(callback: extern "C" fn(*const c_char));
     fn ts_make_menu_view() -> *mut NSView;
     fn ts_push_menu(bytes: *const u8, len: usize) -> bool;
+    fn ts_make_hint_view() -> *mut NSView;
     fn ts_make_main_view() -> *mut NSView;
     fn ts_push_main(bytes: *const u8, len: usize) -> bool;
 }
@@ -142,6 +143,86 @@ define_class!(
         }
     }
 );
+
+define_class!(
+    // SAFETY: a main-thread object with no ivars.
+    #[unsafe(super = NSObject)]
+    #[thread_kind = MainThreadOnly]
+    #[name = "TelescreenHintDelegate"]
+    struct HintDelegate;
+
+    unsafe impl NSObjectProtocol for HintDelegate {}
+
+    unsafe impl NSWindowDelegate for HintDelegate {
+        // SAFETY: the signature matches NSWindowDelegate.
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            emit(UiEvent::Intent(Intent::CloseLoginHint));
+        }
+    }
+);
+
+struct HintWindow {
+    window: Retained<NSWindow>,
+    _delegate: Retained<HintDelegate>,
+}
+
+/// Creates and focuses the hint only when it opens. State updates never take focus.
+fn update_hint(open: bool) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATE.with(|state| {
+        let Ok(mut state) = state.try_borrow_mut() else {
+            return;
+        };
+        let Some(state) = state.as_mut() else { return };
+        if !open {
+            if let Some(hint) = state.hint.take() {
+                // A model-driven close must not send another CloseLoginHint.
+                hint.window.setDelegate(None);
+                hint.window.close();
+            }
+            return;
+        }
+        if state.hint.is_some() {
+            return;
+        }
+        // SAFETY: ts_make_hint_view returns a +1 retained NSHostingView.
+        let Some(view) = (unsafe { Retained::from_raw(ts_make_hint_view()) }) else {
+            eprintln!("telescreen: Swift returned no hint view");
+            return;
+        };
+        let rect = NSRect::new(NSPoint::new(0.0, 0.0), view.fittingSize());
+        let style = NSWindowStyleMask::Titled | NSWindowStyleMask::Closable;
+        // SAFETY: the NSWindow designated initializer, on the main thread.
+        let window: Retained<NSWindow> = unsafe {
+            msg_send![NSWindow::alloc(mtm), initWithContentRect: rect, styleMask: style,
+                backing: NSBackingStoreType::Buffered, defer: false]
+        };
+        window.setTitle(&NSString::from_str("Telescreen"));
+        // SAFETY: STATE retains the window; AppKit must not release it on close.
+        unsafe { window.setReleasedWhenClosed(false) };
+        window.setContentView(Some(&view));
+        if let Some(screen) = NSScreen::mainScreen(mtm) {
+            let area = screen.visibleFrame();
+            let size = window.frame().size;
+            window.setFrameOrigin(NSPoint::new(
+                area.origin.x + (area.size.width - size.width) / 2.0,
+                area.origin.y + (area.size.height - size.height) / 2.0,
+            ));
+        }
+        // SAFETY: plain init of a class with no ivars.
+        let delegate: Retained<HintDelegate> = unsafe { msg_send![HintDelegate::alloc(mtm), init] };
+        window.setDelegate(Some(objc2::runtime::ProtocolObject::from_ref(&*delegate)));
+        window.makeKeyAndOrderFront(None);
+        window.orderFrontRegardless();
+        state.hint = Some(HintWindow {
+            window,
+            _delegate: delegate,
+        });
+    });
+}
 
 /// UI-13: the main window does not show on a display with a portal: it goes
 /// to the Dock. AppKit tells each move and each change of the screen. First it
@@ -263,6 +344,7 @@ enum Anchor {
 }
 
 struct State {
+    hint: Option<HintWindow>,
     main: Retained<NSWindow>,
     _main_delegate: Retained<MainDelegate>,
     _reopen: Retained<ReopenHandler>,
@@ -325,6 +407,19 @@ extern "C" fn on_event(json: *const c_char) {
         return;
     }
     match value.get("ui").and_then(|v| v.as_str()) {
+        Some("hint_size") => {
+            let get = |key: &str| value.get(key).and_then(serde_json::Value::as_f64);
+            if let (Some(w), Some(h)) = (get("width"), get("height")) {
+                let size = NSSize::new(w, h);
+                STATE.with(|state| {
+                    if let Ok(state) = state.try_borrow()
+                        && let Some(hint) = state.as_ref().and_then(|s| s.hint.as_ref())
+                    {
+                        hint.window.setContentSize(size);
+                    }
+                });
+            }
+        }
         Some("menu_size") => {
             let get = |key: &str| value.get(key).and_then(serde_json::Value::as_f64);
             if let (Some(w), Some(h)) = (get("width"), get("height")) {
@@ -616,6 +711,7 @@ impl MacUi {
         }
         STATE.with_borrow_mut(|s| {
             *s = Some(State {
+                hint: None,
                 main,
                 _main_delegate: main_delegate,
                 _reopen: reopen,
@@ -639,6 +735,8 @@ impl MacUi {
             Ok(json) => {
                 if !unsafe { ts_push_menu(json.as_ptr(), json.len()) } {
                     eprintln!("telescreen: the menu did not accept the view model");
+                } else {
+                    update_hint(menu.login_hint.is_some());
                 }
             }
             Err(e) => eprintln!("telescreen: cannot encode the menu: {e}"),

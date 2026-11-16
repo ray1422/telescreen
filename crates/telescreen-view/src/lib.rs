@@ -10,6 +10,7 @@ use telescreen_core::ids::{ComputerId, DeviceId, DisplayToken, PortalId, Session
 use telescreen_core::platform::DisplayInfo;
 use telescreen_core::pointer::Normalized;
 use telescreen_core::session::VideoInput;
+use telescreen_core::wire::Stage;
 
 /// Identifies a verifier window, independently of a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -131,6 +132,10 @@ pub enum SessionPhase {
         key: String,
     },
     Forwarding,
+    /// The login stage of the target ended with a login. The portal stays
+    /// open, and the source waits for the desktop session of the target
+    /// (STG-9).
+    WaitingForDesktop,
     Ended {
         reason: String,
     },
@@ -292,6 +297,22 @@ pub enum Intent {
         display: DisplayToken,
         device: DeviceId,
     },
+    /// "Switch & log in…": open the hint window for the login stage of the
+    /// target (STG-6, STG-7).
+    OpenLoginHint {
+        display: DisplayToken,
+        device: DeviceId,
+        target: ComputerId,
+    },
+    /// "Cancel" or the close button of the hint window (STG-7).
+    CloseLoginHint,
+    /// "Switch & log in": run the handoff steps, open a portal on the display,
+    /// and start a stage session with the target (STG-8).
+    SwitchAndLogIn {
+        display: DisplayToken,
+        device: DeviceId,
+        target: ComputerId,
+    },
     /// "Hand back" in the session part of the menu, on the source (UI-9, HB-3).
     /// `None`: as for `EndSession`.
     SourceHandBack {
@@ -360,6 +381,37 @@ pub struct MenuScreen {
     pub control_requests: Vec<ControlRequestRow>,
     /// The text clipboard switch, or `None` without a backend (CLIP-1).
     pub clipboard: Option<bool>,
+    /// The hint window of the login stage, while it is open (STG-7).
+    #[serde(default)]
+    pub login_hint: Option<LoginHint>,
+}
+
+/// The command that starts the login stage on the target (STG-2). The hint
+/// window shows it.
+pub const LOGIN_STAGE_COMMAND: &str = "telescreen run --stage login";
+
+/// The hint window of the login stage (STG-7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LoginHint {
+    pub display: DisplayToken,
+    pub device: DeviceId,
+    pub target: ComputerId,
+    pub target_label: String,
+    /// [`LOGIN_STAGE_COMMAND`]. The user runs it on the target.
+    pub command: String,
+    pub state: LoginHintState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoginHintState {
+    /// The target is not connected. The source searches and dials.
+    Waiting,
+    /// The target is connected in the login stage. The window shows the
+    /// button "Switch & log in".
+    Ready,
+    /// The target is connected with no stage: the user is logged in.
+    LoggedIn,
 }
 
 /// The state of the status glyph (UI-17). "Menu open" is a state of the UI only.
@@ -405,6 +457,14 @@ pub enum MenuRole {
     Source {
         phase: SessionPhase,
         video_input: VideoInput,
+        /// A stage session: it sends keys only, and it has no "Hand back"
+        /// (STG-8).
+        #[serde(default)]
+        keys_only: bool,
+        /// The device has `reclaim`: the session part shows "Switch back"
+        /// (ACT-8, STG-8).
+        #[serde(default)]
+        switch_back: bool,
     },
     /// Actions of FLOW-17: `HandBack`, `StopSession`, and `ControlFromHere`.
     Target {
@@ -480,6 +540,31 @@ pub struct MenuCandidate {
     /// "Wake <peer>" in the "⋯" menu (ACT-7).
     #[serde(default)]
     pub wake: WakeAction,
+    /// The stage that the connected candidate told (STG-6). `None`: not
+    /// connected, or a desktop session.
+    #[serde(default)]
+    pub stage: Option<Stage>,
+    /// "Switch & log in" (STG-6).
+    #[serde(default)]
+    pub log_in: LogInAction,
+}
+
+/// The state of "Switch & log in" for a candidate (STG-6).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LogInAction {
+    /// The config of the candidate has no login stage for this computer. The
+    /// menu does not show the action.
+    #[default]
+    Hidden,
+    /// The candidate is not connected: "Switch & log in…" opens the hint
+    /// window (`Intent::OpenLoginHint`).
+    Hint,
+    /// The candidate is connected in the login stage: "Switch & log in" starts
+    /// the stage session (`Intent::SwitchAndLogIn`).
+    Start,
+    /// The menu shows the action disabled, with the reason.
+    Unavailable { reason: String },
 }
 
 /// An action of ACT-1.
@@ -489,6 +574,8 @@ pub enum CandidateAction {
     SwitchAndControl,
     SwitchDisplayOnly,
     ControlOnly,
+    /// The candidate is in the login stage (STG-6).
+    SwitchAndLogIn,
 }
 
 /// The state of "Wake <peer>" (ACT-7).

@@ -66,6 +66,7 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 - `docs/adr/0005` (superseded by `0008`): a disclaimed network helper process on macOS. Its premise was wrong. `docs/adr/0008`: the network runs in the app process on macOS too. Do not use `responsibility_spawnattrs_setdisclaim` as a workaround; the Local Network permission of the installed app is open (AC-25).
 - `docs/adr/0007` (tentative until the hardware tests run; user, 2026-10-27): session protocol, leases, heartbeat.
 - `docs/adr/0006`: all computers are symmetric peers. Each listens on its own endpoint, and the source dials the target. v0.1.0 has both directions (Mac to Linux first, then Linux to Mac).
+- `docs/adr/0015` (user, 2026-11-16 and 2026-11-17): the login stage. A Linux target that shows its login screen runs `telescreen run --stage login`, which the user starts by hand. A macOS source sends keys only. Spec section 4.9 has the rules (STG-*). The stage process runs the small `StageAgent`, not the controller, so that it has no code path for a pointer, a clipboard, or a driver command. ACT-8: "Switch back" runs the `reclaim` steps of a device on this computer; it is separate from "Hand back".
 - `docs/spikes.md`: measured results of the throwaway spikes in `spikes/` (portal window, input tap, Linux injection, QUIC).
 - `docs/hardware.md`: a local file that is not in the repository (gitignored). It holds the measured facts about the user's hardware. Read it if it exists. Write new measured hardware facts there, and not in committed files.
 

@@ -97,7 +97,11 @@ impl Controller {
             .collect();
         let session = portal.session.as_ref().map(|s| SessionRow {
             target: self.label_of(s.target()),
-            phase: self.phase_view(s),
+            phase: if portal.waiting_for_desktop {
+                SessionPhase::WaitingForDesktop
+            } else {
+                self.phase_view(s)
+            },
             video_input: s.video_input(),
         });
         Some(PortalScreen {
@@ -244,6 +248,7 @@ pub(super) fn end_text(reason: EndReason) -> &'static str {
         EndReason::PeerLost => "connection lost",
         EndReason::ProtocolError => "protocol error",
         EndReason::NewHandoff => "a new handoff of this display started",
+        EndReason::LoginComplete => "the login is complete",
     }
 }
 

@@ -14,6 +14,12 @@ fn messages_round_trip() {
         Message::Hello {
             protocol: PROTOCOL_VERSION,
             computer: ComputerId::from("mac"),
+            stage: None,
+        },
+        Message::Hello {
+            protocol: PROTOCOL_VERSION,
+            computer: ComputerId::from("pc1"),
+            stage: Some(Stage::Login),
         },
         Message::Heartbeat,
         Message::RequestSession {
@@ -136,10 +142,29 @@ fn net2_pointer_round_trip_and_order() {
 }
 
 #[test]
-fn act6_protocol_version_6_has_the_control_request_messages() {
-    // ACT-6 added DisplaySwitched, ControlRequest, and ControlRefused, so an older
-    // peer is refused.
-    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 6);
+fn stg5_protocol_version_7_has_the_stage_in_the_hello() {
+    // ACT-6 (version 6) added DisplaySwitched, ControlRequest, and
+    // ControlRefused. STG-5 (version 7) adds the stage to Hello and the end
+    // reason LoginComplete, so an older peer is refused.
+    assert_eq!(telescreen_core::wire::PROTOCOL_VERSION, 7);
+}
+
+#[test]
+fn stg5_the_stage_has_the_name_of_the_config_key() {
+    assert_eq!(Stage::Login.name(), "login");
+    assert_eq!(Stage::from_name("login"), Some(Stage::Login));
+    assert_eq!(Stage::from_name("boot"), None);
+    assert_eq!(Stage::from_name(""), None);
+}
+
+#[test]
+fn stg9_the_login_complete_end_reason_round_trips() {
+    let message = Message::End {
+        session: SessionId(4),
+        reason: EndReason::LoginComplete,
+    };
+    let bytes = encode_message(&message).unwrap();
+    assert_eq!(decode_message(&bytes).unwrap(), message);
 }
 
 #[test]

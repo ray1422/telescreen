@@ -25,6 +25,8 @@ fn menu() -> MenuScreen {
                         key: "Return".into(),
                     },
                     video_input: VideoInput::Unverified,
+                    keys_only: false,
+                    switch_back: false,
                 },
             },
             MenuSession {
@@ -63,6 +65,8 @@ fn menu() -> MenuScreen {
                     control_only: Some("offline".into()),
                     primary: None,
                     wake: WakeAction::Available,
+                    stage: None,
+                    log_in: LogInAction::Hint,
                 }],
             }],
         }],
@@ -74,6 +78,7 @@ fn menu() -> MenuScreen {
             waiting: true,
         }],
         clipboard: Some(true),
+        login_hint: None,
     }
 }
 
@@ -95,7 +100,9 @@ fn ui18_the_menu_json_shape() {
                     "role": {
                         "kind": "source",
                         "phase": {"kind": "waiting_for_ack", "key": "Return"},
-                        "video_input": "unverified"
+                        "video_input": "unverified",
+                        "keys_only": false,
+                        "switch_back": false
                     }
                 },
                 {
@@ -126,7 +133,9 @@ fn ui18_the_menu_json_shape() {
                         "switch_display_only": null,
                         "control_only": "offline",
                         "primary": null,
-                        "wake": {"kind": "available"}
+                        "wake": {"kind": "available"},
+                        "stage": null,
+                        "log_in": {"kind": "hint"}
                     }],
                     "in_session": false,
                     "switch_back": true
@@ -139,7 +148,8 @@ fn ui18_the_menu_json_shape() {
                 "device_label": "Desktop",
                 "waiting": true
             }],
-            "clipboard": true
+            "clipboard": true,
+            "login_hint": null
         })
     );
     let back: MenuScreen = serde_json::from_value(value).unwrap();

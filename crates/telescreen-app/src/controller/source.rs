@@ -93,6 +93,8 @@ impl Controller {
                 device: None,
                 pending_start: None,
                 session: None,
+                login_start: false,
+                waiting_for_desktop: false,
                 pointer: Point::default(),
                 notice: None,
             },
@@ -268,6 +270,9 @@ impl Controller {
             }
         }
         if !targets.is_empty() {
+            if !self.dialing.contains(&peer) {
+                self.last_dial.insert(peer.clone(), self.now);
+            }
             self.dialing.insert(peer.clone());
             self.ports.net.send(NetCommand::Dial { peer, targets });
         }
@@ -285,7 +290,15 @@ impl Controller {
 
     /// True if a candidate of a display has no connection and can be found.
     pub(super) fn candidate_to_search(&self) -> bool {
-        self.display_cache
+        self.login_hint.as_ref().is_some_and(|(_, _, peer)| {
+            !self.connected.contains(peer) && self.discovery_enabled(peer)
+        }) || self.portals.values().any(|p| {
+            p.waiting_for_desktop
+                && p.session.as_ref().is_some_and(|s| {
+                    !self.connected.contains(s.target()) && self.discovery_enabled(s.target())
+                })
+        }) || self
+            .display_cache
             .iter()
             .flat_map(|display| self.display_peers(&display.token))
             .any(|peer| !self.connected.contains(&peer) && self.discovery_enabled(&peer))
@@ -344,6 +357,10 @@ impl Controller {
     }
 
     pub(super) fn end_portal_session(&mut self, id: PortalId, reason: EndReason) {
+        if self.portals.get(&id).is_some_and(|p| p.waiting_for_desktop) {
+            self.remove_portal(id);
+            return;
+        }
         let actions = match self.source_session_mut(id) {
             Some(session) => session.end(reason),
             None => return,
@@ -500,7 +517,11 @@ impl Controller {
         };
         // FLOW-6: stop each old input stream of this device first, in both roles.
         self.end_device_sessions(&device);
-        let (session, actions) = SourceSession::start(target, device);
+        let (session, actions) = if self.portals.get(&id).is_some_and(|p| p.login_start) {
+            SourceSession::start_keys_only(target, device)
+        } else {
+            SourceSession::start(target, device)
+        };
         if let Some(portal) = self.portals.get_mut(&id) {
             portal.session = Some(session);
             portal.notice = None;
@@ -525,7 +546,7 @@ impl Controller {
         let Some(route) = route else {
             return Some("no handoff route".into());
         };
-        if route.target_device.input_target.is_none() {
+        if !self.in_login_stage(target) && route.target_device.input_target.is_none() {
             return Some(format!("{} has no input-target for this device", target));
         }
         if let Capability::Missing(reason) = &self.ports.capabilities.capture {
@@ -552,9 +573,9 @@ impl Controller {
             .portals
             .iter()
             .filter(|(_, p)| {
-                p.session
-                    .as_ref()
-                    .is_some_and(|s| !s.is_finished() && s.device() == device)
+                p.session.as_ref().is_some_and(|s| {
+                    (!s.is_finished() || p.waiting_for_desktop) && s.device() == device
+                })
             })
             .map(|(id, _)| *id)
             .collect();
@@ -581,6 +602,9 @@ impl Controller {
     }
 
     pub(super) fn run_source_actions(&mut self, id: PortalId, actions: Vec<SourceAction>) {
+        if self.portals.get(&id).is_some_and(|p| p.waiting_for_desktop) {
+            return;
+        }
         for action in actions {
             let Some(session) = self.source_session(id) else {
                 return;
@@ -624,7 +648,19 @@ impl Controller {
         if finished {
             self.set_guard(id, false);
             self.ports.capture.disarm(id);
-            self.close_session_portal(id);
+            let login_complete = self.source_session(id).is_some_and(|s| {
+                s.is_keys_only() && s.phase() == SourcePhase::Ended(EndReason::LoginComplete)
+            });
+            if login_complete {
+                if let Some(portal) = self.portals.get_mut(&id) {
+                    portal.waiting_for_desktop = true;
+                    if let Some(session) = &portal.session {
+                        self.last_dial.insert(session.target().clone(), self.now);
+                    }
+                }
+            } else {
+                self.close_session_portal(id);
+            }
         }
         self.update_clipboard();
     }
@@ -823,13 +859,17 @@ impl Controller {
 
     fn is_offline_candidate(&self, peer: &ComputerId) -> bool {
         !self.connected.contains(peer)
-            && self.portal_ids().into_iter().any(|id| {
-                self.portal_device(id).is_some_and(|device| {
-                    routes::candidates(&self.config, device)
-                        .iter()
-                        .any(|route| route.target == peer)
-                })
-            })
+            && (self
+                .login_hint
+                .as_ref()
+                .is_some_and(|(_, _, target)| target == peer)
+                || self.portal_ids().into_iter().any(|id| {
+                    self.portal_device(id).is_some_and(|device| {
+                        routes::candidates(&self.config, device)
+                            .iter()
+                            .any(|route| route.target == peer)
+                    })
+                }))
     }
 
     /// The discovery backend stopped because of an error (NET-12).

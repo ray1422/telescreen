@@ -90,6 +90,9 @@ private struct Header: View {
 
     private var state: String {
         guard let session = screen.menu.sessions.first else { return "No session" }
+        if session.role.kind == "source" && session.role.phase?.kind == "waiting_for_desktop" {
+            return "Waiting for \(session.peerLabel)"
+        }
         return session.role.kind == "source" ? "Controlling \(session.peerLabel)"
             : "Controlled by \(session.peerLabel)"
     }

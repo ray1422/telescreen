@@ -19,6 +19,8 @@ pub mod displays;
 pub mod focus;
 pub mod inhibit;
 pub mod inject;
+pub mod keyboard;
+pub mod logind;
 pub mod prompt;
 mod text;
 mod wl;

@@ -101,6 +101,48 @@ endpoint: {host: [192.0.2.10, my-computer.example], port: 24800, discovery: mdns
 - While a computer is discoverable, computers on the same network can read its fingerprint and host name. A false record cannot connect: mutual TLS identifies each peer (`docs/adr/0011-discovery-with-the-system-responder.md`).
 - A version before 0.4.0 does not accept a config with `discovery` or a list of hosts. Update all computers.
 
+### Switch a display back
+
+"Switch back" switches a display to this computer with the steps of this computer. The other computer does not have to run Telescreen. Add `reclaim` to the device in the section of this computer:
+
+```yaml
+reclaim:
+  steps:
+    - driver: exec
+      command: <the command that selects the video input of this computer>
+```
+
+- The row "Switch back to this Mac" (on Linux: "Switch back to this computer") shows below the candidates of the display.
+- After the steps, this computer verifies as after a hand back.
+- A version before 0.505.0 does not accept a config with `reclaim`.
+
+### Log in on a Linux computer
+
+The login stage sends the keys of the Mac to the login screen of a Linux computer, so that you can type the password with no keyboard on that computer. It sends keys only: no pointer and no clipboard.
+
+1. In the section of the Linux computer, list the computers that can do this:
+
+   ```yaml
+   stages:
+     login: {from: [mac]}
+   ```
+
+2. On the Mac, select "⋯" for the Linux computer, then "Switch & log in…". A window shows the command.
+3. Run the command on the Linux computer, for example through SSH:
+
+   ```sh
+   telescreen run --stage login
+   ```
+
+   The command also makes the Linux computer discoverable for 10 minutes, if its section has `discovery: mdns`. It stops when you log in, when the terminal closes, and with Control+C.
+4. When the Linux computer connects, select "Switch & log in" in the window. The display switches, and the keys go to the login screen.
+5. Log in. The Mac waits until Telescreen runs in the desktop session, then it continues as a usual session. Configure Telescreen to start at the login; else the Mac waits until you end the session.
+
+- The user on the Linux computer must be in the group `input`.
+- The command does not start while you are logged in to a desktop session on that computer.
+- All computers must have version 0.506.0 or later: the wire protocol changed.
+- The source is macOS in this version. The Qt window and the Plasma applet do not show the action.
+
 ### Scroll on KDE Plasma
 
 Applications animate a scroll from a wheel. On KWin, Telescreen thus injects a scroll as a button scroll. It uses the extra device "Telescreen scroll", and it holds the middle button of this device. No application sees this button. KWin stores the scroll settings of this device in `kcminputrc`.

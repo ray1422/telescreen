@@ -13,7 +13,7 @@ use std::time::Duration;
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
 use telescreen_core::ids::ComputerId;
-use telescreen_core::wire::{self, MAX_FRAME, Message, PROTOCOL_VERSION};
+use telescreen_core::wire::{self, MAX_FRAME, Message, PROTOCOL_VERSION, Stage};
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
@@ -67,6 +67,9 @@ pub struct NetConfig {
     pub identity: Identity,
     pub trust: TrustSource,
     pub timing: Timing,
+    /// The stage that this peer tells in its Hello (STG-5). `None`: a desktop
+    /// session.
+    pub stage: Option<Stage>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -157,6 +160,8 @@ impl Drop for Network {
 
 struct Link {
     id: u64,
+    /// The stage from the Hello of the peer.
+    stage: Option<Stage>,
     connection: Connection,
     frames: mpsc::UnboundedSender<Message>,
 }
@@ -166,6 +171,7 @@ type Events = mpsc::UnboundedSender<NetEvent>;
 #[derive(Clone)]
 struct Shared {
     local: ComputerId,
+    stage: Option<Stage>,
     endpoint: Endpoint,
     identity: Arc<Identity>,
     trust: TrustSource,
@@ -200,6 +206,7 @@ impl Shared {
         });
         Ok(Self {
             local: config.local,
+            stage: config.stage,
             endpoint,
             identity: Arc::new(config.identity),
             trust: config.trust,
@@ -246,8 +253,9 @@ impl Shared {
     fn command(&self, command: NetCommand) {
         match command {
             NetCommand::Dial { peer, targets } => {
-                if self.links().contains_key(&peer) {
-                    self.emit(NetEvent::Connected { peer });
+                let linked = self.links().get(&peer).map(|link| link.stage);
+                if let Some(stage) = linked {
+                    self.emit(NetEvent::Connected { peer, stage });
                     return;
                 }
                 let mut dials = self.dials.lock().unwrap_or_else(PoisonError::into_inner);
@@ -331,7 +339,7 @@ impl Shared {
         let connection = self.dial_targets(peer, targets, added).await?;
         let (mut send, mut recv) = connection.open_bi().await.map_err(|e| e.to_string())?;
         self.send_hello(&mut send).await?;
-        let hello = self.read_hello(&mut recv).await?;
+        let (hello, stage) = self.read_hello(&mut recv).await?;
         if &hello != peer {
             connection.close(1u32.into(), b"wrong computer");
             return Err(format!(
@@ -339,7 +347,7 @@ impl Shared {
                 connection.remote_address()
             ));
         }
-        self.serve(peer.clone(), connection, send, recv);
+        self.serve(peer.clone(), stage, connection, send, recv);
         Ok(())
     }
 
@@ -464,8 +472,8 @@ impl Shared {
             Ok(Err(e)) => return self.emit(refused(e.to_string())),
             Err(_) => return self.emit(refused("no control stream".into())),
         };
-        let peer = match self.read_hello(&mut recv).await {
-            Ok(peer) => peer,
+        let (peer, stage) = match self.read_hello(&mut recv).await {
+            Ok(hello) => hello,
             Err(reason) => return self.emit(refused(reason)),
         };
         // The certificate passed the verifier; the Hello must name a computer that
@@ -481,23 +489,28 @@ impl Shared {
         if let Err(reason) = self.send_hello(&mut send).await {
             return self.emit(refused(reason));
         }
-        self.serve(peer, connection, send, recv);
+        self.serve(peer, stage, connection, send, recv);
     }
 
     async fn send_hello(&self, send: &mut SendStream) -> Result<(), String> {
         let hello = Message::Hello {
             protocol: PROTOCOL_VERSION,
             computer: self.local.clone(),
+            stage: self.stage,
         };
         write_frame(send, &hello).await
     }
 
-    async fn read_hello(&self, recv: &mut RecvStream) -> Result<ComputerId, String> {
+    async fn read_hello(
+        &self,
+        recv: &mut RecvStream,
+    ) -> Result<(ComputerId, Option<Stage>), String> {
         match tokio::time::timeout(self.timing.timeout, read_frame(recv)).await {
             Ok(Ok(Message::Hello {
                 protocol: PROTOCOL_VERSION,
                 computer,
-            })) => Ok(computer),
+                stage,
+            })) => Ok((computer, stage)),
             Ok(Ok(Message::Hello { protocol, .. })) => {
                 Err(format!("protocol {protocol} is not supported"))
             }
@@ -508,7 +521,14 @@ impl Shared {
     }
 
     /// Registers an authenticated connection and runs its tasks.
-    fn serve(&self, peer: ComputerId, connection: Connection, send: SendStream, recv: RecvStream) {
+    fn serve(
+        &self,
+        peer: ComputerId,
+        stage: Option<Stage>,
+        connection: Connection,
+        send: SendStream,
+        recv: RecvStream,
+    ) {
         let (frames, frame_rx) = mpsc::unbounded_channel();
         let id = {
             let mut next = self.next_id.lock().unwrap_or_else(PoisonError::into_inner);
@@ -519,6 +539,7 @@ impl Shared {
             peer.clone(),
             Link {
                 id,
+                stage,
                 connection: connection.clone(),
                 frames,
             },
@@ -532,7 +553,10 @@ impl Shared {
                 reason: "replaced".into(),
             });
         }
-        self.emit(NetEvent::Connected { peer: peer.clone() });
+        self.emit(NetEvent::Connected {
+            peer: peer.clone(),
+            stage,
+        });
 
         let heartbeat = self.timing.auto_heartbeat.then_some(self.timing.heartbeat);
         tokio::spawn(write_loop(send, frame_rx, heartbeat));

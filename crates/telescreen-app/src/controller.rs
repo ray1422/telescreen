@@ -30,7 +30,7 @@ use telescreen_core::session::lease::LeaseTable;
 use telescreen_core::session::source::{HandoffResult, SourcePhase, SourceSession};
 use telescreen_core::session::target::{TargetPhase, TargetSession};
 use telescreen_core::verifier::VerifierEvent;
-use telescreen_core::wire::{EndReason, HandBackOutcome, Message};
+use telescreen_core::wire::{EndReason, HandBackOutcome, Message, Stage};
 use telescreen_transport::{DialTarget, NetCommand, NetEvent};
 use telescreen_view::{Intent, Matching, PromptId, PromptPresenter};
 
@@ -245,6 +245,8 @@ struct Portal {
     /// The session to start after `portal-match` (FLOW-17, ACT-1, ACT-4).
     pending_start: Option<PendingStart>,
     session: Option<SourceSession>,
+    login_start: bool,
+    waiting_for_desktop: bool,
     pointer: Point,
     notice: Option<String>,
 }
@@ -277,6 +279,9 @@ pub struct Controller {
     next_portal: u64,
     next_match: u64,
     connected: BTreeSet<ComputerId>,
+    stages: BTreeMap<ComputerId, Stage>,
+    login_hint: Option<(DisplayToken, DeviceId, ComputerId)>,
+    last_dial: BTreeMap<ComputerId, Instant>,
     /// The peers with a dial that did not report a result (NET-10).
     dialing: BTreeSet<ComputerId>,
     /// The newest search result of each peer (NET-16).
@@ -450,6 +455,9 @@ impl Controller {
             next_portal: 1,
             next_match: 1,
             connected: BTreeSet::new(),
+            stages: BTreeMap::new(),
+            login_hint: None,
+            last_dial: BTreeMap::new(),
             dialing: BTreeSet::new(),
             found: HashMap::new(),
             search_deadline: None,
@@ -656,6 +664,7 @@ impl Controller {
             self.stop_discovery();
         }
         self.expire_control_requests(now);
+        self.retry_login_targets();
         if self
             .last_heartbeat
             .is_none_or(|t| now.duration_since(t) >= HEARTBEAT)
@@ -688,12 +697,18 @@ impl Controller {
                     self.label_of(&peer)
                 ));
             }
-            NetEvent::Connected { peer } => {
+            NetEvent::Connected { peer, stage } => {
+                self.now = now;
+                self.stages.remove(&peer);
+                if let Some(stage) = stage {
+                    self.stages.insert(peer.clone(), stage);
+                }
                 self.dialing.remove(&peer);
                 self.connected.insert(peer.clone());
                 if !self.candidate_to_search() {
                     self.stop_search();
                 }
+                self.attach_desktop(&peer);
                 self.send_control_requests(&peer);
                 for id in self.portal_ids() {
                     self.start_pending_handoff_in(id);
@@ -701,6 +716,7 @@ impl Controller {
             }
             NetEvent::Disconnected { peer, reason } => {
                 self.connected.remove(&peer);
+                self.stages.remove(&peer);
                 self.peer_lost(&peer);
                 self.notice(format!("{} disconnected: {reason}", self.label_of(&peer)));
             }
@@ -1041,6 +1057,17 @@ impl Controller {
             } => self.switch_display_only(&display, device, target),
             Intent::LetControl { peer, device } => self.let_control(peer, device),
             Intent::SwitchBack { display, device } => self.switch_back(&display, device),
+            Intent::OpenLoginHint {
+                display,
+                device,
+                target,
+            } => self.open_login_hint(&display, device, target),
+            Intent::CloseLoginHint => self.close_login_hint(),
+            Intent::SwitchAndLogIn {
+                display,
+                device,
+                target,
+            } => self.switch_and_log_in(&display, device, target),
             Intent::SourceHandBack { portal } => {
                 if let Some(id) = portal.or_else(|| self.main_portal()) {
                     self.request_hand_back(id);

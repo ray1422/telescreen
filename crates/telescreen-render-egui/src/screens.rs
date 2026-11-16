@@ -254,6 +254,7 @@ fn phase_text(phase: &SessionPhase) -> String {
         SessionPhase::Verifying => "The target verifies the display.".into(),
         SessionPhase::WaitingForAck { key } => format!("Press {key} in the portal."),
         SessionPhase::Forwarding => "Forwarding input.".into(),
+        SessionPhase::WaitingForDesktop => "Login complete. Waiting for the target.".into(),
         SessionPhase::Ended { reason } => format!("Session ended: {reason}."),
     }
 }
@@ -406,6 +407,8 @@ mod tests {
                                     control_only: Some("Target peer is offline".into()),
                                     primary: None,
                                     wake: Default::default(),
+                                    stage: None,
+                                    log_in: Default::default(),
                                 }],
                             },
                         ],
