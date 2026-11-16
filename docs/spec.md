@@ -14,7 +14,7 @@ Example setup: a MacBook with a built-in display and an external display. A Linu
 
 ### 2.1 Versions
 
-Versions follow Semantic Versioning. There is no stable release, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version. From v0.600.0, the hundreds of the minor version mark a large release, and the two last digits count the small features (user, 2026-11-07). Example: v0.600.0 is the UI redesign, v0.601.0 is its first small feature, v0.601.1 is a fix, and the next large release is v0.700.0. v0.5.0 is the last version before this rule. The rule applies also below v0.600.0: v0.501.0 is the first small feature after v0.5.0, a test release of the partial UI redesign (user, 2026-11-07). v0.502.0 is the next test release, with the Qt UI on Linux and the scroll fixes (user, 2026-11-08). v0.503.0 adds Wake-on-LAN (ACT-7), the special keys of the source config (IN-20), and the row click fix of UI-18 (user, 2026-11-09). v0.504.0 adds the Arch package, the AppImage, the Plasma applet in the release, and the install methods of `install.sh` (DIST-6 to DIST-11, user, 2026-11-10). v0.505.0 adds "Switch back" with the `reclaim` steps of a device (ACT-8, user, 2026-11-17). v0.506.0 adds the login stage: keys to the login screen of a Linux target (section 4.9, ADR 0015, user, 2026-11-17).
+Versions follow Semantic Versioning. There is no stable release, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version. From v0.600.0, the hundreds of the minor version mark a large release, and the two last digits count the small features (user, 2026-11-07). Example: v0.600.0 is the UI redesign, v0.601.0 is its first small feature, v0.601.1 is a fix, and the next large release is v0.700.0. v0.5.0 is the last version before this rule. The rule applies also below v0.600.0: v0.501.0 is the first small feature after v0.5.0, a test release of the partial UI redesign (user, 2026-11-07). v0.502.0 is the next test release, with the Qt UI on Linux and the scroll fixes (user, 2026-11-08). v0.503.0 adds Wake-on-LAN (ACT-7), the special keys of the source config (IN-20), and the row click fix of UI-18 (user, 2026-11-09). v0.504.0 adds the Arch package, the AppImage, the Plasma applet in the release, and the install methods of `install.sh` (DIST-6 to DIST-11, user, 2026-11-10). v0.505.0 adds "Switch back" with the `reclaim` steps of a device (ACT-8) and the login stage: keys to the login screen of a Linux target (section 4.9, ADR 0015). The two features are in one version (user, 2026-11-17).
 
 v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user, 2026-10-27). The first release is v0.3.0.
 
@@ -28,7 +28,7 @@ v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user,
 
 ### 2.2 Not part of v0.1.0
 
-Video streaming, clipboard (see 2.1), file transfer, atomic switching of device groups, arbitrary remote shell commands, interception of all system keys on every OS, secure desktop control, login screen control (see section 4.9 for the login stage of v0.506.0), emulated displays, game relative-mouse mode, cross-platform IME translation, shortcut remapping (for example Command+C to Ctrl+C), NAT traversal, Windows.
+Video streaming, clipboard (see 2.1), file transfer, atomic switching of device groups, arbitrary remote shell commands, interception of all system keys on every OS, secure desktop control, login screen control (see section 4.9 for the login stage of v0.505.0), emulated displays, game relative-mouse mode, cross-platform IME translation, shortcut remapping (for example Command+C to Ctrl+C), NAT traversal, Windows.
 
 ### 2.3 General constraints
 
@@ -283,9 +283,9 @@ ADR 0014. A side discussion with the user (2026-11-07) gave this design. It repl
   - When mDNS does not work: can B give the address of A (for example `--host`)?
   - A PIN as an option.
 
-### 4.9 Login stage (v0.506.0)
+### 4.9 Login stage (v0.505.0)
 
-ADR 0015 has the reasons. A stage is a state of a computer before its desktop session. The only stage kind is `login`: the login screen of a display manager on Linux. In v0.506.0, the target is Linux, and only the macOS UI shows the source actions (user, 2026-11-17).
+ADR 0015 has the reasons. A stage is a state of a computer before its desktop session. The only stage kind is `login`: the login screen of a display manager on Linux. In v0.505.0, the target is Linux, and only the macOS UI shows the source actions (user, 2026-11-17).
 
 - **STG-1** Config. `stages.login.from` in a computer section lists the source computers that can control the login stage of that computer (`docs/config.md`). A computer with no `stages` has no stage, and nothing changes for it. The current stage of a computer is runtime state; it is not in the config.
 - **STG-2** Start. The user starts the stage on the target with `telescreen run --stage login` (user, 2026-11-16). The process:
@@ -563,7 +563,7 @@ Performance: measure p50, p95, and p99 of capture to injection, event loss, and 
 - Drivers for the output format of one tool (for example `betterDisplay` or `ddcutil`, with `expect`): a later version, after their output is measured on the hardware (user, 2026-10-27). The other driver decisions are in `docs/config.md`.
 - UI redesign (section 4.7, ADR 0012):
   - A key test with the user that the inhibit of a cxx-qt window blocks a compositor shortcut (spike 6 saw only the `active` event).
-- Login screen control: section 4.9 and ADR 0015 have the login stage (v0.506.0), which sends keys only. Still open: a picture of the login screen, and a stage before the operating system starts (a boot loader).
+- Login screen control: section 4.9 and ADR 0015 have the login stage (v0.505.0), which sends keys only. Still open: a picture of the login screen, and a stage before the operating system starts (a boot loader).
 
 Decisions of the implementation (Claude, 2026-10-27). The user confirmed the items that name the user:
 

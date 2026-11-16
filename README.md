@@ -140,7 +140,7 @@ The login stage sends the keys of the Mac to the login screen of a Linux compute
 
 - The user on the Linux computer must be in the group `input`.
 - The command does not start while you are logged in to a desktop session on that computer.
-- All computers must have version 0.506.0 or later: the wire protocol changed.
+- All computers must have version 0.505.0 or later: the wire protocol changed.
 - The source is macOS in this version. The Qt window and the Plasma applet do not show the action.
 
 ### Scroll on KDE Plasma

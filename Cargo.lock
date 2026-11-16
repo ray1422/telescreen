@@ -3538,7 +3538,7 @@ checksum = "55937e1799185b12863d447f42597ed69d9928686b8d88a1df17376a097d8369"
 
 [[package]]
 name = "telescreen-app"
-version = "0.504.0"
+version = "0.505.0"
 dependencies = [
  "clap",
  "crossbeam-channel",
@@ -3559,7 +3559,7 @@ dependencies = [
 
 [[package]]
 name = "telescreen-core"
-version = "0.504.0"
+version = "0.505.0"
 dependencies = [
  "indexmap",
  "jsonschema",
@@ -3574,7 +3574,7 @@ dependencies = [
 
 [[package]]
 name = "telescreen-platform-linux"
-version = "0.504.0"
+version = "0.505.0"
 dependencies = [
  "ab_glyph",
  "epaint_default_fonts",
@@ -3593,7 +3593,7 @@ dependencies = [
 
 [[package]]
 name = "telescreen-platform-macos"
-version = "0.504.0"
+version = "0.505.0"
 dependencies = [
  "core-foundation-sys",
  "crossbeam-channel",
@@ -3607,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "telescreen-render-egui"
-version = "0.504.0"
+version = "0.505.0"
 dependencies = [
  "egui",
  "egui-wgpu",
@@ -3622,7 +3622,7 @@ dependencies = [
 
 [[package]]
 name = "telescreen-transport"
-version = "0.504.0"
+version = "0.505.0"
 dependencies = [
  "postcard",
  "quinn",
@@ -3638,7 +3638,7 @@ dependencies = [
 
 [[package]]
 name = "telescreen-ui-linux"
-version = "0.504.0"
+version = "0.505.0"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -3651,7 +3651,7 @@ dependencies = [
 
 [[package]]
 name = "telescreen-ui-macos"
-version = "0.504.0"
+version = "0.505.0"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -3662,7 +3662,7 @@ dependencies = [
 
 [[package]]
 name = "telescreen-view"
-version = "0.504.0"
+version = "0.505.0"
 dependencies = [
  "serde",
  "serde_json",
