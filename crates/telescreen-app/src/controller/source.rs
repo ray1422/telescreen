@@ -486,6 +486,63 @@ impl Controller {
             .any(SourceSession::ack_wanted)
     }
 
+    /// FLOW-27: this computer cannot send input to the target of the portal.
+    /// The user must not stay with a display that shows a computer that the
+    /// user cannot control. The source asks the target for a hand back. If
+    /// that is not possible, it ends the session and runs its `reclaim` steps.
+    pub(super) fn recover_display(&mut self, id: PortalId, cause: &str, reason: EndReason) {
+        let Some(session) = self.source_session(id).filter(|s| !s.is_finished()) else {
+            return;
+        };
+        let target = session.target().clone();
+        let device = session.device().clone();
+        let phase = session.phase();
+        let switched = session.video_input() != telescreen_core::session::VideoInput::Unchanged;
+        let Some(display) = self.portals.get(&id).map(|p| p.display.token.clone()) else {
+            return;
+        };
+        let label = self.label_of(&target);
+        let can_hand_back = matches!(phase, SourcePhase::Verifying | SourcePhase::Forwarding)
+            && self.connected.contains(&target);
+        if can_hand_back {
+            self.notice(format!(
+                "Telescreen cannot send the input to {label}: {cause}. It asks {label} to hand the display back."
+            ));
+            self.recovering.insert((target, device), display);
+            self.request_hand_back(id);
+            return;
+        }
+        self.notice(format!(
+            "Telescreen cannot send the input to {label}: {cause}."
+        ));
+        let actions = self.end_actions(id, reason);
+        self.run_source_actions(id, actions);
+        if switched {
+            self.reclaim_after_failed_recovery(&display, device, &label);
+        }
+    }
+
+    /// FLOW-27: a hand back is not possible, or it failed. This computer runs
+    /// its `reclaim` steps for the device, or it tells the user what to do.
+    pub(super) fn reclaim_after_failed_recovery(
+        &mut self,
+        display: &DisplayToken,
+        device: DeviceId,
+        label: &str,
+    ) {
+        let has_reclaim = self
+            .local_device(&device)
+            .is_some_and(|(_, d)| d.reclaim.is_some());
+        if has_reclaim {
+            self.notice("Telescreen switches the display back with the reclaim steps.".into());
+            self.switch_back(display, device);
+        } else {
+            self.notice(format!(
+                "Switch the display by hand: {label} did not hand it back, and this computer has no reclaim steps."
+            ));
+        }
+    }
+
     /// "Hand back" in the session row of a portal: request the hand back of
     /// that portal only (HB-3).
     pub fn request_hand_back(&mut self, id: PortalId) {
@@ -627,13 +684,17 @@ impl Controller {
                     self.set_guard(id, false);
                     match self.ports.capture.forward(id) {
                         Ok(()) => {
+                            if self.ports.capture.keys_blocked() {
+                                self.notice(
+                                    "The keys do not go to the target now: an application on this computer holds secure keyboard input, for example a password prompt in a terminal or a browser. The pointer works."
+                                        .into(),
+                                );
+                            }
                             self.send_pointer(id);
                             self.sync_portal_state(id);
                         }
                         Err(e) => {
-                            self.notice(format!("Input capture failed: {e}"));
-                            let actions = self.end_actions(id, EndReason::PermissionLost);
-                            self.run_source_actions(id, actions);
+                            self.recover_display(id, &e.to_string(), EndReason::PermissionLost);
                             return;
                         }
                     }
@@ -753,10 +814,16 @@ impl Controller {
     /// An event of a portal goes to that portal; an event of a closed portal does
     /// nothing. The events with no portal apply to all portals (FLOW-25).
     pub fn on_captured(&mut self, event: CapturedEvent) {
+        if matches!(event, CapturedEvent::Overflow) {
+            // FLOW-27: the source cannot send input any more.
+            for id in self.portal_ids() {
+                self.recover_display(id, "the input queue is full", EndReason::QueueOverflow);
+            }
+            return;
+        }
         let all: fn(&mut SourceSession) -> Vec<SourceAction> = match event {
             CapturedEvent::InputLost => SourceSession::on_input_lost,
             CapturedEvent::SafetyExit => |s| s.end(EndReason::SafetyExit),
-            CapturedEvent::Overflow => |s| s.end(EndReason::QueueOverflow),
             other => return self.on_portal_captured(other),
         };
         for id in self.portal_ids() {

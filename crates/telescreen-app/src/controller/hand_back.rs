@@ -107,18 +107,25 @@ impl Controller {
             return;
         }
         self.stop_hand_back_verification(&device);
+        // FLOW-27: a hand back that this computer requested because it cannot
+        // send input. If it is not possible, the `reclaim` steps run.
+        let recovering = self.recovering.remove(&(peer.clone(), device.clone()));
+        let label = self.label_of(&peer);
         match outcome {
-            HandBackOutcome::NoRoute => self.notice(format!(
-                "Switch the display by hand: {} has no route back to this computer.",
-                self.label_of(&peer)
-            )),
+            HandBackOutcome::NoRoute => match recovering {
+                Some(display) => self.reclaim_after_failed_recovery(&display, device, &label),
+                None => self.notice(format!(
+                    "Switch the display by hand: {label} has no route back to this computer."
+                )),
+            },
             HandBackOutcome::Failed { partial } => {
-                self.notice(format!(
-                    "The hand back from {} failed.",
-                    self.label_of(&peer)
-                ));
+                self.notice(format!("The hand back from {label} failed."));
                 if partial {
-                    self.device_states.insert(device, VideoInput::Unknown);
+                    self.device_states
+                        .insert(device.clone(), VideoInput::Unknown);
+                }
+                if let Some(display) = recovering {
+                    self.reclaim_after_failed_recovery(&display, device, &label);
                 }
             }
             HandBackOutcome::Done => self.verify_as_destination(peer, device),

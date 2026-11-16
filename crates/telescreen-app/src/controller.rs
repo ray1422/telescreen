@@ -308,6 +308,10 @@ pub struct Controller {
     verifications: Verifications,
     next_prompt: u64,
     pending_hand_backs: BTreeSet<(ComputerId, DeviceId)>,
+    /// The hand backs that this computer requested because it cannot send
+    /// input to the target (FLOW-27), with the display of the portal. If such
+    /// a hand back is not possible, this computer runs its `reclaim` steps.
+    recovering: BTreeMap<(ComputerId, DeviceId), DisplayToken>,
     /// Control requests that this peer sent, with their deadline (ACT-6). A
     /// request waits in `unsent_control` until its peer connects.
     control_requests: BTreeMap<(ComputerId, DeviceId), Instant>,
@@ -474,6 +478,7 @@ impl Controller {
             verifications,
             next_prompt: 1,
             pending_hand_backs: BTreeSet::new(),
+            recovering: BTreeMap::new(),
             control_requests: BTreeMap::new(),
             unsent_control: BTreeSet::new(),
             control_matches: BTreeMap::new(),
@@ -531,6 +536,7 @@ impl Controller {
             self.stop_hand_back_verification(&device);
         }
         self.pending_hand_backs.clear();
+        self.recovering.clear();
         self.update_clipboard();
         for peer in std::mem::take(&mut self.connected) {
             self.ports.net.send(NetCommand::Close { peer });
@@ -746,6 +752,19 @@ impl Controller {
     }
 
     fn peer_lost(&mut self, peer: &ComputerId) {
+        // FLOW-27: the target cannot answer the hand back request.
+        let stranded: Vec<_> = self
+            .recovering
+            .keys()
+            .filter(|(target, _)| target == peer)
+            .cloned()
+            .collect();
+        for key in stranded {
+            if let Some(display) = self.recovering.remove(&key) {
+                let label = self.label_of(peer);
+                self.reclaim_after_failed_recovery(&display, key.1, &label);
+            }
+        }
         for id in self.portals_to(peer) {
             let actions = self
                 .source_session_mut(id)

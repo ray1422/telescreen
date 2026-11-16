@@ -150,6 +150,10 @@ struct Log {
     clip_calls: Vec<&'static str>,
     /// Calls of the verifier port: "start <id> <driver>", "ack <id>", "stop <id>".
     verifier_calls: Vec<String>,
+    /// The OS blocks the capture of keys; the pointer works (IN-12).
+    keys_blocked: bool,
+    /// `InputCapture::forward` fails (FLOW-27).
+    forward_fails: bool,
 }
 
 impl Log {
@@ -202,7 +206,11 @@ impl InputCapture for Capture {
         Ok(())
     }
     fn forward(&mut self, portal: PortalId) -> Result<(), PlatformError> {
-        self.0.borrow_mut().log_capture(portal, "forward".into());
+        let mut log = self.0.borrow_mut();
+        if log.forward_fails {
+            return Err(PlatformError::Failed("the event tap is gone".into()));
+        }
+        log.log_capture(portal, "forward".into());
         Ok(())
     }
     fn disarm(&mut self, portal: PortalId) {
@@ -221,6 +229,9 @@ impl InputCapture for Capture {
         self.0
             .borrow_mut()
             .log_capture(portal, format!("focus {focused}"));
+    }
+    fn keys_blocked(&self) -> bool {
+        self.0.borrow().keys_blocked
     }
 }
 
@@ -6447,4 +6458,155 @@ fn stg8_stg9_the_source_and_a_stage_agent_log_in_together() {
     relay(&mut w, &mut agent, &agent_log, Step::default());
     assert!(w.mac.controller.has_portal());
     assert_eq!(source_role(&w), stage_role(SessionPhase::WaitingForDesktop));
+}
+
+#[test]
+fn in12_blocked_keys_do_not_stop_the_start_of_forwarding() {
+    // An application on the source holds secure keyboard input. The pointer
+    // capture works, so the session starts, and a notice tells the user.
+    let mut w = World::new();
+    w.mac.log.borrow_mut().keys_blocked = true;
+    w.advance_to_forwarding();
+    assert!(w.mac.controller.has_portal(), "the session did not end");
+    let sessions = w.mac.controller.menu_screen().sessions;
+    assert!(
+        matches!(
+            sessions[0].role,
+            telescreen_view::MenuRole::Source {
+                phase: SessionPhase::Forwarding,
+                ..
+            }
+        ),
+        "{sessions:?}"
+    );
+    assert!(has_notice(&w.mac, "The keys do not go to the target now"));
+    // The pointer reaches the target.
+    let before = w.pc1.log.borrow().pointer.len();
+    w.mac.controller.on_captured(CapturedEvent::PointerMoved {
+        portal: w.mac.portal(),
+        at: Point { x: 60.0, y: 60.0 },
+    });
+    w.pump();
+    assert!(w.pc1.log.borrow().pointer.len() > before);
+
+    // With no block there is no notice.
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    assert!(!has_notice(&w.mac, "The keys do not go to the target now"));
+}
+
+// ----- FLOW-27: the source cannot send input after the display switched -----
+
+/// The Mac switched the display to pc1, pc1 verified, and then the capture of
+/// the Mac cannot start.
+fn forward_fails_after_the_switch(mut w: World) -> World {
+    w.advance_to_confirmation();
+    w.mac.log.borrow_mut().forward_fails = true;
+    assert!(w.mac.controller.acknowledge(AckOrigin::Computer));
+    w.pump();
+    assert!(has_notice(
+        &w.mac,
+        "Telescreen cannot send the input to Linux"
+    ));
+    assert!(has_notice(&w.mac, "the event tap is gone"), "the cause");
+    assert!(!w.mac.controller.has_portal(), "the session ended");
+    w
+}
+
+#[test]
+fn flow27_a_source_that_cannot_forward_asks_for_a_hand_back() {
+    let w = forward_fails_after_the_switch(World::new());
+    assert_eq!(
+        handoff_programs(&w.pc1),
+        ["/bin/to-mac"],
+        "pc1 ran its route back"
+    );
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1"], "no reclaim");
+    // The Mac verifies as the destination of the hand back (HB-1).
+    assert!(w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn flow27_with_no_route_back_the_source_runs_its_reclaim_steps() {
+    let mut w = world_with_no_route_back();
+    w.mac = mac_with(reclaim_config());
+    let w = forward_fails_after_the_switch(w);
+    assert!(handoff_programs(&w.pc1).is_empty(), "pc1 has no route back");
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1", "/bin/reclaim"]);
+    assert!(has_notice(&w.mac, "reclaim steps"));
+    assert!(w.mac.controller.awaiting_local_ack(), "ACT-8: verify here");
+}
+
+#[test]
+fn flow27_with_no_route_back_and_no_reclaim_the_source_tells_the_user() {
+    let w = forward_fails_after_the_switch(world_with_no_route_back());
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1"]);
+    assert!(has_notice(&w.mac, "Switch the display by hand"));
+    assert!(!w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn flow27_a_lost_target_during_the_recovery_starts_the_reclaim_steps() {
+    let mut w = World::new();
+    w.mac = mac_with(reclaim_config());
+    w.advance_to_confirmation();
+    w.mac.log.borrow_mut().forward_fails = true;
+    assert!(w.mac.controller.acknowledge(AckOrigin::Computer));
+    // pc1 answers the acknowledgement, then it goes away before it answers
+    // the hand back request of the Mac.
+    while let Some(command) = w.mac.log.borrow_mut().net.pop_front() {
+        if let NetCommand::Send { message, .. } = command {
+            w.pc1.controller.on_net(
+                NetEvent::Message {
+                    peer: ComputerId::from("mac"),
+                    message,
+                },
+                w.now,
+            );
+        }
+    }
+    let answers: Vec<NetCommand> = w.pc1.log.borrow_mut().net.drain(..).collect();
+    for command in answers {
+        if let NetCommand::Send { message, .. } = command {
+            w.mac.controller.on_net(
+                NetEvent::Message {
+                    peer: ComputerId::from(PC1),
+                    message,
+                },
+                w.now,
+            );
+        }
+    }
+    assert!(has_notice(&w.mac, "hand the display back"));
+    w.mac.log.borrow_mut().net.clear();
+    w.pc1.log.borrow_mut().jobs.clear();
+    pc1_disconnects(&mut w);
+    mac_step(&mut w);
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+}
+
+#[test]
+fn flow27_an_input_queue_overflow_asks_for_a_hand_back() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::Overflow);
+    w.pump();
+    assert!(has_notice(&w.mac, "the input queue is full"));
+    assert!(!w.mac.controller.has_portal());
+    assert_eq!(handoff_programs(&w.pc1), ["/bin/to-mac"]);
+}
+
+#[test]
+fn flow27_hb5_the_safety_exit_does_not_switch_the_display_back() {
+    let mut w = World::new();
+    w.mac = mac_with(reclaim_config());
+    w.advance_to_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
+    w.pump();
+    assert!(!w.mac.controller.has_portal());
+    assert!(handoff_programs(&w.pc1).is_empty(), "HB-5: no hand back");
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1"], "no reclaim");
 }
