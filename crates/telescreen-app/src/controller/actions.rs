@@ -311,6 +311,71 @@ impl Controller {
         }
     }
 
+    // ----- "Switch back" (ACT-8) -----
+
+    /// Runs the `reclaim` steps of the device on this computer, then verifies
+    /// here as the destination.
+    pub(super) fn switch_back(&mut self, token: &DisplayToken, device_id: DeviceId) {
+        let displays = self.displays();
+        let Some(display) = displays.iter().find(|d| &d.token == token).cloned() else {
+            self.notice(format!("Cannot switch back: the display {token} is gone."));
+            return;
+        };
+        let Some((alias, device)) = self.local_device(&device_id) else {
+            self.notice(format!(
+                "Cannot switch back: this computer has no device {device_id}."
+            ));
+            return;
+        };
+        let Some(reclaim) = device.reclaim else {
+            self.notice(format!("Cannot switch back: {alias} has no reclaim steps"));
+            return;
+        };
+        self.end_device_sessions(&device_id);
+        let request = Request::on_source(
+            &self.local,
+            DeviceRef {
+                id: device_id.clone(),
+                alias,
+            },
+            Some(self.local.clone()),
+            displays,
+        )
+        .with_portal(portal_info("switch-back".into(), &display));
+        self.spawn(
+            Pending::SwitchBack { device: device_id },
+            Job::Handoff {
+                steps: reclaim.steps,
+                request,
+            },
+        );
+    }
+
+    /// ACT-8: verify locally on success; a partial failure leaves an unknown state.
+    pub(super) fn switch_back_done(&mut self, device: DeviceId, output: JobOutput) {
+        match output {
+            JobOutput::Handoff {
+                result: HandoffResult::Done,
+                ..
+            } => self.verify_as_destination(self.local.clone(), device),
+            JobOutput::Handoff {
+                result: HandoffResult::Failed { completed_steps },
+                error,
+            } => {
+                if completed_steps > 0 {
+                    self.device_states.insert(device, VideoInput::Unknown);
+                }
+                self.notice(format!(
+                    "The switch back failed: {}",
+                    error.as_deref().unwrap_or("the reclaim steps failed")
+                ));
+            }
+            other => self.notice(format!(
+                "The switch back failed: unexpected result {other:?}"
+            )),
+        }
+    }
+
     /// The destination of "Switch display only" (ACT-6).
     pub(super) fn display_switched(&mut self, peer: ComputerId, device: DeviceId) {
         // NET-4: the sender needs a route to this computer for the device.

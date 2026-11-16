@@ -409,6 +409,9 @@ private struct DisplaySection: View {
                             },
                             style: .menu)
                     }
+                    if device.switchBack {
+                        SwitchBackRow(display: display, device: device, style: .menu)
+                    }
                 }
             }
         }
@@ -626,6 +629,48 @@ struct CandidateRow: View {
         }
         .onHover { hover.on = $0 }
         .contextMenu { model.menuItems }
+    }
+}
+
+/// The local action of a device (ACT-8), shared by the menu and main window.
+struct SwitchBackRow: View {
+    let display: MenuDisplay
+    let device: MenuDevice
+    let style: CandidateRow.Style
+    @StateObject private var hover = Hover()
+
+    var body: some View {
+        Button {
+            sendIntent(["kind": "switch_back", "display": display.token, "device": device.device])
+        } label: {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(.primary.opacity(0.14))
+                    .frame(width: 30, height: 30)
+                    .overlay {
+                        Image(systemName: "arrow.uturn.backward").font(.system(size: 14))
+                            .foregroundStyle(Color.secondary)
+                    }
+                Text("Switch back to this Mac")
+                    .font(.system(size: style == .menu ? 14 : 13))
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, style == .menu ? 6 : 0)
+            .padding(.horizontal, style == .menu ? 8 : 14)
+            .frame(minHeight: style == .menu ? nil : 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background {
+            if hover.on {
+                if style == .menu {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(menuHover)
+                } else {
+                    Rectangle().fill(.primary.opacity(0.05))
+                }
+            }
+        }
+        .onHover { hover.on = $0 }
     }
 }
 

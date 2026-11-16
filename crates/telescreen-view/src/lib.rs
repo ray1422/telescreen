@@ -286,6 +286,12 @@ pub enum Intent {
     LetControl { peer: ComputerId, device: DeviceId },
     /// "Wake <peer>": send a Wake-on-LAN magic packet (ACT-7).
     Wake { target: ComputerId },
+    /// "Switch back": run the `reclaim` steps of the device on this computer,
+    /// then verify here (ACT-8).
+    SwitchBack {
+        display: DisplayToken,
+        device: DeviceId,
+    },
     /// "Hand back" in the session part of the menu, on the source (UI-9, HB-3).
     /// `None`: as for `EndSession`.
     SourceHandBack {
@@ -450,6 +456,10 @@ pub struct MenuDevice {
     /// device: the session card stands for it.
     #[serde(default)]
     pub in_session: bool,
+    /// The device has `reclaim`: the menu shows the "Switch back" row (ACT-8,
+    /// UI-18).
+    #[serde(default)]
+    pub switch_back: bool,
 }
 
 /// A candidate with the actions of ACT-1. `None` is available; else the reason.

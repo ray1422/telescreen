@@ -5425,3 +5425,204 @@ fn act7_a_wake_intent_with_no_wake_config_sends_nothing() {
     w.pump();
     assert!(w.mac.log.borrow().wakes.is_empty());
 }
+
+// ----- ACT-8: "Switch back" with the `reclaim` steps -----
+
+/// The config of the tests, with `reclaim` for the shared display on the Mac.
+fn reclaim_config() -> Config {
+    let mut config = config();
+    let device = config
+        .computers
+        .get_mut(&ComputerId::from("mac"))
+        .unwrap()
+        .devices
+        .get_mut("Desktop")
+        .unwrap();
+    let mut steps = device.handoff[&ComputerId::from("pc1")].steps.clone();
+    match &mut steps[0].driver {
+        Driver::Command(program) => program.argv[0] = "/bin/reclaim".into(),
+        other => panic!("the test config has a command step: {other:?}"),
+    }
+    device.reclaim = Some(telescreen_core::config::Handoff { steps });
+    config
+}
+
+/// The usual two peers. The config of the Mac has `reclaim`.
+fn reclaim_world() -> World {
+    let mut w = World::new();
+    w.mac = peer_config(
+        "mac",
+        vec![
+            display("builtin", -1500.0, 1500.0),
+            display("lg", 0.0, 3400.0),
+        ],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+        true,
+        reclaim_config(),
+    );
+    w
+}
+
+fn switch_back() -> Intent {
+    Intent::SwitchBack {
+        display: lg(),
+        device: shared(),
+    }
+}
+
+/// The first programs of the handoff jobs of the peer, in sequence.
+fn handoff_programs(peer: &Peer) -> Vec<String> {
+    peer.log
+        .borrow()
+        .target
+        .iter()
+        .filter_map(|t| t.strip_prefix("handoff ").map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn act8_switch_back_runs_the_reclaim_steps_and_verifies_on_this_computer() {
+    let mut w = reclaim_world();
+    act(&mut w, switch_back());
+    assert_eq!(handoff_programs(&w.mac), ["/bin/reclaim"]);
+    assert!(!w.mac.controller.has_portal(), "no portal");
+    assert!(!armed(&w.mac), "no capture");
+    // This computer verifies as the destination (VER-1), and the user
+    // acknowledges here (VER-4).
+    assert!(w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), VideoInput::Unverified);
+    let shown = w.mac.log.borrow().shown.last().cloned().expect("a prompt");
+    assert_eq!(
+        shown.1,
+        lg(),
+        "the prompt shows on the display of the device"
+    );
+    assert!(w.mac.controller.acknowledge(AckOrigin::Computer));
+    assert_eq!(mac_state(&w), VideoInput::Confirmed);
+}
+
+#[test]
+fn act8_switch_back_needs_no_peer_and_sends_no_message() {
+    // Not connected: no dial starts.
+    let mut w = reclaim_world();
+    w.mac.controller.on_intent(switch_back());
+    assert!(
+        w.mac.log.borrow().net.is_empty(),
+        "no network command: {:?}",
+        w.mac.log.borrow().net
+    );
+    w.pump();
+    assert!(w.mac.log.borrow().net.is_empty());
+    assert!(w.mac.controller.awaiting_local_ack());
+
+    // Connected: the peer gets no message and keeps its device state.
+    let mut w = reclaim_world();
+    connect(&mut w);
+    let before = pc1_state(&w);
+    w.mac.controller.on_intent(switch_back());
+    assert!(
+        w.mac.log.borrow().net.is_empty(),
+        "no message to the peer: {:?}",
+        w.mac.log.borrow().net
+    );
+    w.pump();
+    assert!(!w.pc1.controller.awaiting_local_ack());
+    assert_eq!(pc1_state(&w), before);
+    assert!(w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn act8_the_request_of_a_reclaim_step_names_this_computer_two_times() {
+    let mut w = reclaim_world();
+    w.mac.controller.on_intent(switch_back());
+    let mac = ComputerId::from("mac");
+    let log = w.mac.log.borrow();
+    let (_, job) = log.jobs.back().expect("a job");
+    let Job::Handoff { steps, request } = job else {
+        panic!("a handoff job: {job:?}");
+    };
+    assert_eq!(steps.len(), 1);
+    assert_eq!(request.computer_id, mac);
+    assert_eq!(request.source_computer_id, mac);
+    assert_eq!(request.target_computer_id, Some(mac));
+    assert_eq!(request.device.id, shared());
+    assert_eq!(request.session_id, None);
+}
+
+#[test]
+fn act8_switch_back_ends_the_session_of_the_device_first() {
+    let mut w = reclaim_world();
+    w.advance_to_forwarding();
+    assert!(w.mac.controller.has_portal());
+    act(&mut w, switch_back());
+    assert!(!w.mac.controller.has_portal(), "FLOW-6: the session ended");
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+    assert!(w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn act8_a_failed_reclaim_step_gives_a_notice_and_no_verification() {
+    // One step completed: the device state is unknown (FLOW-12).
+    let mut w = reclaim_world();
+    w.handoff = HandoffResult::Failed { completed_steps: 1 };
+    act(&mut w, switch_back());
+    assert!(has_notice(&w.mac, "The switch back failed"));
+    assert!(!w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), VideoInput::Unknown);
+
+    // No step completed: the device state does not change.
+    let mut w = reclaim_world();
+    let before = mac_state(&w);
+    w.handoff = HandoffResult::Failed { completed_steps: 0 };
+    act(&mut w, switch_back());
+    assert!(has_notice(&w.mac, "The switch back failed"));
+    assert!(!w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), before);
+}
+
+#[test]
+fn act8_a_device_with_no_reclaim_runs_nothing() {
+    let mut w = World::new();
+    act(&mut w, switch_back());
+    assert_eq!(handoff_jobs(&w.mac), 0);
+    assert!(has_notice(&w.mac, "Cannot switch back"));
+    assert!(!w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn act8_ui18_the_menu_has_the_switch_back_row_only_with_reclaim() {
+    let mut w = reclaim_world();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    assert!(lg_row(&w.mac).devices[0].switch_back);
+
+    let mut w = World::new();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    assert!(!lg_row(&w.mac).devices[0].switch_back);
+}
+
+#[test]
+fn act8_hand_back_does_not_use_reclaim_when_the_route_back_fails() {
+    let mut w = reclaim_world();
+    w.advance_to_forwarding();
+    w.handoff = HandoffResult::Failed { completed_steps: 0 };
+    w.mac
+        .controller
+        .on_intent(Intent::SourceHandBack { portal: None });
+    w.pump();
+    assert!(
+        !handoff_programs(&w.mac).contains(&"/bin/reclaim".to_owned()),
+        "{:?}",
+        handoff_programs(&w.mac)
+    );
+    assert!(!w.mac.controller.awaiting_local_ack());
+}

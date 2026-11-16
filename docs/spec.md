@@ -14,7 +14,7 @@ Example setup: a MacBook with a built-in display and an external display. A Linu
 
 ### 2.1 Versions
 
-Versions follow Semantic Versioning. There is no stable release, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version. From v0.600.0, the hundreds of the minor version mark a large release, and the two last digits count the small features (user, 2026-11-07). Example: v0.600.0 is the UI redesign, v0.601.0 is its first small feature, v0.601.1 is a fix, and the next large release is v0.700.0. v0.5.0 is the last version before this rule. The rule applies also below v0.600.0: v0.501.0 is the first small feature after v0.5.0, a test release of the partial UI redesign (user, 2026-11-07). v0.502.0 is the next test release, with the Qt UI on Linux and the scroll fixes (user, 2026-11-08). v0.503.0 adds Wake-on-LAN (ACT-7), the special keys of the source config (IN-20), and the row click fix of UI-18 (user, 2026-11-09). v0.504.0 adds the Arch package, the AppImage, the Plasma applet in the release, and the install methods of `install.sh` (DIST-6 to DIST-11, user, 2026-11-10).
+Versions follow Semantic Versioning. There is no stable release, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version. From v0.600.0, the hundreds of the minor version mark a large release, and the two last digits count the small features (user, 2026-11-07). Example: v0.600.0 is the UI redesign, v0.601.0 is its first small feature, v0.601.1 is a fix, and the next large release is v0.700.0. v0.5.0 is the last version before this rule. The rule applies also below v0.600.0: v0.501.0 is the first small feature after v0.5.0, a test release of the partial UI redesign (user, 2026-11-07). v0.502.0 is the next test release, with the Qt UI on Linux and the scroll fixes (user, 2026-11-08). v0.503.0 adds Wake-on-LAN (ACT-7), the special keys of the source config (IN-20), and the row click fix of UI-18 (user, 2026-11-09). v0.504.0 adds the Arch package, the AppImage, the Plasma applet in the release, and the install methods of `install.sh` (DIST-6 to DIST-11, user, 2026-11-10). v0.505.0 adds "Switch back" with the `reclaim` steps of a device (ACT-8, user, 2026-11-17).
 
 v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user, 2026-10-27). The first release is v0.3.0.
 
@@ -171,6 +171,16 @@ Actions:
   - The target must permit Wake-on-LAN: the firmware setting, and the network interface setting (on Linux, `ethtool -s <interface> wol g`, or `802-3-ethernet.wake-on-lan magic` in NetworkManager). Telescreen does not change these settings.
   - On macOS, the send needs the Local Network permission (NET-7, AC-25).
 
+- **ACT-8** "Switch back" (user, 2026-11-16). This computer switches a device back to itself with its own steps. No other computer has to run Telescreen:
+  - The action shows for each local device that has `reclaim` (`docs/config.md`). A device with no `reclaim` does not show it.
+  - The action first ends each session of this computer that uses the device, as before the steps of a handoff (FLOW-6). Then this computer runs the `reclaim` steps in sequence. The action opens no portal, starts no session, and sends no message to a peer.
+  - When the steps succeed, this computer verifies as the destination (VER-1). The acknowledgement is on this computer (VER-4), as after a hand back. The device state follows VER-6: confirmed, unverified (the device has no `verify`), or unknown.
+  - If the device has no `reclaim`, nothing runs, and the notice is "Cannot switch back: <device> has no reclaim steps".
+  - When a step fails, the notice is "The switch back failed: <error>". If one step or more completed, the device state is unknown (FLOW-12). If no step completed, the device state does not change.
+  - "Hand back" (HB-1 to HB-4) does not use `reclaim`, also when the target has no route back or when its route back fails (user, 2026-11-16). The two actions are separate.
+  - The other computers do not change their device state (Claude decides, 2026-11-17). A computer that had the device keeps its state until its next verification. A later protocol version can send a message.
+  - In the request of a `command` step, `operation` is `handoff`, and `source_computer_id` and `target_computer_id` are this computer. In the request of the `verify` that follows, `source_computer_id` is this computer too.
+
 Menu and entry points:
 
 - **UI-9** The menu is a small panel. It has one view model on all platforms:
@@ -208,6 +218,7 @@ Menu and entry points:
     - A "⋯" button at the right of the row opens a flat native menu: the three actions, then a separator, "Let <peer> control this display", and "Wake <peer>" (ACT-7). An unavailable action is disabled and shows its reason. There are no submenus. A right-click on the row opens the same menu. The row has no "⋯" only when the menu has one available item and that item is the primary action (Claude decides, 2026-11-09: with no primary action, "⋯" is the only path to an available action).
     - The row has no colored fill for the primary action. Hover gives the row a light fill.
     - All rows of the menu have the same left and right padding.
+  - A device with `reclaim` has one more row below its candidates: "Switch back to this Mac" on macOS, "Switch back to this computer" on Linux (ACT-8, user, 2026-11-16). A click on the row runs the action and closes the menu. The row also shows when the device has no candidates. The view model has a flag for the row; the platform UIs do not read the config.
   - "Let <peer> control this display" shows for each local device and each peer whose config has `handoff.<this computer>` for that device. If the peer is a candidate of that device on a display, the action is in the "⋯" menu of the peer (user, 2026-11-07). Else it has its own row with the device name. While the request waits, the row subtitle shows "Waiting for <peer>…".
   - The status glyph state (UI-17) is part of the view model: idle, controlling, or controlled. "Menu open" is a state of the UI only.
   - The core gives a new view model when a value changes. A UI draws the newest one and sends intents (ADR 0012). It does not draw each frame.
@@ -474,6 +485,8 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-57 | Hold Escape for 5 seconds while forwarding, or press Escape 10 times while no portal waits or forwards | The session does not end, and nothing ends (IN-8) |
 | AC-58 | A candidate is offline, and its route permits "Switch display only". Click the row | Nothing runs. The subtitle shows the status and the reason of "Switch & control". "Switch display only" runs from the "⋯" menu. On Linux, no button of the candidate has the accent color (UI-18, UI-11) |
 | AC-59 | The config has `wake` for an offline candidate. Select "Wake <peer>" while the peer sleeps or is powered off | The source sends one magic packet to `wake.broadcast`. The notice "Wake request sent to <peer>" shows. The peer starts. The source does not dial. When the peer is connected, "Wake <peer>" is disabled with the reason "Connected" (ACT-7) |
+| AC-60 | The config of this computer has `reclaim` for a display. The display shows a different computer, and that computer does not run Telescreen. Select "Switch back" for the display | The `reclaim` steps run on this computer, and the display shows this computer. This computer verifies: the prompt shows on this display, and the device state is confirmed after the acknowledgement. No dial starts (ACT-8) |
+| AC-61 | This computer controls a target on a display, and its config has `reclaim` for that display. Select "Switch back" | The session ends first, then the `reclaim` steps run. "Hand back" in the same state runs only the route back of the target; if that route fails, the `reclaim` steps do not run (ACT-8) |
 
 Performance: measure p50, p95, and p99 of capture to injection, event loss, and idle CPU/GPU. A network latency number must state how it was measured (round trip on one clock, or the clock synchronization method). There is no hard threshold yet.
 

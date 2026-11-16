@@ -253,6 +253,7 @@ impl Controller {
                     .filter(|(alias, _)| matched.contains(alias))
                     .map(|(alias, device)| MenuDevice {
                         in_session: false,
+                        switch_back: device.reclaim.is_some(),
                         device: device.id.clone(),
                         alias: alias.clone(),
                         label: device.label.clone().unwrap_or_else(|| alias.clone()),

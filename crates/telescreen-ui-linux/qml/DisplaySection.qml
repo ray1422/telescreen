@@ -12,7 +12,7 @@ ColumnLayout {
     property var controlRequests: []
     signal intent(var intent)
 
-    readonly property var shown: display.devices.filter(d => d.candidates.length > 0)
+    readonly property var shown: display.devices.filter(d => d.candidates.length > 0 || d.switch_back === true)
 
     function deviceText() {
         if (display.devices.length !== 1)
@@ -97,6 +97,41 @@ ColumnLayout {
                             r.peer === modelData.target && r.device === deviceItem.modelData.device) ?? null
                         separator: index > 0 || (deviceItem.index > 0 && root.shown.length === 1)
                         onIntent: intent => root.intent(intent)
+                    }
+                }
+                TextRow {
+                    visible: deviceItem.modelData.candidates.length === 0
+                    text: qsTr("No handoff routes in the config")
+                    dim: true
+                }
+                QQC2.ItemDelegate {
+                    visible: deviceItem.modelData.switch_back === true
+                    Layout.fillWidth: true
+                    implicitHeight: Kirigami.Units.gridUnit * 3
+                    leftPadding: Kirigami.Units.largeSpacing
+                    rightPadding: Kirigami.Units.largeSpacing
+                    text: qsTr("Switch back to this computer")
+                    onClicked: root.intent({
+                        kind: "switch_back",
+                        display: root.display.token,
+                        device: deviceItem.modelData.device,
+                    })
+                    background: Rectangle {
+                        color: parent.hovered ? Qt.alpha(Kirigami.Theme.textColor, 0.05) : "transparent"
+                    }
+                    contentItem: RowLayout {
+                        spacing: Kirigami.Units.largeSpacing
+                        Kirigami.Icon {
+                            source: "edit-undo"
+                            implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                            implicitHeight: implicitWidth
+                            opacity: 0.6
+                        }
+                        QQC2.Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Switch back to this computer")
+                            elide: Text.ElideRight
+                        }
                     }
                 }
             }

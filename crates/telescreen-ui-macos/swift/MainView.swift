@@ -311,20 +311,27 @@ private struct DisplayGroup: View {
             case "failed":
                 note(display.matching.error ?? "portal-match failed")
             default:
-                let rows = display.devices.flatMap { device in
-                    device.candidates.map { (device, $0) }
-                }
-                if rows.isEmpty {
+                if display.devices.isEmpty {
                     note("No handoff routes in the config")
                 }
-                ForEach(Array(rows.enumerated()), id: \.element.1.id) { index, row in
-                    if index > 0 { RowDivider() }
-                    CandidateRow(
-                        display: display, device: row.0, candidate: row.1,
-                        request: screen.controlRequests.first {
-                            $0.peer == row.1.target && $0.device == row.0.device
-                        },
-                        style: .window)
+                ForEach(Array(display.devices.enumerated()), id: \.element.id) { deviceIndex, device in
+                    if deviceIndex > 0 { RowDivider() }
+                    if device.candidates.isEmpty {
+                        note("No handoff routes in the config")
+                    }
+                    ForEach(Array(device.candidates.enumerated()), id: \.element.id) { index, candidate in
+                        if index > 0 { RowDivider() }
+                        CandidateRow(
+                            display: display, device: device, candidate: candidate,
+                            request: screen.controlRequests.first {
+                                $0.peer == candidate.target && $0.device == device.device
+                            },
+                            style: .window)
+                    }
+                    if device.switchBack {
+                        if !device.candidates.isEmpty { RowDivider() }
+                        SwitchBackRow(display: display, device: device, style: .window)
+                    }
                 }
             }
         }

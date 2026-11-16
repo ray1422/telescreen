@@ -218,6 +218,10 @@ enum Pending {
         target: ComputerId,
         device: DeviceId,
     },
+    /// The steps of "Switch back" (ACT-8).
+    SwitchBack {
+        device: DeviceId,
+    },
 }
 
 struct Portal {
@@ -946,6 +950,9 @@ impl Controller {
             Pending::SwitchOnly { target, device } => {
                 self.switch_only_done(target, device, output);
             }
+            Pending::SwitchBack { device } => {
+                self.switch_back_done(device, output);
+            }
             Pending::HandBackInputTarget { prompt, device } => {
                 let owner = Owner::HandBack(device.clone());
                 if self.verifications.is_current(&owner, prompt) {
@@ -1033,6 +1040,7 @@ impl Controller {
                 target,
             } => self.switch_display_only(&display, device, target),
             Intent::LetControl { peer, device } => self.let_control(peer, device),
+            Intent::SwitchBack { display, device } => self.switch_back(&display, device),
             Intent::SourceHandBack { portal } => {
                 if let Some(id) = portal.or_else(|| self.main_portal()) {
                     self.request_hand_back(id);

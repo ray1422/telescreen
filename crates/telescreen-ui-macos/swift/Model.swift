@@ -57,7 +57,22 @@ struct MenuDevice: Decodable, Equatable, Identifiable {
     let label: String
     let state: String
     let candidates: [MenuCandidate]
+    let switchBack: Bool
     var id: String { device }
+
+    private enum CodingKeys: String, CodingKey {
+        case device, alias, label, state, candidates, switchBack
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        device = try values.decode(String.self, forKey: .device)
+        alias = try values.decode(String.self, forKey: .alias)
+        label = try values.decode(String.self, forKey: .label)
+        state = try values.decode(String.self, forKey: .state)
+        candidates = try values.decode([MenuCandidate].self, forKey: .candidates)
+        switchBack = try values.decodeIfPresent(Bool.self, forKey: .switchBack) ?? false
+    }
 }
 
 struct MenuCandidate: Decodable, Equatable, Identifiable {

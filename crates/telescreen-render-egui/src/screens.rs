@@ -383,6 +383,7 @@ mod tests {
                         devices: vec![
                             MenuDevice {
                                 in_session: false,
+                                switch_back: false,
                                 device: "no-route".into(),
                                 alias: "Other".into(),
                                 label: "Other".into(),
@@ -391,6 +392,7 @@ mod tests {
                             },
                             MenuDevice {
                                 in_session: false,
+                                switch_back: false,
                                 device: "shared".into(),
                                 alias: "Monitor".into(),
                                 label: "Monitor".into(),
