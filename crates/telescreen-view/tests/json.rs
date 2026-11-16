@@ -25,6 +25,8 @@ fn menu() -> MenuScreen {
                         key: "Return".into(),
                     },
                     video_input: VideoInput::Unverified,
+                    keys_only: false,
+                    switch_back: false,
                 },
             },
             MenuSession {
@@ -49,6 +51,7 @@ fn menu() -> MenuScreen {
             can_refresh: true,
             devices: vec![MenuDevice {
                 in_session: false,
+                switch_back: true,
                 device: DeviceId::from("shared-lg"),
                 alias: "Desktop".into(),
                 label: "Desktop".into(),
@@ -62,6 +65,8 @@ fn menu() -> MenuScreen {
                     control_only: Some("offline".into()),
                     primary: None,
                     wake: WakeAction::Available,
+                    stage: None,
+                    log_in: LogInAction::Hint,
                 }],
             }],
         }],
@@ -73,6 +78,7 @@ fn menu() -> MenuScreen {
             waiting: true,
         }],
         clipboard: Some(true),
+        login_hint: None,
     }
 }
 
@@ -94,7 +100,9 @@ fn ui18_the_menu_json_shape() {
                     "role": {
                         "kind": "source",
                         "phase": {"kind": "waiting_for_ack", "key": "Return"},
-                        "video_input": "unverified"
+                        "video_input": "unverified",
+                        "keys_only": false,
+                        "switch_back": false
                     }
                 },
                 {
@@ -125,9 +133,12 @@ fn ui18_the_menu_json_shape() {
                         "switch_display_only": null,
                         "control_only": "offline",
                         "primary": null,
-                        "wake": {"kind": "available"}
+                        "wake": {"kind": "available"},
+                        "stage": null,
+                        "log_in": {"kind": "hint"}
                     }],
-                    "in_session": false
+                    "in_session": false,
+                    "switch_back": true
                 }]
             }],
             "control_requests": [{
@@ -137,7 +148,8 @@ fn ui18_the_menu_json_shape() {
                 "device_label": "Desktop",
                 "waiting": true
             }],
-            "clipboard": true
+            "clipboard": true,
+            "login_hint": null
         })
     );
     let back: MenuScreen = serde_json::from_value(value).unwrap();
@@ -179,6 +191,10 @@ fn ui18_each_intent_round_trips_as_json() {
             target: pc1(),
         },
         Intent::Wake { target: pc1() },
+        Intent::SwitchBack {
+            display: lg(),
+            device: dev(),
+        },
         Intent::ControlOnly {
             display: lg(),
             device: dev(),
@@ -310,4 +326,29 @@ fn act7_ui18_the_primary_and_wake_json_shape() {
         serde_json::to_value(WakeAction::Hidden).unwrap(),
         json!({"kind": "hidden"})
     );
+}
+
+#[test]
+fn act8_ui18_the_switch_back_json_shape() {
+    // The applet sends this text (UI-18).
+    let intent: Intent = serde_json::from_value(json!({
+        "kind": "switch_back",
+        "display": "lg",
+        "device": "shared-lg"
+    }))
+    .unwrap();
+    assert_eq!(
+        intent,
+        Intent::SwitchBack {
+            display: DisplayToken::from("lg"),
+            device: DeviceId::from("shared-lg"),
+        }
+    );
+    // A menu from a version with no `switch_back` reads as "no row".
+    let mut value = serde_json::to_value(menu()).unwrap();
+    let device = &mut value["displays"][0]["devices"][0];
+    assert_eq!(device["switch_back"], json!(true));
+    device.as_object_mut().unwrap().remove("switch_back");
+    let back: MenuScreen = serde_json::from_value(value).unwrap();
+    assert!(!back.displays[0].devices[0].switch_back);
 }

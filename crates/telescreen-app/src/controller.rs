@@ -30,7 +30,7 @@ use telescreen_core::session::lease::LeaseTable;
 use telescreen_core::session::source::{HandoffResult, SourcePhase, SourceSession};
 use telescreen_core::session::target::{TargetPhase, TargetSession};
 use telescreen_core::verifier::VerifierEvent;
-use telescreen_core::wire::{EndReason, HandBackOutcome, Message};
+use telescreen_core::wire::{EndReason, HandBackOutcome, Message, Stage};
 use telescreen_transport::{DialTarget, NetCommand, NetEvent};
 use telescreen_view::{Intent, Matching, PromptId, PromptPresenter};
 
@@ -218,6 +218,10 @@ enum Pending {
         target: ComputerId,
         device: DeviceId,
     },
+    /// The steps of "Switch back" (ACT-8).
+    SwitchBack {
+        device: DeviceId,
+    },
 }
 
 struct Portal {
@@ -241,6 +245,8 @@ struct Portal {
     /// The session to start after `portal-match` (FLOW-17, ACT-1, ACT-4).
     pending_start: Option<PendingStart>,
     session: Option<SourceSession>,
+    login_start: bool,
+    waiting_for_desktop: bool,
     pointer: Point,
     notice: Option<String>,
 }
@@ -273,6 +279,9 @@ pub struct Controller {
     next_portal: u64,
     next_match: u64,
     connected: BTreeSet<ComputerId>,
+    stages: BTreeMap<ComputerId, Stage>,
+    login_hint: Option<(DisplayToken, DeviceId, ComputerId)>,
+    last_dial: BTreeMap<ComputerId, Instant>,
     /// The peers with a dial that did not report a result (NET-10).
     dialing: BTreeSet<ComputerId>,
     /// The newest search result of each peer (NET-16).
@@ -298,7 +307,17 @@ pub struct Controller {
     /// The destination verifications of sessions and hand backs (VER-1).
     verifications: Verifications,
     next_prompt: u64,
-    pending_hand_backs: BTreeSet<(ComputerId, DeviceId)>,
+    /// The hand backs that this computer waits for, with the time at which
+    /// the wait ends (HB-4).
+    pending_hand_backs: BTreeMap<(ComputerId, DeviceId), Instant>,
+    /// The peers of an automatic dial (STG-7, STG-9). A failure of such a
+    /// dial makes no notice: the dial repeats.
+    auto_dials: BTreeSet<ComputerId>,
+    /// The display of the portal of each hand back that this computer waits
+    /// for (`pending_hand_backs`). If the hand back is not possible, this
+    /// computer runs its `reclaim` steps for the device on that display
+    /// (HB-4).
+    hand_back_displays: BTreeMap<(ComputerId, DeviceId), DisplayToken>,
     /// Control requests that this peer sent, with their deadline (ACT-6). A
     /// request waits in `unsent_control` until its peer connects.
     control_requests: BTreeMap<(ComputerId, DeviceId), Instant>,
@@ -326,6 +345,8 @@ const MAX_NOTICES: usize = 8;
 
 /// ADR 0007: the heartbeat interval. The transport closes a connection after 5 s.
 const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(1);
+/// The longest wait for the answer to a hand back request (HB-4).
+const HAND_BACK_ANSWER: std::time::Duration = std::time::Duration::from_secs(30);
 const DISCOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
 const SEARCH_TIME: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -446,6 +467,9 @@ impl Controller {
             next_portal: 1,
             next_match: 1,
             connected: BTreeSet::new(),
+            stages: BTreeMap::new(),
+            login_hint: None,
+            last_dial: BTreeMap::new(),
             dialing: BTreeSet::new(),
             found: HashMap::new(),
             search_deadline: None,
@@ -461,7 +485,9 @@ impl Controller {
             next_job: 1,
             verifications,
             next_prompt: 1,
-            pending_hand_backs: BTreeSet::new(),
+            pending_hand_backs: BTreeMap::new(),
+            auto_dials: BTreeSet::new(),
+            hand_back_displays: BTreeMap::new(),
             control_requests: BTreeMap::new(),
             unsent_control: BTreeSet::new(),
             control_matches: BTreeMap::new(),
@@ -519,6 +545,7 @@ impl Controller {
             self.stop_hand_back_verification(&device);
         }
         self.pending_hand_backs.clear();
+        self.hand_back_displays.clear();
         self.update_clipboard();
         for peer in std::mem::take(&mut self.connected) {
             self.ports.net.send(NetCommand::Close { peer });
@@ -652,6 +679,8 @@ impl Controller {
             self.stop_discovery();
         }
         self.expire_control_requests(now);
+        self.expire_hand_backs(now);
+        self.retry_login_targets();
         if self
             .last_heartbeat
             .is_none_or(|t| now.duration_since(t) >= HEARTBEAT)
@@ -684,12 +713,19 @@ impl Controller {
                     self.label_of(&peer)
                 ));
             }
-            NetEvent::Connected { peer } => {
+            NetEvent::Connected { peer, stage } => {
+                self.auto_dials.remove(&peer);
+                self.now = now;
+                self.stages.remove(&peer);
+                if let Some(stage) = stage {
+                    self.stages.insert(peer.clone(), stage);
+                }
                 self.dialing.remove(&peer);
                 self.connected.insert(peer.clone());
                 if !self.candidate_to_search() {
                     self.stop_search();
                 }
+                self.attach_desktop(&peer);
                 self.send_control_requests(&peer);
                 for id in self.portal_ids() {
                     self.start_pending_handoff_in(id);
@@ -697,16 +733,19 @@ impl Controller {
             }
             NetEvent::Disconnected { peer, reason } => {
                 self.connected.remove(&peer);
+                self.stages.remove(&peer);
                 self.peer_lost(&peer);
                 self.notice(format!("{} disconnected: {reason}", self.label_of(&peer)));
             }
             NetEvent::DialFailed { peer, reason } => {
                 self.dialing.remove(&peer);
                 self.dial_failed(&peer);
-                self.notice(format!(
-                    "Cannot connect to {}: {reason}",
-                    self.label_of(&peer)
-                ));
+                if !self.auto_dials.remove(&peer) {
+                    self.notice(format!(
+                        "Cannot connect to {}: {reason}",
+                        self.label_of(&peer)
+                    ));
+                }
             }
             NetEvent::Refused { remote, reason } => {
                 self.notice(format!("Refused a connection from {remote}: {reason}"));
@@ -725,7 +764,41 @@ impl Controller {
         }
     }
 
+    /// HB-4: a target that does not answer a hand back in `HAND_BACK_ANSWER`
+    /// cannot hand the display back. A later disconnect must not run the
+    /// `reclaim` steps: the user can work on the target then.
+    fn expire_hand_backs(&mut self, now: Instant) {
+        let late: Vec<_> = self
+            .pending_hand_backs
+            .iter()
+            .filter(|(_, deadline)| now >= **deadline)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in late {
+            self.pending_hand_backs.remove(&key);
+            let label = self.label_of(&key.0);
+            self.notice(format!("{label} did not answer the hand back."));
+            if let Some(display) = self.hand_back_displays.remove(&key) {
+                self.reclaim_after_failed_recovery(&display, key.1, &label);
+            }
+        }
+    }
+
     fn peer_lost(&mut self, peer: &ComputerId) {
+        // HB-4: the target cannot answer the hand back any more.
+        let stranded: Vec<_> = self
+            .pending_hand_backs
+            .keys()
+            .filter(|(target, _)| target == peer)
+            .cloned()
+            .collect();
+        for key in stranded {
+            self.pending_hand_backs.remove(&key);
+            if let Some(display) = self.hand_back_displays.remove(&key) {
+                let label = self.label_of(peer);
+                self.reclaim_after_failed_recovery(&display, key.1, &label);
+            }
+        }
         for id in self.portals_to(peer) {
             let actions = self
                 .source_session_mut(id)
@@ -840,7 +913,12 @@ impl Controller {
         let actions = session.on_message(message, now);
         if let Some(device) = hand_back_device {
             self.stop_hand_back_verification(&device);
-            self.pending_hand_backs.insert((peer.clone(), device));
+            if let Some(display) = self.portals.get(&id).map(|p| p.display.token.clone()) {
+                self.hand_back_displays
+                    .insert((peer.clone(), device.clone()), display);
+            }
+            self.pending_hand_backs
+                .insert((peer.clone(), device), now + HAND_BACK_ANSWER);
         }
         if let Message::SessionRefused { reason, .. } = message
             && refused
@@ -946,6 +1024,9 @@ impl Controller {
             Pending::SwitchOnly { target, device } => {
                 self.switch_only_done(target, device, output);
             }
+            Pending::SwitchBack { device } => {
+                self.switch_back_done(device, output);
+            }
             Pending::HandBackInputTarget { prompt, device } => {
                 let owner = Owner::HandBack(device.clone());
                 if self.verifications.is_current(&owner, prompt) {
@@ -1033,9 +1114,24 @@ impl Controller {
                 target,
             } => self.switch_display_only(&display, device, target),
             Intent::LetControl { peer, device } => self.let_control(peer, device),
+            Intent::SwitchBack { display, device } => self.switch_back(&display, device),
+            Intent::OpenLoginHint {
+                display,
+                device,
+                target,
+            } => self.open_login_hint(&display, device, target),
+            Intent::CloseLoginHint => self.close_login_hint(),
+            Intent::SwitchAndLogIn {
+                display,
+                device,
+                target,
+            } => self.switch_and_log_in(&display, device, target),
             Intent::SourceHandBack { portal } => {
                 if let Some(id) = portal.or_else(|| self.main_portal()) {
-                    self.request_hand_back(id);
+                    // STG-5: a login stage has no hand back.
+                    if !self.source_session(id).is_some_and(|s| s.is_keys_only()) {
+                        self.request_hand_back(id);
+                    }
                 }
             }
         }

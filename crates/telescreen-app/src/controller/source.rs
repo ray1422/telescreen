@@ -15,7 +15,7 @@ use telescreen_transport::{DialTarget, NetCommand};
 use telescreen_view::{DeviceChoice, Matching};
 
 use super::portal_match::{Candidate, MatchOwner, MatchResult};
-use super::{AckOrigin, Controller, Job, Pending, Portal, SEARCH_TIME};
+use super::{AckOrigin, Controller, HAND_BACK_ANSWER, Job, Pending, Portal, SEARCH_TIME};
 
 impl Controller {
     /// The ids of the portals that exist now (FLOW-25).
@@ -93,6 +93,8 @@ impl Controller {
                 device: None,
                 pending_start: None,
                 session: None,
+                login_start: false,
+                waiting_for_desktop: false,
                 pointer: Point::default(),
                 notice: None,
             },
@@ -268,6 +270,9 @@ impl Controller {
             }
         }
         if !targets.is_empty() {
+            if !self.dialing.contains(&peer) {
+                self.last_dial.insert(peer.clone(), self.now);
+            }
             self.dialing.insert(peer.clone());
             self.ports.net.send(NetCommand::Dial { peer, targets });
         }
@@ -285,7 +290,15 @@ impl Controller {
 
     /// True if a candidate of a display has no connection and can be found.
     pub(super) fn candidate_to_search(&self) -> bool {
-        self.display_cache
+        self.login_hint.as_ref().is_some_and(|(_, _, peer)| {
+            !self.connected.contains(peer) && self.discovery_enabled(peer)
+        }) || self.portals.values().any(|p| {
+            p.waiting_for_desktop
+                && p.session.as_ref().is_some_and(|s| {
+                    !self.connected.contains(s.target()) && self.discovery_enabled(s.target())
+                })
+        }) || self
+            .display_cache
             .iter()
             .flat_map(|display| self.display_peers(&display.token))
             .any(|peer| !self.connected.contains(&peer) && self.discovery_enabled(&peer))
@@ -344,6 +357,10 @@ impl Controller {
     }
 
     pub(super) fn end_portal_session(&mut self, id: PortalId, reason: EndReason) {
+        if self.portals.get(&id).is_some_and(|p| p.waiting_for_desktop) {
+            self.remove_portal(id);
+            return;
+        }
         let actions = match self.source_session_mut(id) {
             Some(session) => session.end(reason),
             None => return,
@@ -469,6 +486,66 @@ impl Controller {
             .any(SourceSession::ack_wanted)
     }
 
+    /// FLOW-27: this computer cannot send input to the target of the portal.
+    /// The user must not stay with a display that shows a computer that the
+    /// user cannot control. The source asks the target for a hand back. If
+    /// that is not possible, it ends the session and runs its `reclaim` steps.
+    pub(super) fn recover_display(&mut self, id: PortalId, cause: &str, reason: EndReason) {
+        let Some(session) = self.source_session(id).filter(|s| !s.is_finished()) else {
+            return;
+        };
+        let target = session.target().clone();
+        let device = session.device().clone();
+        let phase = session.phase();
+        let switched = session.video_input() != telescreen_core::session::VideoInput::Unchanged;
+        let Some(display) = self.portals.get(&id).map(|p| p.display.token.clone()) else {
+            return;
+        };
+        let label = self.label_of(&target);
+        // STG-5: a login stage has no hand back. The session ends, and the
+        // `End` releases the held keys on the target (STG-10).
+        let keys_only = session.is_keys_only();
+        let can_hand_back = !keys_only
+            && matches!(phase, SourcePhase::Verifying | SourcePhase::Forwarding)
+            && self.connected.contains(&target);
+        if can_hand_back {
+            self.notice(format!(
+                "Telescreen cannot send the input to {label}: {cause}. It asks {label} to hand the display back."
+            ));
+            self.request_hand_back(id);
+            return;
+        }
+        self.notice(format!(
+            "Telescreen cannot send the input to {label}: {cause}."
+        ));
+        let actions = self.end_actions(id, reason);
+        self.run_source_actions(id, actions);
+        if switched {
+            self.reclaim_after_failed_recovery(&display, device, &label);
+        }
+    }
+
+    /// HB-4: a hand back is not possible, or it failed. This computer runs
+    /// its `reclaim` steps for the device, or it tells the user what to do.
+    pub(super) fn reclaim_after_failed_recovery(
+        &mut self,
+        display: &DisplayToken,
+        device: DeviceId,
+        label: &str,
+    ) {
+        let has_reclaim = self
+            .local_device(&device)
+            .is_some_and(|(_, d)| d.reclaim.is_some());
+        if has_reclaim {
+            self.notice("Telescreen switches the display back with the reclaim steps.".into());
+            self.switch_back(display, device);
+        } else {
+            self.notice(format!(
+                "Switch the display by hand: {label} did not hand it back, and this computer has no reclaim steps."
+            ));
+        }
+    }
+
     /// "Hand back" in the session row of a portal: request the hand back of
     /// that portal only (HB-3).
     pub fn request_hand_back(&mut self, id: PortalId) {
@@ -500,7 +577,11 @@ impl Controller {
         };
         // FLOW-6: stop each old input stream of this device first, in both roles.
         self.end_device_sessions(&device);
-        let (session, actions) = SourceSession::start(target, device);
+        let (session, actions) = if self.portals.get(&id).is_some_and(|p| p.login_start) {
+            SourceSession::start_keys_only(target, device)
+        } else {
+            SourceSession::start(target, device)
+        };
         if let Some(portal) = self.portals.get_mut(&id) {
             portal.session = Some(session);
             portal.notice = None;
@@ -525,7 +606,7 @@ impl Controller {
         let Some(route) = route else {
             return Some("no handoff route".into());
         };
-        if route.target_device.input_target.is_none() {
+        if !self.in_login_stage(target) && route.target_device.input_target.is_none() {
             return Some(format!("{} has no input-target for this device", target));
         }
         if let Capability::Missing(reason) = &self.ports.capabilities.capture {
@@ -552,9 +633,9 @@ impl Controller {
             .portals
             .iter()
             .filter(|(_, p)| {
-                p.session
-                    .as_ref()
-                    .is_some_and(|s| !s.is_finished() && s.device() == device)
+                p.session.as_ref().is_some_and(|s| {
+                    (!s.is_finished() || p.waiting_for_desktop) && s.device() == device
+                })
             })
             .map(|(id, _)| *id)
             .collect();
@@ -568,7 +649,8 @@ impl Controller {
     /// state.
     pub(super) fn end_device_sessions(&mut self, device: &DeviceId) {
         self.stop_hand_back_verification(device);
-        self.pending_hand_backs.retain(|(_, id)| id != device);
+        self.pending_hand_backs.retain(|(_, id), _| id != device);
+        self.hand_back_displays.retain(|(_, id), _| id != device);
         self.end_portal_session_of(device);
         let incoming: Vec<_> = self
             .targets()
@@ -581,6 +663,9 @@ impl Controller {
     }
 
     pub(super) fn run_source_actions(&mut self, id: PortalId, actions: Vec<SourceAction>) {
+        if self.portals.get(&id).is_some_and(|p| p.waiting_for_desktop) {
+            return;
+        }
         for action in actions {
             let Some(session) = self.source_session(id) else {
                 return;
@@ -591,7 +676,14 @@ impl Controller {
                     if matches!(message, Message::HandBackRequest { .. }) {
                         let device = session.device().clone();
                         self.stop_hand_back_verification(&device);
-                        self.pending_hand_backs.insert((target.clone(), device));
+                        if let Some(display) =
+                            self.portals.get(&id).map(|p| p.display.token.clone())
+                        {
+                            self.hand_back_displays
+                                .insert((target.clone(), device.clone()), display);
+                        }
+                        self.pending_hand_backs
+                            .insert((target.clone(), device), self.now + HAND_BACK_ANSWER);
                     }
                     self.ports.net.send(NetCommand::Send {
                         peer: target,
@@ -600,16 +692,32 @@ impl Controller {
                 }
                 SourceAction::RunHandoff => self.run_handoff(id),
                 SourceAction::StartForwarding => {
+                    let keys_only = session.is_keys_only();
                     self.set_guard(id, false);
                     match self.ports.capture.forward(id) {
                         Ok(()) => {
+                            let blocked = self.ports.capture.keys_blocked();
+                            // A login stage gets keys only. With blocked
+                            // keys it gets no input (FLOW-27).
+                            if blocked && keys_only {
+                                self.recover_display(
+                                    id,
+                                    "an application on this computer holds secure keyboard input",
+                                    EndReason::PermissionLost,
+                                );
+                                return;
+                            }
+                            if blocked {
+                                self.notice(
+                                    "The keys do not go to the target now: an application on this computer holds secure keyboard input, for example a password prompt in a terminal or a browser. The pointer works."
+                                        .into(),
+                                );
+                            }
                             self.send_pointer(id);
                             self.sync_portal_state(id);
                         }
                         Err(e) => {
-                            self.notice(format!("Input capture failed: {e}"));
-                            let actions = self.end_actions(id, EndReason::PermissionLost);
-                            self.run_source_actions(id, actions);
+                            self.recover_display(id, &e.to_string(), EndReason::PermissionLost);
                             return;
                         }
                     }
@@ -624,7 +732,19 @@ impl Controller {
         if finished {
             self.set_guard(id, false);
             self.ports.capture.disarm(id);
-            self.close_session_portal(id);
+            let login_complete = self.source_session(id).is_some_and(|s| {
+                s.is_keys_only() && s.phase() == SourcePhase::Ended(EndReason::LoginComplete)
+            });
+            if login_complete {
+                if let Some(portal) = self.portals.get_mut(&id) {
+                    portal.waiting_for_desktop = true;
+                    if let Some(session) = &portal.session {
+                        self.last_dial.insert(session.target().clone(), self.now);
+                    }
+                }
+            } else {
+                self.close_session_portal(id);
+            }
         }
         self.update_clipboard();
     }
@@ -717,10 +837,16 @@ impl Controller {
     /// An event of a portal goes to that portal; an event of a closed portal does
     /// nothing. The events with no portal apply to all portals (FLOW-25).
     pub fn on_captured(&mut self, event: CapturedEvent) {
+        if matches!(event, CapturedEvent::Overflow) {
+            // FLOW-27: the source cannot send input any more.
+            for id in self.portal_ids() {
+                self.recover_display(id, "the input queue is full", EndReason::QueueOverflow);
+            }
+            return;
+        }
         let all: fn(&mut SourceSession) -> Vec<SourceAction> = match event {
             CapturedEvent::InputLost => SourceSession::on_input_lost,
             CapturedEvent::SafetyExit => |s| s.end(EndReason::SafetyExit),
-            CapturedEvent::Overflow => |s| s.end(EndReason::QueueOverflow),
             other => return self.on_portal_captured(other),
         };
         for id in self.portal_ids() {
@@ -823,13 +949,17 @@ impl Controller {
 
     fn is_offline_candidate(&self, peer: &ComputerId) -> bool {
         !self.connected.contains(peer)
-            && self.portal_ids().into_iter().any(|id| {
-                self.portal_device(id).is_some_and(|device| {
-                    routes::candidates(&self.config, device)
-                        .iter()
-                        .any(|route| route.target == peer)
-                })
-            })
+            && (self
+                .login_hint
+                .as_ref()
+                .is_some_and(|(_, _, target)| target == peer)
+                || self.portal_ids().into_iter().any(|id| {
+                    self.portal_device(id).is_some_and(|device| {
+                        routes::candidates(&self.config, device)
+                            .iter()
+                            .any(|route| route.target == peer)
+                    })
+                }))
     }
 
     /// The discovery backend stopped because of an error (NET-12).

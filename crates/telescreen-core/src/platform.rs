@@ -197,6 +197,13 @@ pub trait InputCapture {
     /// The main loop calls this on each turn. A capture with a watchdog stops
     /// suppression when the heartbeat stops (IN-9).
     fn heartbeat(&mut self) {}
+    /// True if the OS blocks the capture of keys now, while the capture of the
+    /// pointer still works (IN-12). Example: an application on macOS holds
+    /// Secure Event Input. Forwarding starts also in this state; the app tells
+    /// the user.
+    fn keys_blocked(&self) -> bool {
+        false
+    }
 }
 
 /// The mDNS service type of Telescreen (NET-14).

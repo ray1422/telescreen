@@ -254,6 +254,7 @@ fn phase_text(phase: &SessionPhase) -> String {
         SessionPhase::Verifying => "The target verifies the display.".into(),
         SessionPhase::WaitingForAck { key } => format!("Press {key} in the portal."),
         SessionPhase::Forwarding => "Forwarding input.".into(),
+        SessionPhase::WaitingForDesktop => "Login complete. Waiting for the target.".into(),
         SessionPhase::Ended { reason } => format!("Session ended: {reason}."),
     }
 }
@@ -383,6 +384,7 @@ mod tests {
                         devices: vec![
                             MenuDevice {
                                 in_session: false,
+                                switch_back: false,
                                 device: "no-route".into(),
                                 alias: "Other".into(),
                                 label: "Other".into(),
@@ -391,6 +393,7 @@ mod tests {
                             },
                             MenuDevice {
                                 in_session: false,
+                                switch_back: false,
                                 device: "shared".into(),
                                 alias: "Monitor".into(),
                                 label: "Monitor".into(),
@@ -404,6 +407,8 @@ mod tests {
                                     control_only: Some("Target peer is offline".into()),
                                     primary: None,
                                     wake: Default::default(),
+                                    stage: None,
+                                    log_in: Default::default(),
                                 }],
                             },
                         ],

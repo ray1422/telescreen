@@ -118,6 +118,19 @@ class ConfigContract(unittest.TestCase):
                 {'special-keys': {'keep-on-source': 'volume'}}),
             'version': lambda c: c.update(version=2),
             'unknown field': lambda c: device(c).update(portal_match={}),
+            'unknown stage kind': lambda c: c['computers']['pc1'].update(
+                stages={'boot': {'from': ['mac']}}),
+            'stage with no from': lambda c: c['computers']['pc1'].update(stages={'login': {}}),
+            'empty from of a stage': lambda c: c['computers']['pc1'].update(
+                stages={'login': {'from': []}}),
+            'duplicate in from of a stage': lambda c: c['computers']['pc1'].update(
+                stages={'login': {'from': ['mac', 'mac']}}),
+            'label in a stage': lambda c: c['computers']['pc1'].update(
+                stages={'login': {'from': ['mac'], 'label': 'Login'}}),
+            'stage from this computer': lambda c: c['computers']['pc1'].update(
+                stages={'login': {'from': ['pc1']}}),
+            'stage from an unknown computer': lambda c: c['computers']['pc1'].update(
+                stages={'login': {'from': ['absent']}}),
             'duplicate device id': lambda c: c['computers']['mac']['devices'].update(
                 Duplicate={'id': 'shared-lg'}),
             'missing computer': lambda c: device(c)['handoff'].update(
@@ -127,6 +140,12 @@ class ConfigContract(unittest.TestCase):
             'missing connection': lambda c: c['computers']['pc1']['devices']['Monitor1'].update(
                 id='different'),
             'empty steps': lambda c: device(c)['handoff']['pc1'].update(steps=[]),
+            'empty reclaim steps': lambda c: device(c)['reclaim'].update(steps=[]),
+            'verify in reclaim': lambda c: device(c)['reclaim'].update(
+                verify={'driver': 'prompt'}),
+            'reclaim with no steps': lambda c: device(c).update(reclaim={}),
+            'relative program in reclaim': lambda c: device(c)['reclaim']['steps'][0].update(
+                command='bin/lg-helper select usb-c'),
             'bad timeout': lambda c: device(c)['portal-match'].update({'timeout-ms': 0}),
             'empty command list': lambda c: device(c)['portal-match'].update(command=[]),
             'empty command string': lambda c: device(c)['portal-match'].update(command=''),

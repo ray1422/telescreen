@@ -30,6 +30,9 @@ enum Command {
         /// The ID of this computer in the config, overriding the saved ID without saving it.
         #[arg(long)]
         computer: Option<String>,
+        /// Run a built-in stage, such as login (STG-2).
+        #[arg(long)]
+        stage: Option<String>,
         /// The Unix socket of the debug protocol (dev builds only,
         /// docs/debug-protocol.md).
         #[cfg(feature = "debug-protocol")]
@@ -61,6 +64,7 @@ fn main() -> ExitCode {
     let command = Cli::parse().command.unwrap_or(Command::Run {
         config: None,
         computer: None,
+        stage: None,
         #[cfg(feature = "debug-protocol")]
         debug_socket: None,
     });
@@ -78,9 +82,18 @@ fn run(command: Command) -> Result<(), String> {
         Command::Run {
             config,
             computer,
+            stage,
             #[cfg(feature = "debug-protocol")]
             debug_socket,
         } => {
+            if let Some(name) = stage {
+                telescreen_core::wire::Stage::from_name(&name)
+                    .ok_or_else(|| format!("unknown stage {name}"))?;
+                #[cfg(target_os = "linux")]
+                return telescreen_app::stage::run(config, computer);
+                #[cfg(not(target_os = "linux"))]
+                return Err("the login stage runs only on Linux".into());
+            }
             #[cfg(not(feature = "debug-protocol"))]
             let debug_socket = None;
             telescreen_app::ui::launch(telescreen_app::ui::Launch {

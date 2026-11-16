@@ -10,7 +10,7 @@ mod tls;
 pub mod trust;
 
 use telescreen_core::ids::ComputerId;
-use telescreen_core::wire::{Message, PointerDatagram};
+use telescreen_core::wire::{Message, PointerDatagram, Stage};
 
 pub use fingerprint::Fingerprint;
 pub use identity::Identity;
@@ -69,6 +69,9 @@ pub enum NetEvent {
     /// An authenticated connection to the peer is open (both sides pinned, Hello done).
     Connected {
         peer: ComputerId,
+        /// The stage that the peer told in its Hello (STG-5). `None`: a
+        /// desktop session.
+        stage: Option<Stage>,
     },
     Message {
         peer: ComputerId,

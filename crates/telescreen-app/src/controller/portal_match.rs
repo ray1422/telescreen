@@ -287,6 +287,7 @@ mod tests {
             input_target: None,
             verify: None,
             handoff: Default::default(),
+            reclaim: None,
         }
     }
 

@@ -56,7 +56,9 @@ The user plans to replace the UI library later (user, 2026-10-27). Thus:
 | M19 | `kde-scroll`: Chrome animates the scroll on KDE, thus the scroll feels slow (user, 2026-11-05) | Button scroll on KWin (IN-15, spike 5); one wheel unit at each scroll end releases the scroll target (spike 10, 2026-11-08) | done; the user checked the pointer shape and the scroll feel with a real trackpad; the wheel unit: code complete, the hardware test did not run |
 | M20 | `ui-redesign` (v0.600.0): spec section 4.7, ADR 0012, ADR 0013 (user, 2026-11-06) | The steps of M20 are done, and the user accepts the UI on macOS and on KDE | spec and ADRs done (2026-11-06); mockups continue |
 | M21 | `focus-scroll`: in v0.5.0 the keys went to the target with no end after Mission Control, and one application did not scroll (user, 2026-11-07) | The native focus is the only keyboard focus state (FLOW-22); the target warns while the portal is not on screen, and shows the source cursor on the warning (FLOW-26); macOS suppresses forwarded buttons (IN-17); each forwarded scroll has an end (IN-18); AC-51 to AC-54 pass | code done (2026-11-07): tests pass on macOS and Linux; the hardware tests AC-51 to AC-54 are open |
-| M22 | `arch-release`: the Arch package, the AppImage in the release, the applet in the Linux archives, the install methods of `install.sh` | DIST-6 to DIST-11: the `arch` jobs pass in CI; `install.sh` selects and installs each method on the Arch computer, interactive and with `--yes`; each user install has the applet; `README.md` has the options | code done (2026-11-10): the scripts, the workflows, and `telescreen self-check`. Tested in Docker on the Linux computer: the Arch package and the pacman install (also from `cat install.sh \| sh`), generic on Arch, native-user, the AppImage on Ubuntu 24.04, all checks failed, the change from a user install to native. Not tested: the workflows on GitHub, the tray with a new applet |
+| M22 | `arch-release`: the Arch package, the AppImage in the release, the applet in the Linux archives, the install methods of `install.sh` | DIST-6 to DIST-11: the `arch` jobs pass in CI; `install.sh` selects and installs each method on the Arch computer, interactive and with `--yes`; each user install has the applet; `README.md` has the options | code done (2026-11-10): the scripts, the workflows, and `telescreen self-check`. Tested in Docker on the Linux computer: the Arch package and the pacman install (also from `cat install.sh \| sh`), generic on Arch, native-user, the AppImage on Ubuntu 24.04, all checks failed, the change from a user install to native. Released as v0.504.0 (2026-11-10); the workflows passed, and a clean Arch container installed the published release with `curl | sh`. The user checked the applet in the KDE tray. Known gap: an old user install from install.sh before v0.504.0 has no `install-method`, so a change to native does not ask to remove it (the user decided not to fix it, 2026-11-10) |
+| M23 | `reclaim` (v0.505.0): "Switch back" with the `reclaim` steps of a device (ACT-8, user, 2026-11-16) | The acceptance tests of ACT-8 pass on macOS and on the Linux computer; AC-60 and AC-61 pass on the hardware | code done (2026-11-17): the config contract, the controller, and the three UIs; the automated tests pass on both computers. Not done: AC-60 and AC-61 on the hardware; the user did not see the row in the three UIs |
+| M24 | `login-stage` (v0.505.0): keys to the login screen of a Linux target (spec section 4.9, ADR 0015, user, 2026-11-16) | The acceptance tests of STG-1 to STG-11 pass on both computers; AC-62 to AC-66 pass on the hardware | code done (2026-11-17): the `stages` config, protocol 7, the stage sessions, the stage agent, `telescreen run --stage login` on Linux, the source flow, and the macOS UI; the automated tests pass on both computers; on the Linux computer the command refuses to start while a desktop session exists (STG-3). Hardware (user, 2026-11-17): AC-62 and AC-63 pass, after a fix that sends the waiting messages before a connection closes; AC-65 and AC-66 were seen during the tests. Not done: AC-64 on the hardware; the Qt UI and the Plasma applet do not show the login stage |
 
 ### M16: first binary release
 
@@ -146,9 +148,96 @@ The pairing UI is not scheduled. M20 makes the main window where it can go later
 
 - A pairing UI: spec section 4.8 (PAIR-1 to PAIR-8, ADR 0014, user, 2026-11-07), in a v0.6XX.0 version. Until then, pairing stays manual with `telescreen trust` (ADR 0004).
 - A question on the first use of the clipboard sync (user, 2026-10-27). Until then, the switch starts on (CLIP-1).
+- A setting "Start Telescreen at login" in the settings window (user, 2026-11-17). The settings window is not implemented (UI-14), and the repository installs no autostart file. Until then, the user configures the start at login by hand. The login stage needs it: after the login, the source waits until the Telescreen of the desktop session connects.
 - Touchpad gestures to a Linux target (user, 2026-10-27). niri gets gestures only from libinput, which reads finger positions from a touchpad device. Thus the target needs a uinput multitouch touchpad, and the macOS source must read the finger positions (for example `NSTouch` in the portal). Telescreen can change the finger count, because niri cannot (niri: three fingers switch workspaces and scroll columns, four fingers toggle the overview). Example: macOS four fingers become Linux three fingers, and the macOS three-finger drag stays a left-button drag. Conflict: macOS uses four-finger swipes for Spaces, and a Space change makes the portal leave fullscreen (UI-3). Alternative: map a gesture to a shortcut, with no tracking of the fingers.
 - Screen edges on KWin (user, 2026-11-04). The top-left hot corner does not open the overview through the uinput pointer, (issue 1). Probable cause, from the KWin 6.7 source (`Edge::check`): the first motion on an edge pushes the cursor back by 1 pixel, and the action needs a second motion on the edge 75 to 350 ms later. The source does not send a repeated position (NET-2). The kernel also does not send a repeated absolute axis value to the compositor. Thus the second motion does not arrive. Not confirmed with a measurement. Possible fix: the source sends a repeated position when it is on an edge of the portal, and the uinput pointer changes the value by 1 axis unit on each repeat.
 - The scroll source (user, 2026-10-27). The target injects each scroll as a touchpad scroll (`finger`), so niri binds for the mouse wheel (`Mod+WheelScroll…`) do not apply. Send the source (wheel or touchpad) from the source computer, and inject a wheel with discrete steps. A touchpad scroll stays a touchpad scroll; niri `Mod+TouchpadScroll…` binds apply to it.
+
+### Login screen control and the remote desktop portal (investigation, 2026-11-14)
+
+These are roadmap items with no version and no sequence (user, 2026-11-14). The design is not started. Each item needs an ADR and a change to spec section 2, which lists login screen control and video streaming as out of scope. The memo in the open questions of `docs/spec.md` has the first notes.
+
+Decisions of the user (2026-11-14):
+
+- Roadmap item 1: the user operates the login screen of a Linux peer from the source. It is sufficient that the user can log in. The user must see the login screen; a procedure with no picture is not acceptable.
+- Roadmap item 2: a handoff can open the portal as a remote desktop. The portal shows the picture of the physical display of the device. A remote virtual display is a different feature and is not part of this item.
+- The peer does not use automatic login. KWallet must open at the login. Thus the password must go through PAM at the login screen.
+- Key injection through uinput is accepted for the login screen.
+- The feature can be a separate operation that relates to a device. It does not have to be part of the screen handoff.
+- The config can get stages before the desktop session (login screen, later the boot loader). Not designed.
+- Use an existing project where one fits. Do not write a new implementation of a part that a good project has.
+
+Questions of 2026-11-14 and their answers:
+
+- X11 greeter only, or a Wayland greeter too: not applicable to the first version, which has no picture. The uinput keyboard does not depend on the greeter.
+- The identity and the trust keys before the login: the stage process runs with the account of the user, so it uses the usual files.
+- The handover to the Telescreen of the desktop session: STG-9 and STG-11.
+- The security rules for remote keys at a password field: STG-1 (`from`) and STG-5 (keys only, the target enforces it).
+- The handoff confirmation before the login: no `verify`; the device state is unverified (STG-8).
+- The test environment: the Linux test computer (user, 2026-11-17).
+
+The measured facts of the Linux test computer (2026-11-14) are in the local hardware notes. The local hardware notes are not in the repository.
+
+Decisions of the user for the first version (2026-11-16). They replace the items above where they differ:
+
+- The first version is remote control of the login screen with keys only. The picture comes later.
+- No service runs in the background. The user starts Telescreen on the target by hand when it is necessary, for example through SSH. It runs with the account of the user, so it reads the usual identity and trust keys. Thus the questions about the identity and the keys of a service before the login do not apply.
+- The start command is `telescreen run --stage login` (the name is a proposal of Claude). It also makes the computer discoverable, and it prints a notice about this, because discovery is not a part of the login.
+- Config: `stages` in the section of the computer that is controlled. The key is a built-in stage kind. Only `login` exists now, and a different key is an error. A computer has one stage of each kind at most. A stage has one key, `from`: the source computers that can control the stage, because a trusted fingerprint does not authorize (NET-4). Example: `stages: {login: {from: [mac]}}`. A stage has no `label` and no `input`: the display text and the permitted input are fixed for each kind. A stage belongs to a computer, not to a device. The desktop session is not a stage, and a config with no `stages` does not change. A later kind (for example a boot loader) is a new built-in key. The current stage is runtime state and is not in the config.
+- The config has no hint text and no start command for the source. The source shows the command with a copy button. The text comes from Telescreen.
+- The login stage has no `verify`. Forwarding starts after the connection, and the state is unverified (VER-2).
+- Tentative: the login stage sends keys only, with no pointer and no clipboard.
+- The control of a login stage also switches the display. The source runs its handoff steps for the device, then it opens the portal on that display, as "Switch & control". The portal takes the keys; there is no separate window for the keys. The user starts the action from the row of the target below a display, in the menu or in the main window, and that display gets the portal. The config does not relate a stage to a device.
+- The name of the action is "Switch & log in" (user, 2026-11-16: "switch & login"; Claude writes the verb as "log in"). The item in the overflow menu has an ellipsis, because it opens the hint window. The button in the hint window and the row subtitle have the same name.
+- The hint window has two states. First it shows the command and waits. When the target connects in the login stage, the wait line becomes a button. The display switches only after the user selects the button.
+- After the login, the control continues with no new action of the user (see the states below). The source waits with no time limit, until the Telescreen of the desktop session connects or the user ends the session.
+- The session of a login stage has "Switch back" (`reclaim`) and "End session". It has no "Hand back", because the target possibly cannot switch the display before the login.
+- A new device key `reclaim` with `steps`: how this computer switches the device back to itself. The new action "Switch back" runs it. The other computer does not have to run Telescreen. On 2026-11-16 the user kept "Hand back" and `reclaim` separate. On 2026-11-17 the user replaced this: `reclaim` is the fallback of each hand back that is not possible (HB-4), and of the recovery when the source cannot send input (FLOW-27).
+- Sequence that the user asked for: config, then mockups for the menu, then the implementation method, then the work.
+- Decisions of 2026-11-17 (user): the first version is a macOS source and a Linux target. "Switch back" is v0.505.0 (ACT-8, in `main`), and the login stage was v0.506.0 (spec section 4.9, ADR 0015). Both are small versions. Later on that day the user put the two features in one version, v0.505.0. The test environment is the Linux test computer. Telescreen does not start at the login on that computer now; the user configures it.
+
+States of the source for a login stage (proposal of Claude, 2026-11-16; the user agreed to the automatic continuation and to the wait with no time limit):
+
+| State | What the user sees | Next state |
+| --- | --- | --- |
+| 1. Wait for the stage | The hint window with the command | The target connects in the login stage: 2 |
+| 2. Stage connected | The hint window with the button | The user selects the button: 3 |
+| 3. Control of the login screen | The portal is open. Keys only. The device state is unverified | The target reports the login: 4. A wrong password stays in 3 |
+| 4. Wait for the desktop | The portal stays open. Keys stay on the source. The session card shows the wait | The Telescreen of the desktop session connects: 5 |
+| 5. Usual control | The same as an attach ("Control only", ACT-3): the target grants the lease, resolves `input-target`, and runs its `verify` | The usual rules |
+
+- Each state has "End session" and "Switch back". States 3 and 4 also end when the stage process stops, when the connection breaks, and with the safety exit (IN-8). Each end releases all held keys.
+- The target finds the login from the login manager service of the system (logind): a new session of the user on the seat. Then it tells the source, releases the keys, and stops, so that the Telescreen of the desktop session can listen on the same port.
+- The acknowledgement of the `prompt` verifier in state 5 is a key in the portal on the source (VER-4). Thus the user does not need the pointer on the target.
+- The continuation is general: a stage ends, and the source waits for the same computer in its next state. A later boot loader stage can use it.
+
+State after the implementation (2026-11-17; M23 and M24 in the table have the details):
+
+- The mockups are in the design canvas of the user (the row for the login stage). The user selected the name "Switch & log in" and agreed to continue; the user did not see the built UI.
+- The version number: v0.505.0 for the two features (user, 2026-11-17).
+- Measured on the test computer (2026-11-17; the details are in the local hardware notes): a uinput keyboard of a process that the user starts through SSH reaches the login screen. logind sends `SessionNew` for the desktop login, and its properties (`Class=user` with a seat) separate it from an SSH login. Desktop programs start less than 1 second after that event. Thus the stage process cannot always free the port before the Telescreen of the desktop session starts: that Telescreen must be able to stop the stage process and to bind again.
+- Not measured: keys with Shift and symbols on the login screen (the keyboard layout of the login screen), and the selection of the desktop session with keys.
+- Run on the test computer (2026-11-17): `telescreen run --stage login` at the login screen. It listens, makes the keyboard, and publishes its record. The source connects to it when the source config has the address. The command stops at the desktop login, and the Telescreen of the desktop session gets the port.
+- Open (2026-11-17): after a boot, the test computer at its login screen gets no mDNS answers from other computers, so the source does not find it by discovery. Discovery works some seconds after the first desktop login, and continues to work after a logout. The cause is not known. The system Avahi daemon is the only mDNS program before and after the login, and its log has no entry at the login. The user stopped the investigation (2026-11-17) and will use a fixed address. Thus the login stage must not depend on discovery; a possible design is that the stage process gets the address of the source from the SSH connection (not decided).
+
+Findings from documents (not tested on the hardware):
+
+- SDDM has no remote login and no remote control interface. A screen reader does not start on the SDDM greeter, so AT-SPI is not a reliable input path.
+- Input: a uinput keyboard does not depend on the greeter (X11, Wayland, or a text console). XTEST works only on an X11 greeter.
+- Picture of the login screen, by greeter:
+  - X11 greeter: an X11 screenshot. The `Xsetup` hook of SDDM runs as root and can start a small capture program. Reports about x11vnc with SDDM say that it works but is not stable.
+  - KWin greeter (SDDM in Wayland mode, Plasma Login Manager): the `org.kde.KWin.ScreenShot2` D-Bus interface. The caller needs an authorization. Its use on a greeter is not confirmed.
+  - All greeters: DRM/KMS capture. It needs `CAP_SYS_ADMIN`, a cursor merge, and a read of the GPU buffer through EGL. The NVIDIA driver is the risk.
+- A picture at 1 or 2 frames each second is sufficient for item 1. A stream is not necessary.
+- Item 2 runs in the user session. The ScreenCast portal with PipeWire is the standard capture path there. It has no GPU buffer problem and needs no privilege. Not measured: the ScreenCast support of the portal backend on niri.
+- Existing projects:
+  - ReFrame (Apache-2.0): DRM/KMS capture and uinput, a privileged streamer process, an unprivileged VNC server, and a session helper. It lists remote login and NVIDIA. Its README does not name SDDM or KWin. It is the model for the process split.
+  - kmsvnc (GPL-3.0): early development, one privileged process, no security. Not recommended.
+  - Sunshine (GPL-3.0): runs only in the user session.
+  - greetd: the login is an IPC protocol (`greetd-ipc(7)`), so a program can log in with no key injection and no picture. It replaces SDDM. The user did not decide on it.
+- Virtual displays: EVDI does not build on kernel 7.1 and later, and a KWin 6.8.2 crash report names it. VKMS needs the compositor to use it as a second GPU. Neither is necessary for items 1 and 2.
+- Before the operating system starts (firmware, GRUB): software cannot get input or a picture. The paths are a serial terminal of GRUB, a KVM-over-IP device, or a next-boot entry that the running system sets.
+- Plasma Login Manager replaces SDDM in KDE from Plasma 6.6. Arch does not change the enabled display manager service; the user changes it.
 
 ## Rules for each milestone
 

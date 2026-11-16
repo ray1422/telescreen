@@ -27,7 +27,9 @@ use telescreen_core::pointer::{Normalized, Point, Rect};
 use telescreen_core::session::VideoInput;
 use telescreen_core::session::source::HandoffResult;
 use telescreen_core::verifier::VerifierEvent;
-use telescreen_core::wire::{EndReason, HandBackOutcome, Message, PointerDatagram, RefuseReason};
+use telescreen_core::wire::{
+    EndReason, HandBackOutcome, Message, PointerDatagram, RefuseReason, Stage,
+};
 use telescreen_transport::{DialTarget, NetCommand, NetEvent};
 use telescreen_view::{
     Intent, Matching, PortalScreen, PromptId, PromptPresenter, PromptScreen, SessionPhase,
@@ -148,6 +150,10 @@ struct Log {
     clip_calls: Vec<&'static str>,
     /// Calls of the verifier port: "start <id> <driver>", "ack <id>", "stop <id>".
     verifier_calls: Vec<String>,
+    /// The OS blocks the capture of keys; the pointer works (IN-12).
+    keys_blocked: bool,
+    /// `InputCapture::forward` fails (FLOW-27).
+    forward_fails: bool,
 }
 
 impl Log {
@@ -200,7 +206,11 @@ impl InputCapture for Capture {
         Ok(())
     }
     fn forward(&mut self, portal: PortalId) -> Result<(), PlatformError> {
-        self.0.borrow_mut().log_capture(portal, "forward".into());
+        let mut log = self.0.borrow_mut();
+        if log.forward_fails {
+            return Err(PlatformError::Failed("the event tap is gone".into()));
+        }
+        log.log_capture(portal, "forward".into());
         Ok(())
     }
     fn disarm(&mut self, portal: PortalId) {
@@ -219,6 +229,9 @@ impl InputCapture for Capture {
         self.0
             .borrow_mut()
             .log_capture(portal, format!("focus {focused}"));
+    }
+    fn keys_blocked(&self) -> bool {
+        self.0.borrow().keys_blocked
     }
 }
 
@@ -386,6 +399,8 @@ struct Peer {
     id: ComputerId,
     controller: Controller,
     log: Shared,
+    /// The stage that this peer tells in its Hello (STG-5).
+    stage: Option<Stage>,
 }
 
 impl Peer {
@@ -514,6 +529,7 @@ fn peer_config(
         id: ComputerId::from(id),
         controller,
         log,
+        stage: None,
     }
 }
 
@@ -608,10 +624,20 @@ impl World {
                     let (a, b) = pair(&mut peers, i, j);
                     match command {
                         NetCommand::Dial { .. } => {
-                            a.controller
-                                .on_net(NetEvent::Connected { peer: b.id.clone() }, self.now);
-                            b.controller
-                                .on_net(NetEvent::Connected { peer: a.id.clone() }, self.now);
+                            a.controller.on_net(
+                                NetEvent::Connected {
+                                    peer: b.id.clone(),
+                                    stage: b.stage,
+                                },
+                                self.now,
+                            );
+                            b.controller.on_net(
+                                NetEvent::Connected {
+                                    peer: a.id.clone(),
+                                    stage: a.stage,
+                                },
+                                self.now,
+                            );
                         }
                         NetCommand::Send { message, .. } => {
                             b.controller.on_net(
@@ -3511,6 +3537,7 @@ fn net16_a_lost_connection_does_not_dial_again() {
     w.mac.controller.on_net(
         NetEvent::Connected {
             peer: ComputerId::from(PC1),
+            stage: None,
         },
         w.now,
     );
@@ -5424,4 +5451,1315 @@ fn act7_a_wake_intent_with_no_wake_config_sends_nothing() {
     });
     w.pump();
     assert!(w.mac.log.borrow().wakes.is_empty());
+}
+
+// ----- ACT-8: "Switch back" with the `reclaim` steps -----
+
+/// The config of the tests, with `reclaim` for the shared display on the Mac.
+fn reclaim_config() -> Config {
+    let mut config = config();
+    let device = config
+        .computers
+        .get_mut(&ComputerId::from("mac"))
+        .unwrap()
+        .devices
+        .get_mut("Desktop")
+        .unwrap();
+    let mut steps = device.handoff[&ComputerId::from("pc1")].steps.clone();
+    match &mut steps[0].driver {
+        Driver::Command(program) => program.argv[0] = "/bin/reclaim".into(),
+        other => panic!("the test config has a command step: {other:?}"),
+    }
+    device.reclaim = Some(telescreen_core::config::Handoff { steps });
+    config
+}
+
+/// The usual two peers. The config of the Mac has `reclaim`.
+fn reclaim_world() -> World {
+    let mut w = World::new();
+    w.mac = peer_config(
+        "mac",
+        vec![
+            display("builtin", -1500.0, 1500.0),
+            display("lg", 0.0, 3400.0),
+        ],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+        true,
+        reclaim_config(),
+    );
+    w
+}
+
+fn switch_back() -> Intent {
+    Intent::SwitchBack {
+        display: lg(),
+        device: shared(),
+    }
+}
+
+/// The first programs of the handoff jobs of the peer, in sequence.
+fn handoff_programs(peer: &Peer) -> Vec<String> {
+    peer.log
+        .borrow()
+        .target
+        .iter()
+        .filter_map(|t| t.strip_prefix("handoff ").map(str::to_owned))
+        .collect()
+}
+
+#[test]
+fn act8_switch_back_runs_the_reclaim_steps_and_verifies_on_this_computer() {
+    let mut w = reclaim_world();
+    act(&mut w, switch_back());
+    assert_eq!(handoff_programs(&w.mac), ["/bin/reclaim"]);
+    assert!(!w.mac.controller.has_portal(), "no portal");
+    assert!(!armed(&w.mac), "no capture");
+    // This computer verifies as the destination (VER-1), and the user
+    // acknowledges here (VER-4).
+    assert!(w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), VideoInput::Unverified);
+    let shown = w.mac.log.borrow().shown.last().cloned().expect("a prompt");
+    assert_eq!(
+        shown.1,
+        lg(),
+        "the prompt shows on the display of the device"
+    );
+    assert!(w.mac.controller.acknowledge(AckOrigin::Computer));
+    assert_eq!(mac_state(&w), VideoInput::Confirmed);
+}
+
+#[test]
+fn act8_switch_back_needs_no_peer_and_sends_no_message() {
+    // Not connected: no dial starts.
+    let mut w = reclaim_world();
+    w.mac.controller.on_intent(switch_back());
+    assert!(
+        w.mac.log.borrow().net.is_empty(),
+        "no network command: {:?}",
+        w.mac.log.borrow().net
+    );
+    w.pump();
+    assert!(w.mac.log.borrow().net.is_empty());
+    assert!(w.mac.controller.awaiting_local_ack());
+
+    // Connected: the peer gets no message and keeps its device state.
+    let mut w = reclaim_world();
+    connect(&mut w);
+    let before = pc1_state(&w);
+    w.mac.controller.on_intent(switch_back());
+    assert!(
+        w.mac.log.borrow().net.is_empty(),
+        "no message to the peer: {:?}",
+        w.mac.log.borrow().net
+    );
+    w.pump();
+    assert!(!w.pc1.controller.awaiting_local_ack());
+    assert_eq!(pc1_state(&w), before);
+    assert!(w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn act8_the_request_of_a_reclaim_step_names_this_computer_two_times() {
+    let mut w = reclaim_world();
+    w.mac.controller.on_intent(switch_back());
+    let mac = ComputerId::from("mac");
+    let log = w.mac.log.borrow();
+    let (_, job) = log.jobs.back().expect("a job");
+    let Job::Handoff { steps, request } = job else {
+        panic!("a handoff job: {job:?}");
+    };
+    assert_eq!(steps.len(), 1);
+    assert_eq!(request.computer_id, mac);
+    assert_eq!(request.source_computer_id, mac);
+    assert_eq!(request.target_computer_id, Some(mac));
+    assert_eq!(request.device.id, shared());
+    assert_eq!(request.session_id, None);
+}
+
+#[test]
+fn act8_switch_back_ends_the_session_of_the_device_first() {
+    let mut w = reclaim_world();
+    w.advance_to_forwarding();
+    assert!(w.mac.controller.has_portal());
+    act(&mut w, switch_back());
+    assert!(!w.mac.controller.has_portal(), "FLOW-6: the session ended");
+    assert!(w.pc1.controller.control_screen().incoming.is_empty());
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+    assert!(w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn act8_a_failed_reclaim_step_gives_a_notice_and_no_verification() {
+    // One step completed: the device state is unknown (FLOW-12).
+    let mut w = reclaim_world();
+    w.handoff = HandoffResult::Failed { completed_steps: 1 };
+    act(&mut w, switch_back());
+    assert!(has_notice(&w.mac, "The switch back failed"));
+    assert!(!w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), VideoInput::Unknown);
+
+    // No step completed: the device state does not change.
+    let mut w = reclaim_world();
+    let before = mac_state(&w);
+    w.handoff = HandoffResult::Failed { completed_steps: 0 };
+    act(&mut w, switch_back());
+    assert!(has_notice(&w.mac, "The switch back failed"));
+    assert!(!w.mac.controller.awaiting_local_ack());
+    assert_eq!(mac_state(&w), before);
+}
+
+#[test]
+fn act8_a_device_with_no_reclaim_runs_nothing() {
+    let mut w = World::new();
+    act(&mut w, switch_back());
+    assert_eq!(handoff_jobs(&w.mac), 0);
+    assert!(has_notice(&w.mac, "Cannot switch back"));
+    assert!(!w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn act8_ui18_the_menu_has_the_switch_back_row_only_with_reclaim() {
+    let mut w = reclaim_world();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    assert!(lg_row(&w.mac).devices[0].switch_back);
+
+    let mut w = World::new();
+    w.mac.controller.evaluate_displays();
+    w.pump();
+    assert!(!lg_row(&w.mac).devices[0].switch_back);
+}
+
+#[test]
+fn hb4_a_failed_hand_back_runs_the_reclaim_steps() {
+    // "Hand back" on the source: the target has no route back.
+    let mut w = world_with_no_route_back();
+    w.mac = mac_with(reclaim_config());
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_intent(Intent::SourceHandBack { portal: None });
+    w.pump();
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1", "/bin/reclaim"]);
+    assert!(w.mac.controller.awaiting_local_ack(), "ACT-8: verify here");
+
+    // "Hand back" on the target: its route back fails.
+    let mut w = reclaim_world();
+    w.advance_to_forwarding();
+    w.handoff = HandoffResult::Failed { completed_steps: 0 };
+    hand_back_on_pc1(&mut w);
+    assert_eq!(handoff_programs(&w.pc1), ["/bin/to-mac"]);
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim"),
+        "the source runs its own steps"
+    );
+}
+
+#[test]
+fn hb1_a_hand_back_that_works_does_not_run_the_reclaim_steps() {
+    let mut w = reclaim_world();
+    w.advance_to_forwarding();
+    w.mac
+        .controller
+        .on_intent(Intent::SourceHandBack { portal: None });
+    w.pump();
+    assert_eq!(handoff_programs(&w.pc1), ["/bin/to-mac"]);
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1"], "no reclaim");
+    assert!(w.mac.controller.awaiting_local_ack());
+}
+
+// ----- STG-6 to STG-10: the login stage of a target, on the source -----
+//
+// pc1 is not a controller in these tests: each test plays the login stage of
+// pc1 by hand, so that the tests do not depend on the stage agent.
+
+/// The config with `reclaim` on the Mac and the login stage on pc1 for the Mac.
+fn stage_config() -> Config {
+    let mut config = reclaim_config();
+    config
+        .computers
+        .get_mut(&ComputerId::from(PC1))
+        .unwrap()
+        .stages
+        .login = Some(telescreen_core::config::LoginStage {
+        from: vec![ComputerId::from("mac")],
+    });
+    config
+}
+
+fn mac_with(config: Config) -> Peer {
+    peer_config(
+        "mac",
+        vec![
+            display("builtin", -1500.0, 1500.0),
+            display("lg", 0.0, 3400.0),
+        ],
+        InputCapabilities {
+            capture: Capability::Available,
+            suppress: Capability::Available,
+            inject: Capability::Available,
+        },
+        true,
+        config,
+    )
+}
+
+fn stage_world() -> World {
+    let mut w = World::new();
+    w.mac = mac_with(stage_config());
+    w
+}
+
+/// What the Mac did in one step.
+#[derive(Debug, Default)]
+struct Step {
+    /// The messages to pc1, in sequence.
+    sent: Vec<Message>,
+    /// The number of dials of pc1.
+    dials: usize,
+    /// The number of pointer datagrams.
+    pointers: usize,
+}
+
+/// Completes the jobs of the Mac and takes its network commands, until
+/// nothing is left. pc1 gets nothing: the test answers for it.
+fn mac_step(w: &mut World) -> Step {
+    let mut step = Step::default();
+    loop {
+        let mut progress = false;
+        let commands: Vec<NetCommand> = w.mac.log.borrow_mut().net.drain(..).collect();
+        for command in commands {
+            progress = true;
+            match command {
+                NetCommand::Send { peer, message } if peer.0 == PC1 => step.sent.push(message),
+                NetCommand::Dial { peer, .. } if peer.0 == PC1 => step.dials += 1,
+                NetCommand::SendPointer { .. } => step.pointers += 1,
+                _ => {}
+            }
+        }
+        loop {
+            let next = w.mac.log.borrow_mut().jobs.pop_front();
+            let Some((id, job)) = next else { break };
+            progress = true;
+            let output = match job {
+                Job::Operation {
+                    kind: OperationKind::PortalMatch,
+                    request,
+                    ..
+                } => {
+                    let token = request.portal.unwrap().display_token.unwrap();
+                    JobOutput::Operation(Ok(Outcome::Matched(
+                        displays_of(&request.device.id).contains(&token.0.as_str()),
+                    )))
+                }
+                Job::Operation {
+                    kind: OperationKind::InputTarget,
+                    request,
+                    ..
+                } => {
+                    let token = request
+                        .displays
+                        .iter()
+                        .map(|d| d.token.clone())
+                        .find(|t| displays_of(&request.device.id).contains(&t.0.as_str()))
+                        .unwrap();
+                    JobOutput::Operation(Ok(Outcome::Display(token)))
+                }
+                Job::Operation { .. } => JobOutput::Operation(Err("unexpected".into())),
+                Job::Handoff { .. } => JobOutput::Handoff {
+                    result: w.handoff,
+                    error: None,
+                },
+            };
+            w.mac.controller.on_job_done(id, output);
+        }
+        if !progress {
+            return step;
+        }
+    }
+}
+
+fn pc1() -> ComputerId {
+    ComputerId::from(PC1)
+}
+
+fn pc1_connects(w: &mut World, stage: Option<Stage>) {
+    w.mac
+        .controller
+        .on_net(NetEvent::Connected { peer: pc1(), stage }, w.now);
+}
+
+fn pc1_disconnects(w: &mut World) {
+    w.mac.controller.on_net(
+        NetEvent::Disconnected {
+            peer: pc1(),
+            reason: "closed".into(),
+        },
+        w.now,
+    );
+}
+
+fn pc1_says(w: &mut World, message: Message) {
+    w.mac.controller.on_net(
+        NetEvent::Message {
+            peer: pc1(),
+            message,
+        },
+        w.now,
+    );
+}
+
+fn mac_does(w: &mut World, intent: Intent) -> Step {
+    w.mac.controller.on_intent(intent);
+    mac_step(w)
+}
+
+fn open_login_hint() -> Intent {
+    Intent::OpenLoginHint {
+        display: lg(),
+        device: shared(),
+        target: pc1(),
+    }
+}
+
+fn switch_and_log_in() -> Intent {
+    Intent::SwitchAndLogIn {
+        display: lg(),
+        device: shared(),
+        target: pc1(),
+    }
+}
+
+fn login_hint(w: &World) -> Option<telescreen_view::LoginHint> {
+    w.mac.controller.menu_screen().login_hint
+}
+
+fn hint_state(w: &World) -> Option<telescreen_view::LoginHintState> {
+    login_hint(w).map(|hint| hint.state)
+}
+
+/// The one session row of the Mac as the source.
+fn source_role(w: &World) -> telescreen_view::MenuRole {
+    let sessions = w.mac.controller.menu_screen().sessions;
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    sessions[0].role.clone()
+}
+
+fn stage_role(phase: SessionPhase) -> telescreen_view::MenuRole {
+    telescreen_view::MenuRole::Source {
+        phase,
+        video_input: VideoInput::Unverified,
+        keys_only: true,
+        switch_back: true,
+    }
+}
+
+const STAGE_SESSION: telescreen_core::ids::SessionId = telescreen_core::ids::SessionId(41);
+
+/// The Mac controls the login screen of pc1: a stage session that forwards.
+fn stage_forwarding() -> World {
+    let mut w = stage_world();
+    pc1_connects(&mut w, Some(Stage::Login));
+    let step = mac_does(&mut w, switch_and_log_in());
+    assert_eq!(
+        w.mac.take_window_request(),
+        Some(lg()),
+        "STG-8: the portal opens on the display of the row"
+    );
+    assert_eq!(step.sent, [Message::RequestSession { device: shared() }]);
+    assert!(
+        handoff_programs(&w.mac).is_empty(),
+        "no step before the grant"
+    );
+    pc1_says(
+        &mut w,
+        Message::SessionGranted {
+            session: STAGE_SESSION,
+            device: shared(),
+        },
+    );
+    let step = mac_step(&mut w);
+    assert_eq!(
+        handoff_programs(&w.mac),
+        ["/bin/to-pc1"],
+        "STG-8: the handoff steps of the source run"
+    );
+    assert_eq!(
+        step.sent,
+        [Message::HandoffDone {
+            session: STAGE_SESSION
+        }]
+    );
+    pc1_says(
+        &mut w,
+        Message::Started {
+            session: STAGE_SESSION,
+            verified: false,
+        },
+    );
+    let step = mac_step(&mut w);
+    assert!(step.sent.is_empty(), "{:?}", step.sent);
+    assert_eq!(source_role(&w), stage_role(SessionPhase::Forwarding));
+    w
+}
+
+/// The user logged in on pc1: its stage process ended the session and quit.
+fn waiting_for_desktop() -> World {
+    let mut w = stage_forwarding();
+    pc1_says(
+        &mut w,
+        Message::End {
+            session: STAGE_SESSION,
+            reason: EndReason::LoginComplete,
+        },
+    );
+    pc1_disconnects(&mut w);
+    mac_step(&mut w);
+    w
+}
+
+#[test]
+fn stg6_the_menu_has_switch_and_log_in_only_for_a_stage_of_this_source() {
+    // No `stages` in the config: the action does not show.
+    let mut w = World::new();
+    w.mac.controller.evaluate_displays();
+    mac_step(&mut w);
+    assert_eq!(
+        pc1_candidate(&w.mac).log_in,
+        telescreen_view::LogInAction::Hidden
+    );
+
+    // The candidate is not connected: the item opens the hint window.
+    let mut w = stage_world();
+    w.mac.controller.evaluate_displays();
+    mac_step(&mut w);
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.log_in, telescreen_view::LogInAction::Hint);
+    assert_eq!(candidate.stage, None);
+    assert_eq!(candidate.primary, None, "not connected: no row click");
+}
+
+#[test]
+fn stg6_ui18_a_candidate_in_the_login_stage_has_switch_and_log_in_only_in_the_menu() {
+    let mut w = stage_world();
+    w.mac.controller.evaluate_displays();
+    mac_step(&mut w);
+    pc1_connects(&mut w, Some(Stage::Login));
+    mac_step(&mut w);
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.status, "online");
+    assert_eq!(candidate.stage, Some(Stage::Login));
+    assert_eq!(candidate.log_in, telescreen_view::LogInAction::Start);
+    // UI-18: a click on the row runs only an action of ACT-1. "Switch & log
+    // in" is in the "⋯" menu, and the row click runs nothing here.
+    assert_eq!(candidate.primary, None);
+    assert_eq!(
+        candidate.switch_and_control.as_deref(),
+        Some("At the login screen")
+    );
+    assert_eq!(
+        candidate.control_only.as_deref(),
+        Some("At the login screen")
+    );
+    assert_eq!(candidate.switch_display_only, None, "ACT-6: only the route");
+
+    // The stage goes away with the connection.
+    pc1_disconnects(&mut w);
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.stage, None);
+    assert_eq!(candidate.log_in, telescreen_view::LogInAction::Hint);
+}
+
+#[test]
+fn stg6_a_candidate_in_a_desktop_session_cannot_log_in() {
+    let mut w = stage_world();
+    w.mac.controller.evaluate_displays();
+    mac_step(&mut w);
+    pc1_connects(&mut w, None);
+    mac_step(&mut w);
+    let candidate = pc1_candidate(&w.mac);
+    assert_eq!(candidate.stage, None);
+    assert_eq!(
+        candidate.log_in,
+        telescreen_view::LogInAction::Unavailable {
+            reason: "Logged in".into()
+        }
+    );
+    assert_eq!(
+        candidate.primary,
+        Some(telescreen_view::CandidateAction::SwitchAndControl)
+    );
+}
+
+#[test]
+fn stg7_the_hint_window_shows_the_command_and_dials_each_5_seconds() {
+    let mut w = stage_world();
+    assert_eq!(login_hint(&w), None);
+    // The main loop ticks all the time: the window opens at the time `w.now`.
+    w.mac.controller.tick(w.now);
+    mac_step(&mut w);
+    let step = mac_does(&mut w, open_login_hint());
+    assert_eq!(
+        login_hint(&w),
+        Some(telescreen_view::LoginHint {
+            display: lg(),
+            device: shared(),
+            target: pc1(),
+            target_label: "Linux".into(),
+            command: telescreen_view::LOGIN_STAGE_COMMAND.into(),
+            state: telescreen_view::LoginHintState::Waiting,
+        })
+    );
+    assert_eq!(step.dials, 1, "a dial at once");
+    assert!(step.sent.is_empty());
+    assert!(!w.mac.controller.has_portal(), "nothing switches");
+    assert!(handoff_programs(&w.mac).is_empty());
+
+    // A failed dial does not close the window. The next dial is 5 seconds
+    // after the last one.
+    let t0 = w.now;
+    w.mac.controller.on_net(
+        NetEvent::DialFailed {
+            peer: pc1(),
+            reason: "refused".into(),
+        },
+        t0,
+    );
+    assert!(login_hint(&w).is_some());
+    w.mac.controller.tick(t0 + Duration::from_millis(4900));
+    assert_eq!(mac_step(&mut w).dials, 0);
+    w.mac.controller.tick(t0 + Duration::from_secs(5));
+    assert_eq!(mac_step(&mut w).dials, 1);
+    w.mac.controller.on_net(
+        NetEvent::DialFailed {
+            peer: pc1(),
+            reason: "refused".into(),
+        },
+        t0 + Duration::from_secs(5),
+    );
+    w.mac.controller.tick(t0 + Duration::from_secs(10));
+    assert_eq!(mac_step(&mut w).dials, 1);
+
+    // "Cancel" closes the window and stops the dials.
+    let step = mac_does(&mut w, Intent::CloseLoginHint);
+    assert_eq!(login_hint(&w), None);
+    assert_eq!(step.dials, 0);
+    w.mac.controller.on_net(
+        NetEvent::DialFailed {
+            peer: pc1(),
+            reason: "refused".into(),
+        },
+        t0 + Duration::from_secs(10),
+    );
+    w.mac.controller.tick(t0 + Duration::from_secs(30));
+    assert_eq!(mac_step(&mut w).dials, 0);
+}
+
+#[test]
+fn stg7_the_hint_window_shows_the_button_when_the_target_is_in_the_login_stage() {
+    let mut w = stage_world();
+    mac_does(&mut w, open_login_hint());
+    pc1_connects(&mut w, Some(Stage::Login));
+    let step = mac_step(&mut w);
+    assert_eq!(hint_state(&w), Some(telescreen_view::LoginHintState::Ready));
+    // The display does not switch before the user selects the button.
+    assert!(step.sent.is_empty(), "{:?}", step.sent);
+    assert!(!w.mac.controller.has_portal());
+    assert!(handoff_programs(&w.mac).is_empty());
+    // No dial while the target is connected.
+    w.mac.controller.tick(w.now + Duration::from_secs(5));
+    assert_eq!(mac_step(&mut w).dials, 0);
+    // The target goes away: the window waits again.
+    pc1_disconnects(&mut w);
+    assert_eq!(
+        hint_state(&w),
+        Some(telescreen_view::LoginHintState::Waiting)
+    );
+}
+
+#[test]
+fn stg7_the_hint_window_says_when_the_target_is_logged_in() {
+    let mut w = stage_world();
+    mac_does(&mut w, open_login_hint());
+    pc1_connects(&mut w, None);
+    mac_step(&mut w);
+    assert_eq!(
+        hint_state(&w),
+        Some(telescreen_view::LoginHintState::LoggedIn)
+    );
+    assert!(!w.mac.controller.has_portal());
+}
+
+#[test]
+fn stg7_the_hint_window_opens_only_for_a_stage_that_permits_this_source() {
+    // pc1 has no login stage in this config.
+    let mut w = World::new();
+    let step = mac_does(&mut w, open_login_hint());
+    assert_eq!(login_hint(&w), None);
+    assert_eq!(step.dials, 0);
+}
+
+#[test]
+fn stg8_switch_and_log_in_starts_a_stage_session_and_closes_the_hint_window() {
+    let mut w = stage_world();
+    mac_does(&mut w, open_login_hint());
+    pc1_connects(&mut w, Some(Stage::Login));
+    mac_step(&mut w);
+    let step = mac_does(&mut w, switch_and_log_in());
+    assert_eq!(login_hint(&w), None, "the hint window closes");
+    assert_eq!(step.sent, [Message::RequestSession { device: shared() }]);
+    assert!(w.mac.controller.has_portal());
+}
+
+#[test]
+fn stg8_a_stage_session_sends_keys_only() {
+    let mut w = stage_forwarding();
+    let portal = w.mac.portal();
+    w.mac.controller.on_captured(CapturedEvent::Input {
+        portal,
+        event: key(30, true),
+    });
+    assert_eq!(
+        mac_step(&mut w).sent,
+        [Message::Input {
+            session: STAGE_SESSION,
+            event: key(30, true),
+        }]
+    );
+    w.mac.controller.on_captured(CapturedEvent::PointerEntered {
+        portal,
+        at: Point { x: 10.0, y: 10.0 },
+    });
+    w.mac.controller.on_captured(CapturedEvent::PointerMoved {
+        portal,
+        at: Point { x: 40.0, y: 40.0 },
+    });
+    w.mac.controller.on_captured(CapturedEvent::Input {
+        portal,
+        event: InputEvent::Button {
+            button: telescreen_core::input::Button::Left,
+            down: true,
+        },
+    });
+    w.mac.controller.on_captured(CapturedEvent::Input {
+        portal,
+        event: InputEvent::Scroll {
+            dx: 0.0,
+            dy: 8.0,
+            phase: ScrollPhase::None,
+        },
+    });
+    let step = mac_step(&mut w);
+    assert!(step.sent.is_empty(), "{:?}", step.sent);
+    assert_eq!(step.pointers, 0, "no pointer datagram");
+}
+
+#[test]
+fn stg8_a_stage_session_does_not_sync_the_clipboard() {
+    let mut w = stage_forwarding();
+    w.mac
+        .log
+        .borrow_mut()
+        .clip_pending
+        .push(ClipboardChange::Text(ClipboardItem {
+            text: "secret".into(),
+            concealed: false,
+        }));
+    w.mac.controller.tick(w.now + Duration::from_secs(1));
+    let step = mac_step(&mut w);
+    assert!(
+        !step
+            .sent
+            .iter()
+            .any(|m| matches!(m, Message::ClipboardText { .. })),
+        "{:?}",
+        step.sent
+    );
+}
+
+#[test]
+fn stg8_switch_and_log_in_needs_a_target_in_the_login_stage() {
+    // Not connected.
+    let mut w = stage_world();
+    let step = mac_does(&mut w, switch_and_log_in());
+    assert!(!w.mac.controller.has_portal());
+    assert!(step.sent.is_empty());
+    assert!(has_notice(&w.mac, "login screen"));
+
+    // Connected in a desktop session.
+    let mut w = stage_world();
+    pc1_connects(&mut w, None);
+    let step = mac_does(&mut w, switch_and_log_in());
+    assert!(!w.mac.controller.has_portal());
+    assert!(step.sent.is_empty());
+    assert!(has_notice(&w.mac, "login screen"));
+}
+
+#[test]
+fn stg9_after_the_login_the_portal_stays_and_the_source_waits() {
+    let mut w = waiting_for_desktop();
+    assert!(w.mac.controller.has_portal(), "the portal stays open");
+    assert_eq!(source_role(&w), stage_role(SessionPhase::WaitingForDesktop));
+    assert!(
+        !has_notice(&w.mac, "ended"),
+        "a completed login is not an error"
+    );
+    // The keys stay on the source.
+    let portal = w.mac.portal();
+    w.mac.controller.on_captured(CapturedEvent::Input {
+        portal,
+        event: key(30, true),
+    });
+    assert!(mac_step(&mut w).sent.is_empty());
+    // The source dials each 5 seconds, with no time limit.
+    let t0 = w.now;
+    for second in [5, 10, 3600] {
+        let now = t0 + Duration::from_secs(second);
+        w.mac.controller.tick(now);
+        assert_eq!(mac_step(&mut w).dials, 1, "at {second} s");
+        w.mac.controller.on_net(
+            NetEvent::DialFailed {
+                peer: pc1(),
+                reason: "refused".into(),
+            },
+            now,
+        );
+        assert!(w.mac.controller.has_portal());
+    }
+}
+
+#[test]
+fn stg9_the_source_attaches_when_the_desktop_session_connects() {
+    let mut w = waiting_for_desktop();
+    // A connection in the login stage does not end the wait.
+    pc1_connects(&mut w, Some(Stage::Login));
+    assert!(mac_step(&mut w).sent.is_empty());
+    assert_eq!(source_role(&w), stage_role(SessionPhase::WaitingForDesktop));
+    pc1_disconnects(&mut w);
+    assert!(w.mac.controller.has_portal());
+
+    // The desktop session connects: an attach in the same portal (ACT-3).
+    let portal = w.mac.portal();
+    let steps_before = handoff_programs(&w.mac).len();
+    pc1_connects(&mut w, None);
+    let step = mac_step(&mut w);
+    assert_eq!(step.sent, [Message::RequestSession { device: shared() }]);
+    assert_eq!(w.mac.portal(), portal, "the same portal");
+    let next = telescreen_core::ids::SessionId(42);
+    pc1_says(
+        &mut w,
+        Message::SessionGranted {
+            session: next,
+            device: shared(),
+        },
+    );
+    let step = mac_step(&mut w);
+    assert_eq!(step.sent, [Message::HandoffDone { session: next }]);
+    assert_eq!(
+        handoff_programs(&w.mac).len(),
+        steps_before,
+        "an attach runs no handoff steps"
+    );
+    // The attach is a usual session: not keys only.
+    pc1_says(
+        &mut w,
+        Message::Started {
+            session: next,
+            verified: true,
+        },
+    );
+    mac_step(&mut w);
+    assert_eq!(
+        source_role(&w),
+        telescreen_view::MenuRole::Source {
+            phase: SessionPhase::Forwarding,
+            video_input: VideoInput::Confirmed,
+            keys_only: false,
+            switch_back: true,
+        }
+    );
+}
+
+#[test]
+fn stg9_end_session_ends_the_wait() {
+    let mut w = waiting_for_desktop();
+    let step = mac_does(&mut w, Intent::EndSession { portal: None });
+    assert!(!w.mac.controller.has_portal());
+    assert!(step.sent.is_empty());
+    assert!(w.mac.controller.menu_screen().sessions.is_empty());
+    w.mac.controller.tick(w.now + Duration::from_secs(60));
+    assert_eq!(mac_step(&mut w).dials, 0, "no dial after the end");
+    // A later connection of the desktop session starts nothing.
+    pc1_connects(&mut w, None);
+    assert!(mac_step(&mut w).sent.is_empty());
+}
+
+#[test]
+fn stg9_switch_back_ends_the_wait_and_runs_the_reclaim_steps() {
+    let mut w = waiting_for_desktop();
+    mac_does(&mut w, switch_back());
+    assert!(!w.mac.controller.has_portal());
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+    w.mac.controller.tick(w.now + Duration::from_secs(60));
+    assert_eq!(mac_step(&mut w).dials, 0);
+}
+
+#[test]
+fn stg10_a_stage_session_that_ends_for_another_reason_closes_the_portal() {
+    let mut w = stage_forwarding();
+    pc1_says(
+        &mut w,
+        Message::End {
+            session: STAGE_SESSION,
+            reason: EndReason::TargetDisconnected,
+        },
+    );
+    mac_step(&mut w);
+    assert!(!w.mac.controller.has_portal());
+    assert!(has_notice(&w.mac, "ended"));
+    w.mac.controller.tick(w.now + Duration::from_secs(60));
+    assert_eq!(mac_step(&mut w).dials, 0);
+
+    // A lost connection is the same.
+    let mut w = stage_forwarding();
+    pc1_disconnects(&mut w);
+    mac_step(&mut w);
+    assert!(!w.mac.controller.has_portal());
+}
+
+#[test]
+fn stg6_a_usual_session_does_not_start_with_a_target_in_the_login_stage() {
+    for attach in [false, true] {
+        let mut w = stage_world();
+        pc1_connects(&mut w, Some(Stage::Login));
+        let intent = if attach {
+            Intent::ControlOnly {
+                display: lg(),
+                device: shared(),
+                target: pc1(),
+            }
+        } else {
+            Intent::SwitchAndControl {
+                display: lg(),
+                device: shared(),
+                target: pc1(),
+            }
+        };
+        let step = mac_does(&mut w, intent);
+        assert!(step.sent.is_empty(), "attach {attach}: {:?}", step.sent);
+        assert!(!w.mac.controller.has_portal(), "attach {attach}");
+        assert!(handoff_programs(&w.mac).is_empty(), "attach {attach}");
+        assert!(has_notice(&w.mac, "At the login screen"), "attach {attach}");
+    }
+}
+
+// ----- STG: the source controller with a real stage agent -----
+
+struct AgentKeys(Shared);
+impl telescreen_app::stage_agent::KeyInjector for AgentKeys {
+    fn key(&mut self, key: Key, down: bool) -> Result<(), PlatformError> {
+        self.0
+            .borrow_mut()
+            .injected
+            .push(InputEvent::Key { key, down });
+        Ok(())
+    }
+}
+
+/// Gives the messages of the Mac to the agent of pc1 and the answers of the
+/// agent to the Mac, until both have nothing more to say.
+fn relay(
+    w: &mut World,
+    agent: &mut telescreen_app::stage_agent::StageAgent,
+    agent_log: &Shared,
+    mut step: Step,
+) {
+    loop {
+        let mut moved = false;
+        for message in step.sent.drain(..) {
+            moved = true;
+            agent.on_net(
+                NetEvent::Message {
+                    peer: ComputerId::from("mac"),
+                    message,
+                },
+                w.now,
+            );
+        }
+        let commands: Vec<NetCommand> = agent_log.borrow_mut().net.drain(..).collect();
+        for command in commands {
+            moved = true;
+            match command {
+                NetCommand::Send { message, .. } => pc1_says(w, message),
+                NetCommand::Close { .. } => pc1_disconnects(w),
+                other => panic!("the agent sent {other:?}"),
+            }
+        }
+        step = mac_step(w);
+        if !moved && step.sent.is_empty() {
+            return;
+        }
+    }
+}
+
+#[test]
+fn stg8_stg9_the_source_and_a_stage_agent_log_in_together() {
+    let mut w = stage_world();
+    let agent_log: Shared = Rc::default();
+    let mut agent = telescreen_app::stage_agent::StageAgent::new(
+        stage_config(),
+        pc1(),
+        "sha256:00".into(),
+        telescreen_app::stage_agent::StagePorts {
+            net: Box::new(Net(agent_log.clone())),
+            keys: Box::new(AgentKeys(agent_log.clone())),
+            discovery: Box::new(FakeDiscovery(agent_log.clone())),
+        },
+    )
+    .unwrap();
+    agent.on_net(
+        NetEvent::Connected {
+            peer: ComputerId::from("mac"),
+            stage: None,
+        },
+        w.now,
+    );
+    pc1_connects(&mut w, Some(telescreen_app::stage_agent::StageAgent::STAGE));
+
+    // "Switch & log in": the grant, the handoff steps, and the start.
+    let step = mac_does(&mut w, switch_and_log_in());
+    relay(&mut w, &mut agent, &agent_log, step);
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1"]);
+    assert_eq!(source_role(&w), stage_role(SessionPhase::Forwarding));
+
+    // The keys of the source reach the key injector of the target. A button
+    // does not.
+    let portal = w.mac.portal();
+    for event in [
+        key(30, true),
+        InputEvent::Button {
+            button: telescreen_core::input::Button::Left,
+            down: true,
+        },
+        key(30, false),
+    ] {
+        w.mac
+            .controller
+            .on_captured(CapturedEvent::Input { portal, event });
+    }
+    let step = mac_step(&mut w);
+    relay(&mut w, &mut agent, &agent_log, step);
+    assert_eq!(agent_log.borrow().injected, [key(30, true), key(30, false)]);
+
+    // The user logs in: the agent ends the session and stops, and the source
+    // waits for the desktop session.
+    w.mac.controller.on_captured(CapturedEvent::Input {
+        portal,
+        event: key(28, true),
+    });
+    let step = mac_step(&mut w);
+    relay(&mut w, &mut agent, &agent_log, step);
+    agent.on_login();
+    assert!(agent.is_finished());
+    assert_eq!(
+        agent_log.borrow().injected.last(),
+        Some(&key(28, false)),
+        "IN-4: the held key is released at the login"
+    );
+    relay(&mut w, &mut agent, &agent_log, Step::default());
+    assert!(w.mac.controller.has_portal());
+    assert_eq!(source_role(&w), stage_role(SessionPhase::WaitingForDesktop));
+}
+
+#[test]
+fn in12_blocked_keys_do_not_stop_the_start_of_forwarding() {
+    // An application on the source holds secure keyboard input. The pointer
+    // capture works, so the session starts, and a notice tells the user.
+    let mut w = World::new();
+    w.mac.log.borrow_mut().keys_blocked = true;
+    w.advance_to_forwarding();
+    assert!(w.mac.controller.has_portal(), "the session did not end");
+    let sessions = w.mac.controller.menu_screen().sessions;
+    assert!(
+        matches!(
+            sessions[0].role,
+            telescreen_view::MenuRole::Source {
+                phase: SessionPhase::Forwarding,
+                ..
+            }
+        ),
+        "{sessions:?}"
+    );
+    assert!(has_notice(&w.mac, "The keys do not go to the target now"));
+    // The pointer reaches the target.
+    let before = w.pc1.log.borrow().pointer.len();
+    w.mac.controller.on_captured(CapturedEvent::PointerMoved {
+        portal: w.mac.portal(),
+        at: Point { x: 60.0, y: 60.0 },
+    });
+    w.pump();
+    assert!(w.pc1.log.borrow().pointer.len() > before);
+
+    // With no block there is no notice.
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    assert!(!has_notice(&w.mac, "The keys do not go to the target now"));
+}
+
+// ----- FLOW-27: the source cannot send input after the display switched -----
+
+/// The Mac switched the display to pc1, pc1 verified, and then the capture of
+/// the Mac cannot start.
+fn forward_fails_after_the_switch(mut w: World) -> World {
+    w.advance_to_confirmation();
+    w.mac.log.borrow_mut().forward_fails = true;
+    assert!(w.mac.controller.acknowledge(AckOrigin::Computer));
+    w.pump();
+    assert!(has_notice(
+        &w.mac,
+        "Telescreen cannot send the input to Linux"
+    ));
+    assert!(has_notice(&w.mac, "the event tap is gone"), "the cause");
+    assert!(!w.mac.controller.has_portal(), "the session ended");
+    w
+}
+
+#[test]
+fn flow27_a_source_that_cannot_forward_asks_for_a_hand_back() {
+    let w = forward_fails_after_the_switch(World::new());
+    assert_eq!(
+        handoff_programs(&w.pc1),
+        ["/bin/to-mac"],
+        "pc1 ran its route back"
+    );
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1"], "no reclaim");
+    // The Mac verifies as the destination of the hand back (HB-1).
+    assert!(w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn flow27_with_no_route_back_the_source_runs_its_reclaim_steps() {
+    let mut w = world_with_no_route_back();
+    w.mac = mac_with(reclaim_config());
+    let w = forward_fails_after_the_switch(w);
+    assert!(handoff_programs(&w.pc1).is_empty(), "pc1 has no route back");
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1", "/bin/reclaim"]);
+    assert!(has_notice(&w.mac, "reclaim steps"));
+    assert!(w.mac.controller.awaiting_local_ack(), "ACT-8: verify here");
+}
+
+#[test]
+fn flow27_with_no_route_back_and_no_reclaim_the_source_tells_the_user() {
+    let w = forward_fails_after_the_switch(world_with_no_route_back());
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1"]);
+    assert!(has_notice(&w.mac, "Switch the display by hand"));
+    assert!(!w.mac.controller.awaiting_local_ack());
+}
+
+#[test]
+fn flow27_a_lost_target_during_the_recovery_starts_the_reclaim_steps() {
+    let mut w = World::new();
+    w.mac = mac_with(reclaim_config());
+    w.advance_to_confirmation();
+    w.mac.log.borrow_mut().forward_fails = true;
+    assert!(w.mac.controller.acknowledge(AckOrigin::Computer));
+    // pc1 answers the acknowledgement, then it goes away before it answers
+    // the hand back request of the Mac.
+    while let Some(command) = w.mac.log.borrow_mut().net.pop_front() {
+        if let NetCommand::Send { message, .. } = command {
+            w.pc1.controller.on_net(
+                NetEvent::Message {
+                    peer: ComputerId::from("mac"),
+                    message,
+                },
+                w.now,
+            );
+        }
+    }
+    let answers: Vec<NetCommand> = w.pc1.log.borrow_mut().net.drain(..).collect();
+    for command in answers {
+        if let NetCommand::Send { message, .. } = command {
+            w.mac.controller.on_net(
+                NetEvent::Message {
+                    peer: ComputerId::from(PC1),
+                    message,
+                },
+                w.now,
+            );
+        }
+    }
+    assert!(has_notice(&w.mac, "hand the display back"));
+    w.mac.log.borrow_mut().net.clear();
+    w.pc1.log.borrow_mut().jobs.clear();
+    pc1_disconnects(&mut w);
+    mac_step(&mut w);
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+}
+
+#[test]
+fn flow27_an_input_queue_overflow_asks_for_a_hand_back() {
+    let mut w = World::new();
+    w.advance_to_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::Overflow);
+    w.pump();
+    assert!(has_notice(&w.mac, "the input queue is full"));
+    assert!(!w.mac.controller.has_portal());
+    assert_eq!(handoff_programs(&w.pc1), ["/bin/to-mac"]);
+}
+
+fn is_end(message: &Message) -> bool {
+    matches!(message, Message::End { session, .. } if *session == STAGE_SESSION)
+}
+
+fn is_hand_back_request(message: &Message) -> bool {
+    matches!(message, Message::HandBackRequest { .. })
+}
+
+/// STG-5 and STG-10: a login stage has no hand back. The source ends the
+/// session, so that the target releases the held keys, and it runs its
+/// `reclaim` steps.
+#[test]
+fn flow27_stg10_an_overflow_in_a_stage_session_ends_it_and_runs_the_reclaim_steps() {
+    let mut w = stage_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::Overflow);
+    let step = mac_step(&mut w);
+    assert!(step.sent.iter().any(is_end), "{:?}", step.sent);
+    assert!(
+        !step.sent.iter().any(is_hand_back_request),
+        "{:?}",
+        step.sent
+    );
+    assert!(!w.mac.controller.has_portal());
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+    // A later disconnect of the stage process does not run the steps again.
+    let runs = handoff_programs(&w.mac).len();
+    pc1_disconnects(&mut w);
+    mac_step(&mut w);
+    assert_eq!(handoff_programs(&w.mac).len(), runs);
+}
+
+/// IN-12 and FLOW-27: a login stage gets keys only. With blocked keys the
+/// source cannot send input, so it does not stay on the login screen.
+#[test]
+fn in12_flow27_blocked_keys_end_a_stage_session() {
+    let mut w = stage_world();
+    w.mac.log.borrow_mut().keys_blocked = true;
+    pc1_connects(&mut w, Some(Stage::Login));
+    mac_does(&mut w, switch_and_log_in());
+    pc1_says(
+        &mut w,
+        Message::SessionGranted {
+            session: STAGE_SESSION,
+            device: shared(),
+        },
+    );
+    mac_step(&mut w);
+    pc1_says(
+        &mut w,
+        Message::Started {
+            session: STAGE_SESSION,
+            verified: false,
+        },
+    );
+    let step = mac_step(&mut w);
+    assert!(step.sent.iter().any(is_end), "{:?}", step.sent);
+    assert!(
+        !step.sent.iter().any(is_hand_back_request),
+        "{:?}",
+        step.sent
+    );
+    assert!(!w.mac.controller.has_portal());
+    assert!(has_notice(&w.mac, "holds secure keyboard input"));
+    assert!(!has_notice(&w.mac, "The pointer works"));
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+}
+
+/// HB-4: a target that does not answer the hand back request cannot hand the
+/// display back. The source runs its `reclaim` steps after the wait, and a
+/// disconnect at a later time does not run them again.
+#[test]
+fn hb4_a_hand_back_with_no_answer_runs_the_reclaim_steps_after_the_wait() {
+    let mut w = World::new();
+    w.mac = mac_with(reclaim_config());
+    w.advance_to_forwarding();
+    w.mac.controller.tick(w.now);
+    w.mac.controller.on_captured(CapturedEvent::Overflow);
+    // pc1 does not get the request.
+    w.mac.log.borrow_mut().net.clear();
+    assert!(has_notice(&w.mac, "hand the display back"));
+    let before = handoff_programs(&w.mac).len();
+
+    w.now += Duration::from_secs(29);
+    w.mac.controller.tick(w.now);
+    mac_step(&mut w);
+    assert_eq!(handoff_programs(&w.mac).len(), before, "the wait continues");
+
+    w.now += Duration::from_secs(2);
+    w.mac.controller.tick(w.now);
+    mac_step(&mut w);
+    assert!(has_notice(&w.mac, "did not answer the hand back"));
+    assert_eq!(
+        handoff_programs(&w.mac).last().map(String::as_str),
+        Some("/bin/reclaim")
+    );
+    let runs = handoff_programs(&w.mac).len();
+    assert_eq!(runs, before + 1);
+
+    pc1_disconnects(&mut w);
+    mac_step(&mut w);
+    assert_eq!(handoff_programs(&w.mac).len(), runs, "no second run");
+}
+
+/// STG-7: the dial of an open hint window repeats. Its failures make no
+/// notice, else they push the other notices out of the list.
+#[test]
+fn stg7_a_failed_automatic_dial_makes_no_notice() {
+    let mut w = stage_world();
+    w.mac.controller.tick(w.now);
+    mac_does(&mut w, open_login_hint());
+    for _ in 0..3 {
+        w.mac.controller.on_net(
+            NetEvent::DialFailed {
+                peer: pc1(),
+                reason: "no answer".into(),
+            },
+            w.now,
+        );
+        w.now += Duration::from_secs(6);
+        w.mac.controller.tick(w.now);
+        assert_eq!(mac_step(&mut w).dials, 1);
+    }
+    assert!(!has_notice(&w.mac, "Cannot connect to Linux"));
+}
+
+#[test]
+fn flow27_hb5_the_safety_exit_does_not_switch_the_display_back() {
+    let mut w = World::new();
+    w.mac = mac_with(reclaim_config());
+    w.advance_to_forwarding();
+    w.mac.controller.on_captured(CapturedEvent::SafetyExit);
+    w.pump();
+    assert!(!w.mac.controller.has_portal());
+    assert!(handoff_programs(&w.pc1).is_empty(), "HB-5: no hand back");
+    assert_eq!(handoff_programs(&w.mac), ["/bin/to-pc1"], "no reclaim");
 }

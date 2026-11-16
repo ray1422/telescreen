@@ -67,6 +67,8 @@ pub struct SourceSession {
     cursor_before: Option<Normalized>,
     /// An attach runs no handoff steps (ACT-3).
     attach: bool,
+    /// A stage session sends key events only (STG-8).
+    keys_only: bool,
     held: HeldInputs,
     seq: u64,
     /// The position of the last pointer datagram (NET-2).
@@ -94,6 +96,7 @@ impl SourceSession {
             portal_cursor: None,
             cursor_before: None,
             attach: false,
+            keys_only: false,
             held: HeldInputs::default(),
             seq: 0,
             last_pointer: None,
@@ -109,6 +112,20 @@ impl SourceSession {
         let (mut session, actions) = Self::start(target, device);
         session.attach = true;
         (session, actions)
+    }
+
+    /// Starts a stage session to `target` for `device` (STG-8): as `start`, but
+    /// the session sends key events only. It sends no button, no scroll, no
+    /// pointer datagram, and no portal cursor.
+    pub fn start_keys_only(target: ComputerId, device: DeviceId) -> (Self, Vec<SourceAction>) {
+        let (mut session, actions) = Self::start(target, device);
+        session.keys_only = true;
+        (session, actions)
+    }
+
+    /// True for a session that [`SourceSession::start_keys_only`] made.
+    pub fn is_keys_only(&self) -> bool {
+        self.keys_only
     }
 
     /// True for a session that [`SourceSession::attach`] made.
@@ -272,7 +289,7 @@ impl SourceSession {
     /// The portal went off or on the screen (FLOW-26). The target shows a warning
     /// while it is off. The portal starts on screen when forwarding starts.
     pub fn on_portal_visible(&mut self, visible: bool) -> Vec<SourceAction> {
-        if self.phase != SourcePhase::Forwarding || self.portal_shown == visible {
+        if self.keys_only || self.phase != SourcePhase::Forwarding || self.portal_shown == visible {
             return Vec::new();
         }
         let Some(session) = self.session else {
@@ -295,6 +312,9 @@ impl SourceSession {
     /// Before forwarding, the session keeps the last position for the next
     /// `AckWanted`.
     pub fn portal_cursor(&mut self, at: Option<Normalized>) -> Vec<SourceAction> {
+        if self.keys_only {
+            return Vec::new();
+        }
         match self.phase {
             SourcePhase::Forwarding if !self.portal_shown => self.send_portal_cursor(at),
             SourcePhase::Requesting | SourcePhase::HandingOff | SourcePhase::Verifying => {
@@ -336,7 +356,9 @@ impl SourceSession {
     /// A captured key, button, or scroll event. It goes to the target only while
     /// forwarding (IN-3).
     pub fn on_input(&mut self, event: InputEvent) -> Vec<SourceAction> {
-        if self.phase != SourcePhase::Forwarding {
+        if self.phase != SourcePhase::Forwarding
+            || (self.keys_only && !matches!(event, InputEvent::Key { .. }))
+        {
             return Vec::new();
         }
         let Some(session) = self.session else {
@@ -353,7 +375,10 @@ impl SourceSession {
     /// and only if the position is different from the last datagram (NET-2).
     /// Its send time starts at the first returned datagram of this session (NET-8).
     pub fn pointer(&mut self, position: Normalized, now: Instant) -> Option<PointerDatagram> {
-        if self.phase != SourcePhase::Forwarding || self.last_pointer == Some(position) {
+        if self.keys_only
+            || self.phase != SourcePhase::Forwarding
+            || self.last_pointer == Some(position)
+        {
             return None;
         }
         let session = self.session?;
@@ -421,8 +446,10 @@ impl SourceSession {
         let _ = self.held.release_all();
         self.ack_wanted = false;
         // An unverified switch is unknown after the end. An unchanged input stays
-        // unchanged, and a confirmed input stays confirmed (FLOW-16).
-        if self.video == VideoInput::Unverified {
+        // unchanged, and a confirmed input stays confirmed (FLOW-16). A completed
+        // login is not such an end: the display still shows the target, and the
+        // source continues with its desktop session (STG-9).
+        if self.video == VideoInput::Unverified && reason != EndReason::LoginComplete {
             self.video = VideoInput::Unknown;
         }
         self.phase = SourcePhase::Ended(reason);

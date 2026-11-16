@@ -79,7 +79,7 @@ PlasmaExtras.Representation {
                 delegate: ColumnLayout {
                     id: displayItem
                     required property var modelData
-                    readonly property var shown: modelData.devices.filter(d => d.candidates.length > 0)
+                    readonly property var shown: modelData.devices.filter(d => d.candidates.length > 0 || d.switch_back === true)
                     readonly property bool inSession: modelData.devices.some(d => d.in_session)
                     Layout.fillWidth: true
                     spacing: Kirigami.Units.smallSpacing
@@ -150,6 +150,27 @@ PlasmaExtras.Representation {
                                         r.peer === modelData.target && r.device === deviceItem.modelData.device) ?? null
                                     onIntent: intent => root.intent(intent)
                                 }
+                            }
+                            PlasmaComponents3.Label {
+                                visible: deviceItem.modelData.candidates.length === 0
+                                Layout.fillWidth: true
+                                Layout.leftMargin: Kirigami.Units.largeSpacing
+                                text: i18n("No handoff routes in the config")
+                                wrapMode: Text.Wrap
+                                opacity: 0.7
+                            }
+                            PlasmaComponents3.Button {
+                                visible: deviceItem.modelData.switch_back === true
+                                Layout.fillWidth: true
+                                Layout.leftMargin: Kirigami.Units.smallSpacing
+                                Layout.rightMargin: Kirigami.Units.smallSpacing
+                                icon.name: "edit-undo"
+                                text: i18n("Switch back to this computer")
+                                onClicked: root.intent({
+                                    kind: "switch_back",
+                                    display: displayItem.modelData.token,
+                                    device: deviceItem.modelData.device,
+                                })
                             }
                         }
                     }

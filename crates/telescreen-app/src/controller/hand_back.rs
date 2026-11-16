@@ -100,25 +100,34 @@ impl Controller {
         device: DeviceId,
         outcome: HandBackOutcome,
     ) {
-        if !self
+        if self
             .pending_hand_backs
             .remove(&(peer.clone(), device.clone()))
+            .is_none()
         {
             return;
         }
         self.stop_hand_back_verification(&device);
+        // HB-4: if the hand back is not possible, the `reclaim` steps run.
+        let hand_back_displays = self
+            .hand_back_displays
+            .remove(&(peer.clone(), device.clone()));
+        let label = self.label_of(&peer);
         match outcome {
-            HandBackOutcome::NoRoute => self.notice(format!(
-                "Switch the display by hand: {} has no route back to this computer.",
-                self.label_of(&peer)
-            )),
+            HandBackOutcome::NoRoute => match hand_back_displays {
+                Some(display) => self.reclaim_after_failed_recovery(&display, device, &label),
+                None => self.notice(format!(
+                    "Switch the display by hand: {label} has no route back to this computer."
+                )),
+            },
             HandBackOutcome::Failed { partial } => {
-                self.notice(format!(
-                    "The hand back from {} failed.",
-                    self.label_of(&peer)
-                ));
+                self.notice(format!("The hand back from {label} failed."));
                 if partial {
-                    self.device_states.insert(device, VideoInput::Unknown);
+                    self.device_states
+                        .insert(device.clone(), VideoInput::Unknown);
+                }
+                if let Some(display) = hand_back_displays {
+                    self.reclaim_after_failed_recovery(&display, device, &label);
                 }
             }
             HandBackOutcome::Done => self.verify_as_destination(peer, device),

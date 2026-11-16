@@ -24,4 +24,4 @@ Metadata (see `crates/telescreen-platform-*/src/displays.rs`):
 
 - macOS uses BetterDisplay: `BetterDisplay set -namelike=<name> -ddcAlt=<value> -vcp=inputSelectAlt`.
 - The example uses `.local` host names. They need a system resolver for `.local` names, or use `endpoint.discovery: mdns` (`docs/config.md`). If mDNS does not resolve them on your network (`getent hosts <name>` on Linux, `dscacheutil -q host -a name <name>` on macOS), use IP addresses.
-- Linux uses ddcutil. The ddcutil command in the example is not tested (see `docs/hardware.md`).
+- Linux uses ddcutil. The ddcutil command in the example is not tested.

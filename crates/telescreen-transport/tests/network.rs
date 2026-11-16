@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use telescreen_core::ids::{ComputerId, DeviceId, SessionId};
 use telescreen_core::pointer::Normalized;
-use telescreen_core::wire::{Message, PointerDatagram};
+use telescreen_core::wire::{Message, PointerDatagram, Stage};
 use telescreen_transport::network::{Timing, TrustSource};
 use telescreen_transport::{
     DialTarget, Identity, NetCommand, NetConfig, NetEvent, Network, TrustStore,
@@ -36,6 +36,16 @@ fn start(id: &str, identity: Identity, trust: TrustStore) -> Peer {
 }
 
 fn start_with(id: &str, identity: Identity, trust: TrustStore, timing: Timing) -> Peer {
+    start_in_stage(id, identity, trust, timing, None)
+}
+
+fn start_in_stage(
+    id: &str,
+    identity: Identity,
+    trust: TrustStore,
+    timing: Timing,
+    stage: Option<Stage>,
+) -> Peer {
     let (tx, events) = channel();
     let config = NetConfig {
         local: ComputerId::from(id),
@@ -43,6 +53,7 @@ fn start_with(id: &str, identity: Identity, trust: TrustStore, timing: Timing) -
         identity: identity.clone(),
         trust: TrustSource::Fixed(Arc::new(trust)),
         timing,
+        stage,
     };
     let network = Network::start(config, move |e| {
         let _ = tx.send(e);
@@ -88,13 +99,15 @@ fn connected_pair() -> (Peer, Peer) {
     assert_eq!(
         next(&mac),
         NetEvent::Connected {
-            peer: pc1.id.clone()
+            peer: pc1.id.clone(),
+            stage: None,
         }
     );
     assert_eq!(
         next(&pc1),
         NetEvent::Connected {
-            peer: mac.id.clone()
+            peer: mac.id.clone(),
+            stage: None,
         }
     );
     (mac, pc1)
@@ -187,7 +200,8 @@ fn dial_when_connected_reports_connected() {
     assert_eq!(
         next(&mac),
         NetEvent::Connected {
-            peer: pc1.id.clone()
+            peer: pc1.id.clone(),
+            stage: None,
         }
     );
 }
@@ -200,6 +214,53 @@ fn close_reports_disconnect_on_both_sides() {
     });
     assert!(matches!(next(&mac), NetEvent::Disconnected { .. }));
     assert!(matches!(next(&pc1), NetEvent::Disconnected { .. }));
+}
+
+fn send_ends(from: &Peer, to: &Peer, count: u64) {
+    for i in 0..count {
+        from.network.send(NetCommand::Send {
+            peer: to.id.clone(),
+            message: Message::End {
+                session: SessionId(i),
+                reason: telescreen_core::wire::EndReason::LoginComplete,
+            },
+        });
+    }
+}
+
+fn expect_ends(peer: &Peer, count: u64) {
+    for i in 0..count {
+        match next(peer) {
+            NetEvent::Message {
+                message: Message::End { session, .. },
+                ..
+            } => assert_eq!(session, SessionId(i)),
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+/// STG-9: the login stage sends `End` and closes at once. The source must
+/// get the `End`, else it cannot wait for the desktop session.
+#[test]
+fn stg9_a_close_sends_the_waiting_messages_first() {
+    let (mac, pc1) = connected_pair();
+    send_ends(&pc1, &mac, 50);
+    pc1.network.send(NetCommand::Close {
+        peer: mac.id.clone(),
+    });
+    expect_ends(&mac, 50);
+    assert!(matches!(next(&mac), NetEvent::Disconnected { .. }));
+    assert!(matches!(next(&pc1), NetEvent::Disconnected { .. }));
+}
+
+#[test]
+fn stg9_a_network_that_stops_sends_the_waiting_messages_first() {
+    let (mac, pc1) = connected_pair();
+    send_ends(&pc1, &mac, 50);
+    drop(pc1);
+    expect_ends(&mac, 50);
+    assert!(matches!(next(&mac), NetEvent::Disconnected { .. }));
 }
 
 #[test]
@@ -350,13 +411,15 @@ fn ac18_hung_peer_times_out() {
     assert_eq!(
         next(&mac),
         NetEvent::Connected {
-            peer: pc1.id.clone()
+            peer: pc1.id.clone(),
+            stage: None,
         }
     );
     assert_eq!(
         next(&pc1),
         NetEvent::Connected {
-            peer: mac.id.clone()
+            peer: mac.id.clone(),
+            stage: None,
         }
     );
     match next(&pc1) {
@@ -404,7 +467,8 @@ fn net11_ac43_a_later_address_connects_with_no_wait_for_the_timeout() {
     assert_eq!(
         next(&mac),
         NetEvent::Connected {
-            peer: pc1.id.clone()
+            peer: pc1.id.clone(),
+            stage: None,
         }
     );
     assert!(start.elapsed() < timing().timeout);
@@ -424,7 +488,8 @@ fn net11_an_address_of_a_different_computer_does_not_stop_the_dial() {
     assert_eq!(
         next(&mac),
         NetEvent::Connected {
-            peer: pc1.id.clone()
+            peer: pc1.id.clone(),
+            stage: None,
         }
     );
 }
@@ -440,13 +505,15 @@ fn net11_ac43_two_addresses_of_one_peer_make_one_connection() {
     assert_eq!(
         drain(&mac),
         [NetEvent::Connected {
-            peer: pc1.id.clone()
+            peer: pc1.id.clone(),
+            stage: None,
         }]
     );
     assert_eq!(
         drain(&pc1),
         [NetEvent::Connected {
-            peer: mac.id.clone()
+            peer: mac.id.clone(),
+            stage: None,
         }]
     );
 }
@@ -496,14 +563,16 @@ fn net11_a_new_target_joins_the_running_dial() {
     assert_eq!(
         drain(&mac),
         [NetEvent::Connected {
-            peer: pc1.id.clone()
+            peer: pc1.id.clone(),
+            stage: None,
         }]
     );
     assert!(start.elapsed() < timing().timeout + Duration::from_millis(600));
     assert_eq!(
         drain(&pc1),
         [NetEvent::Connected {
-            peer: mac.id.clone()
+            peer: mac.id.clone(),
+            stage: None,
         }]
     );
 }
@@ -562,6 +631,50 @@ fn act7_wake_sends_one_datagram_with_no_connection() {
         next(&peer),
         NetEvent::WakeSent {
             peer: ComputerId::from("pc1")
+        }
+    );
+}
+
+#[test]
+fn stg5_the_hello_tells_the_stage_of_each_peer() {
+    let mac_id = Identity::generate().unwrap();
+    let pc1_id = Identity::generate().unwrap();
+    let mac = start("mac", mac_id.clone(), trusting(&[("pc1", &pc1_id)]));
+    let pc1 = start_in_stage(
+        "pc1",
+        pc1_id.clone(),
+        trusting(&[("mac", &mac_id)]),
+        timing(),
+        Some(Stage::Login),
+    );
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: endpoint(&pc1),
+    });
+    assert_eq!(
+        next(&mac),
+        NetEvent::Connected {
+            peer: pc1.id.clone(),
+            stage: Some(Stage::Login),
+        }
+    );
+    assert_eq!(
+        next(&pc1),
+        NetEvent::Connected {
+            peer: mac.id.clone(),
+            stage: None,
+        }
+    );
+    // A dial of a connected peer reports the same stage again.
+    mac.network.send(NetCommand::Dial {
+        peer: pc1.id.clone(),
+        targets: endpoint(&pc1),
+    });
+    assert_eq!(
+        next(&mac),
+        NetEvent::Connected {
+            peer: pc1.id.clone(),
+            stage: Some(Stage::Login),
         }
     );
 }

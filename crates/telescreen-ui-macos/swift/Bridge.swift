@@ -59,3 +59,14 @@ public func pushMenu(_ bytes: UnsafePointer<UInt8>, _ len: Int) -> Bool {
         return false
     }
 }
+
+/// Returns a +1 retained NSHostingView with the login hint.
+@_cdecl("ts_make_hint_view")
+public func makeHintView() -> UnsafeMutableRawPointer {
+    let view: NSView = MainActor.assumeIsolated {
+        let view = NSHostingView(rootView: HintView(model: menuModel))
+        view.sizingOptions = [.intrinsicContentSize]
+        return view
+    }
+    return Unmanaged.passRetained(view).toOpaque()
+}

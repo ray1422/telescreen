@@ -20,6 +20,8 @@ use super::portal_match::{Candidate, MatchOwner, MatchResult, portal_info};
 use super::{Controller, Job, JobOutput, Pending};
 
 /// How long the asking peer waits for an answer to a control request (ACT-6).
+const LOGIN_RETRY: Duration = Duration::from_secs(5);
+
 const CONTROL_REQUEST_WAIT: Duration = Duration::from_secs(15);
 
 /// A session that starts when `portal-match` of the portal finishes.
@@ -88,6 +90,17 @@ impl Controller {
         target: ComputerId,
         attach: bool,
     ) {
+        self.start_on_display_kind(token, device, target, attach, false);
+    }
+
+    fn start_on_display_kind(
+        &mut self,
+        token: &DisplayToken,
+        device: DeviceId,
+        target: ComputerId,
+        attach: bool,
+        login: bool,
+    ) {
         let Some(display) = self.displays().into_iter().find(|d| &d.token == token) else {
             self.notice(format!("Cannot start: the display {token} is gone."));
             return;
@@ -98,6 +111,7 @@ impl Controller {
         let Some(portal) = self.portals.get_mut(&id) else {
             return;
         };
+        portal.login_start = login;
         portal.pending_start = Some(PendingStart {
             target,
             device: Some(device),
@@ -113,6 +127,7 @@ impl Controller {
         let Some(portal) = self.portals.get(&id) else {
             return;
         };
+        let login_start = portal.login_start;
         match &pending.device {
             None => {
                 if !matches!(portal.matching, Matching::Matched(_)) {
@@ -158,6 +173,24 @@ impl Controller {
             }
             return;
         }
+        if login_start && !self.in_login_stage(&pending.target) {
+            self.notice(format!(
+                "Cannot log in: {} does not show its login screen.",
+                self.label_of(&pending.target)
+            ));
+            self.close_session_portal(id);
+            return;
+        }
+        // STG-6: a usual session needs a desktop session on the target. A
+        // stage target would get the pointer and the clipboard of the source.
+        if !login_start && self.in_login_stage(&pending.target) {
+            self.notice(format!(
+                "Cannot control {}: At the login screen",
+                self.label_of(&pending.target)
+            ));
+            self.close_session_portal(id);
+            return;
+        }
         if pending.attach {
             self.start_attach(id, pending.target);
         } else {
@@ -169,7 +202,7 @@ impl Controller {
     }
 
     /// A session with no handoff steps (ACT-3).
-    fn start_attach(&mut self, id: PortalId, target: ComputerId) {
+    pub(super) fn start_attach(&mut self, id: PortalId, target: ComputerId) {
         if let Some(reason) = self.candidate_unavailable(id, &target) {
             self.notice(format!(
                 "Cannot control {}: {reason}",
@@ -307,6 +340,169 @@ impl Controller {
             }
             other => self.notice(format!(
                 "The switch to {label} failed: unexpected result {other:?}"
+            )),
+        }
+    }
+
+    // ----- The login stage of a target (STG-6 to STG-10) -----
+
+    /// Opens the hint window for the login stage of `target` (STG-7).
+    pub(super) fn open_login_hint(
+        &mut self,
+        token: &DisplayToken,
+        device_id: DeviceId,
+        target: ComputerId,
+    ) {
+        if !self
+            .config
+            .computer(&target)
+            .is_some_and(|c| c.login_stage_permits(&self.local))
+        {
+            return;
+        }
+        self.login_hint = Some((token.clone(), device_id, target.clone()));
+        if !self.connected.contains(&target) && !self.dialing.contains(&target) {
+            self.auto_dials.insert(target.clone());
+            self.dial_peer(target);
+        }
+        self.start_search();
+    }
+
+    /// Closes the hint window (STG-7).
+    pub(super) fn close_login_hint(&mut self) {
+        self.login_hint = None;
+    }
+
+    /// Starts a stage session with a target that is in the login stage (STG-8).
+    pub(super) fn switch_and_log_in(
+        &mut self,
+        token: &DisplayToken,
+        device_id: DeviceId,
+        target: ComputerId,
+    ) {
+        if !self.in_login_stage(&target) {
+            self.notice(format!(
+                "Cannot log in: {} does not show its login screen.",
+                self.label_of(&target)
+            ));
+            return;
+        }
+        self.close_login_hint();
+        self.start_on_display_kind(token, device_id, target, false, true);
+    }
+
+    pub(super) fn in_login_stage(&self, peer: &ComputerId) -> bool {
+        self.stages.get(peer) == Some(&telescreen_core::wire::Stage::Login)
+    }
+
+    /// Retry only the targets of an open hint or a desktop wait (STG-7, STG-9).
+    pub(super) fn retry_login_targets(&mut self) {
+        let mut peers = std::collections::BTreeSet::new();
+        if let Some((_, _, target)) = &self.login_hint {
+            peers.insert(target.clone());
+        }
+        for portal in self.portals.values().filter(|p| p.waiting_for_desktop) {
+            if let Some(session) = &portal.session {
+                peers.insert(session.target().clone());
+            }
+        }
+        for peer in peers {
+            if !self.connected.contains(&peer)
+                && !self.dialing.contains(&peer)
+                && self
+                    .last_dial
+                    .get(&peer)
+                    .is_none_or(|last| self.now.saturating_duration_since(*last) >= LOGIN_RETRY)
+            {
+                self.auto_dials.insert(peer.clone());
+                self.dial_peer(peer);
+                self.start_search();
+            }
+        }
+    }
+
+    pub(super) fn attach_desktop(&mut self, peer: &ComputerId) {
+        if self.stages.contains_key(peer) {
+            return;
+        }
+        let waiting: Vec<_> = self
+            .portals_to(peer)
+            .into_iter()
+            .filter(|id| self.portals.get(id).is_some_and(|p| p.waiting_for_desktop))
+            .collect();
+        for id in waiting {
+            if let Some(portal) = self.portals.get_mut(&id) {
+                portal.waiting_for_desktop = false;
+                portal.session = None;
+            }
+            self.start_attach(id, peer.clone());
+            if self.source_session(id).is_none() {
+                self.close_session_portal(id);
+            }
+        }
+    }
+
+    // ----- "Switch back" (ACT-8) -----
+
+    /// Runs the `reclaim` steps of the device on this computer, then verifies
+    /// here as the destination.
+    pub(super) fn switch_back(&mut self, token: &DisplayToken, device_id: DeviceId) {
+        let displays = self.displays();
+        let Some(display) = displays.iter().find(|d| &d.token == token).cloned() else {
+            self.notice(format!("Cannot switch back: the display {token} is gone."));
+            return;
+        };
+        let Some((alias, device)) = self.local_device(&device_id) else {
+            self.notice(format!(
+                "Cannot switch back: this computer has no device {device_id}."
+            ));
+            return;
+        };
+        let Some(reclaim) = device.reclaim else {
+            self.notice(format!("Cannot switch back: {alias} has no reclaim steps"));
+            return;
+        };
+        self.end_device_sessions(&device_id);
+        let request = Request::on_source(
+            &self.local,
+            DeviceRef {
+                id: device_id.clone(),
+                alias,
+            },
+            Some(self.local.clone()),
+            displays,
+        )
+        .with_portal(portal_info("switch-back".into(), &display));
+        self.spawn(
+            Pending::SwitchBack { device: device_id },
+            Job::Handoff {
+                steps: reclaim.steps,
+                request,
+            },
+        );
+    }
+
+    /// ACT-8: verify locally on success; a partial failure leaves an unknown state.
+    pub(super) fn switch_back_done(&mut self, device: DeviceId, output: JobOutput) {
+        match output {
+            JobOutput::Handoff {
+                result: HandoffResult::Done,
+                ..
+            } => self.verify_as_destination(self.local.clone(), device),
+            JobOutput::Handoff {
+                result: HandoffResult::Failed { completed_steps },
+                error,
+            } => {
+                if completed_steps > 0 {
+                    self.device_states.insert(device, VideoInput::Unknown);
+                }
+                self.notice(format!(
+                    "The switch back failed: {}",
+                    error.as_deref().unwrap_or("the reclaim steps failed")
+                ));
+            }
+            other => self.notice(format!(
+                "The switch back failed: unexpected result {other:?}"
             )),
         }
     }

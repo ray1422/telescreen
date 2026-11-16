@@ -11,8 +11,9 @@ use telescreen_core::platform::DisplayInfo;
 use telescreen_core::routes;
 use telescreen_core::session::VideoInput;
 use telescreen_view::{
-    CandidateAction, ComputerRow, ControlRequestRow, DeviceRow, DisplayMatching, Glyph, MainScreen,
-    MenuCandidate, MenuDevice, MenuDisplay, MenuRole, MenuScreen, MenuSession, MenuSessionId,
+    CandidateAction, ComputerRow, ControlRequestRow, DeviceRow, DisplayMatching, Glyph,
+    LOGIN_STAGE_COMMAND, LogInAction, LoginHint, LoginHintState, MainScreen, MenuCandidate,
+    MenuDevice, MenuDisplay, MenuRole, MenuScreen, MenuSession, MenuSessionId, SessionPhase,
     WakeAction,
 };
 
@@ -183,7 +184,7 @@ impl Controller {
         for (portal, session) in self.portals.iter().filter_map(|(id, p)| {
             p.session
                 .as_ref()
-                .filter(|s| !s.is_finished())
+                .filter(|s| !s.is_finished() || p.waiting_for_desktop)
                 .map(|s| (*id, s))
         }) {
             rows.push(MenuSession {
@@ -193,8 +194,20 @@ impl Controller {
                 device: session.device().clone(),
                 device_label: self.device_label(session.device()),
                 role: MenuRole::Source {
-                    phase: self.phase_view(session),
+                    phase: if self
+                        .portals
+                        .get(&portal)
+                        .is_some_and(|p| p.waiting_for_desktop)
+                    {
+                        SessionPhase::WaitingForDesktop
+                    } else {
+                        self.phase_view(session)
+                    },
                     video_input: session.video_input(),
+                    keys_only: session.is_keys_only(),
+                    switch_back: self
+                        .local_device(session.device())
+                        .is_some_and(|(_, d)| d.reclaim.is_some()),
                 },
             });
         }
@@ -253,6 +266,7 @@ impl Controller {
                     .filter(|(alias, _)| matched.contains(alias))
                     .map(|(alias, device)| MenuDevice {
                         in_session: false,
+                        switch_back: device.reclaim.is_some(),
                         device: device.id.clone(),
                         alias: alias.clone(),
                         label: device.label.clone().unwrap_or_else(|| alias.clone()),
@@ -275,6 +289,8 @@ impl Controller {
                                     control_only: session,
                                     primary: None,
                                     wake: WakeAction::Hidden,
+                                    stage: None,
+                                    log_in: LogInAction::Hidden,
                                 };
                                 if candidate.status == "online" {
                                     candidate.primary = [
@@ -305,6 +321,30 @@ impl Controller {
                                     } else {
                                         WakeAction::Available
                                     };
+                                }
+                                candidate.stage = self.stages.get(route.target).copied();
+                                if self
+                                    .config
+                                    .computer(route.target)
+                                    .is_some_and(|c| c.login_stage_permits(&self.local))
+                                {
+                                    candidate.log_in = if self.in_login_stage(route.target) {
+                                        LogInAction::Start
+                                    } else if self.connected.contains(route.target) {
+                                        LogInAction::Unavailable {
+                                            reason: "Logged in".into(),
+                                        }
+                                    } else {
+                                        LogInAction::Hint
+                                    };
+                                }
+                                if self.in_login_stage(route.target) {
+                                    candidate.switch_and_control =
+                                        Some("At the login screen".into());
+                                    candidate.control_only = Some("At the login screen".into());
+                                    // UI-18: a click on the row never runs
+                                    // "Switch & log in". It is in the "⋯" menu.
+                                    candidate.primary = None;
                                 }
                                 candidate
                             })
@@ -403,6 +443,23 @@ impl Controller {
                 .clipboard
                 .as_ref()
                 .map(|_| self.clipboard.enabled()),
+            login_hint: self
+                .login_hint
+                .as_ref()
+                .map(|(display, device, target)| LoginHint {
+                    display: display.clone(),
+                    device: device.clone(),
+                    target: target.clone(),
+                    target_label: self.label_of(target),
+                    command: LOGIN_STAGE_COMMAND.into(),
+                    state: if self.in_login_stage(target) {
+                        LoginHintState::Ready
+                    } else if self.connected.contains(target) {
+                        LoginHintState::LoggedIn
+                    } else {
+                        LoginHintState::Waiting
+                    },
+                }),
         }
     }
 

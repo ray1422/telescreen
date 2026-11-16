@@ -428,34 +428,66 @@ fn start_network(
     identity: Identity,
     pointer_mailbox: Arc<PointerMailbox>,
 ) -> Result<Box<dyn crate::controller::NetPort>, String> {
-    let net_proxy = proxy.clone();
-    let network = Network::start(
-        NetConfig {
-            local: local.clone(),
-            listen: SocketAddr::from(([0, 0, 0, 0], port)),
-            identity,
-            trust: TrustSource::File(paths::trust_file()?),
-            // The controller sends the heartbeat from the main loop (AC-18).
-            timing: Timing {
-                auto_heartbeat: false,
-                ..Timing::default()
+    let trust_file = paths::trust_file()?;
+    let start = || {
+        let net_proxy = proxy.clone();
+        let pointer_mailbox = pointer_mailbox.clone();
+        Network::start(
+            NetConfig {
+                local: local.clone(),
+                listen: SocketAddr::from(([0, 0, 0, 0], port)),
+                identity: identity.clone(),
+                trust: TrustSource::File(trust_file.clone()),
+                // The controller sends the heartbeat from the main loop (AC-18).
+                timing: Timing {
+                    auto_heartbeat: false,
+                    ..Timing::default()
+                },
+                stage: None,
             },
-        },
-        move |event| {
-            if let NetEvent::Pointer { peer, datagram } = event {
-                if pointer_mailbox.put(ReceivedPointer {
-                    peer,
-                    datagram,
-                    received: Instant::now(),
-                }) {
-                    let _ = net_proxy.send_event(UserEvent::Pointers);
+            move |event| {
+                if let NetEvent::Pointer { peer, datagram } = event {
+                    if pointer_mailbox.put(ReceivedPointer {
+                        peer,
+                        datagram,
+                        received: Instant::now(),
+                    }) {
+                        let _ = net_proxy.send_event(UserEvent::Pointers);
+                    }
+                } else {
+                    let _ = net_proxy.send_event(UserEvent::Net(event));
                 }
-            } else {
-                let _ = net_proxy.send_event(UserEvent::Net(event));
+            },
+        )
+    };
+    let network = start();
+    #[cfg(target_os = "linux")]
+    let network = {
+        let mut network = network;
+        if matches!(
+            &network,
+            Err(telescreen_transport::network::NetError::Listen { .. })
+        ) && crate::stage_record::stop_recorded()
+        {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while matches!(
+                &network,
+                Err(telescreen_transport::network::NetError::Listen { .. })
+            ) {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200).min(remaining));
+                if Instant::now() >= deadline {
+                    break;
+                }
+                network = start();
             }
-        },
-    )
-    .map_err(|e| e.to_string())?;
+        }
+        network
+    };
+    let network = network.map_err(|e| e.to_string())?;
     Ok(Box::new(ports::NetHandle(Some(Rc::new(network)))))
 }
 
@@ -1434,7 +1466,7 @@ fn log_net_event(event: &NetEvent) {
             ..
         } => {}
         NetEvent::Message { peer, message } => eprintln!("telescreen: from {peer}: {message:?}"),
-        NetEvent::Connected { peer } => eprintln!("telescreen: connected to {peer}"),
+        NetEvent::Connected { peer, .. } => eprintln!("telescreen: connected to {peer}"),
         NetEvent::Disconnected { peer, reason } => {
             eprintln!("telescreen: disconnected from {peer}: {reason}")
         }

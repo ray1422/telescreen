@@ -31,6 +31,10 @@ computers:
             steps:
               - driver: exec
                 command: [lg-helper, select, hdmi]
+        reclaim:                       # "Switch back": this Mac switches the display to itself (ACT-8)
+          steps:
+            - driver: exec
+              command: lg-helper select usb-c
       BuiltIn:
         id: mac-internal               # Connects only to the Mac. It has no switchable targets.
         portal-match:
@@ -55,6 +59,8 @@ computers:
     clipboard: {text: false}         # start with the text clipboard switch off (CLIP-1; the default is on)
     scroll-speed: 0.4                # multiply the scroll that this computer receives (IN-14; the default is 1)
     disabled-quirks: []              # the platform workarounds that this computer does not use (IN-16; the default is none)
+    stages:
+      login: {from: [mac]}           # the Mac can send keys to the login screen of this computer (spec 4.9)
     endpoint: {host: pc1.local, port: 24800}
     devices:
       Monitor1:

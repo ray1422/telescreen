@@ -94,6 +94,8 @@ def operations(device):
             yield device[key]
     for handoff in device.get('handoff', {}).values():
         yield from handoff['steps']
+    if 'reclaim' in device:
+        yield from device['reclaim']['steps']
 
 
 def is_absolute(path):
@@ -118,6 +120,11 @@ def validate(config, schema):
         return errors
     computers = config['computers']
     for computer_id, computer in computers.items():
+        for source in computer.get('stages', {}).get('login', {}).get('from', []):
+            if source == computer_id:
+                errors.append(f'{computer_id}.stages.login: from cannot name this computer')
+            elif source not in computers:
+                errors.append(f'{computer_id}.stages.login: unknown computer {source}')
         seen = set()
         for alias, device in computer['devices'].items():
             where = f'{computer_id}.devices.{alias}'

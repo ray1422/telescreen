@@ -222,13 +222,10 @@ impl InputCapture for MacCapture {
             return Err(PlatformError::Failed(format!("{portal} is not armed")));
         };
         slot.guarded.store(false, SeqCst);
-        if crate::secure_event_input() {
-            return Err(PlatformError::Permission(
-                "Secure Event Input is on (a password field has the focus). macOS blocks the capture of keys."
-                    .into(),
-            ));
-        }
-        s.secure_input.store(false, SeqCst);
+        // IN-12: Secure Event Input blocks only the keys. Forwarding starts,
+        // as it continues when the state comes during a session (`heartbeat`).
+        // The app reads `keys_blocked` and tells the user.
+        s.secure_input.store(crate::secure_event_input(), SeqCst);
         s.beat();
         s.lock_keys().escapes.reset();
         slot.mode.store(FORWARDING, SeqCst);
@@ -301,6 +298,10 @@ impl InputCapture for MacCapture {
             }
         }
         slot.id.store(0, SeqCst);
+    }
+
+    fn keys_blocked(&self) -> bool {
+        crate::secure_event_input()
     }
 
     fn heartbeat(&mut self) {

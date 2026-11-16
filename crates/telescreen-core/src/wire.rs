@@ -47,10 +47,36 @@ use crate::input::InputEvent;
 use crate::pointer::Normalized;
 
 /// The wire protocol version. A peer refuses a different version.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// The maximum size of one reliable frame payload.
 pub const MAX_FRAME: usize = crate::clipboard::MAX_TEXT + 4 * 1024;
+
+/// A state of a computer before its desktop session (STG-1, ADR 0015). The
+/// kinds are built in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stage {
+    /// The login screen of a display manager.
+    Login,
+}
+
+impl Stage {
+    /// The name in the config and on the command line.
+    pub fn name(self) -> &'static str {
+        match self {
+            Stage::Login => "login",
+        }
+    }
+
+    /// The stage with this name, or `None` for an unknown name.
+    pub fn from_name(name: &str) -> Option<Stage> {
+        match name {
+            "login" => Some(Stage::Login),
+            _ => None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Message {
@@ -59,6 +85,8 @@ pub enum Message {
     Hello {
         protocol: u32,
         computer: ComputerId,
+        /// The stage of the sender (STG-5). `None`: a desktop session.
+        stage: Option<Stage>,
     },
     Heartbeat,
 
@@ -255,6 +283,8 @@ pub enum EndReason {
     /// A handoff step failed after other steps completed; the device state is
     /// unknown (FLOW-12).
     HandoffPartial,
+    /// The user logged in on the target, so its login stage ended (STG-9).
+    LoginComplete,
 }
 
 /// The latest pointer position, on the unreliable channel (NET-2).

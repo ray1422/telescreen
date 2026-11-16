@@ -48,7 +48,11 @@ _Avoid_: receiver, new owner
 
 **Hand back**:
 A handoff of the device of a session back to the source: the session ends, the target runs its own route to the source, and the source verifies.
-_Avoid_: switch back, revert, rollback
+_Avoid_: revert, rollback. "Switch back" is a different action
+
+**Switch back**:
+A computer switches a device back to itself with its own `reclaim` steps, then it verifies. No other computer takes part, and no session is necessary.
+_Avoid_: take back, reclaim (as the name of the action; `reclaim` is only the config key)
 
 **Verifier**:
 The program that the destination runs after a handoff to check that the device arrived, for example that a user sees the switched display.
@@ -77,6 +81,17 @@ _Avoid_: video input state
 **Hint**:
 The plain text of a computer in the config that its prompt shows, for example its copy/paste shortcuts.
 _Avoid_: tip, note
+
+**Stage**:
+A state of a computer before its desktop session, in which a source can control it in a limited way. The kinds are built in. A computer in a desktop session has no stage.
+_Avoid_: phase, mode, boot step
+
+**Login stage**:
+The stage in which a Linux computer shows the login screen of its display manager. The user starts it by hand. A source sends keys only, and the stage ends when the user logs in.
+_Avoid_: pre-login service, greeter mode
+
+**Stage session**:
+A session with a target that is in a stage. In the login stage it sends keys only, and it has no verification.
 
 ## Sessions and input
 

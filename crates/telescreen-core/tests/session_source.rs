@@ -810,3 +810,121 @@ fn flow7_flow26_forwarding_sends_the_cursor_only_while_the_portal_is_hidden() {
         vec![portal_cursor(cursor(0.3))]
     );
 }
+
+// ----- STG-8: a stage session sends key events only -----
+
+fn keys_only_forwarding(now: Instant) -> SourceSession {
+    let (mut s, actions) = SourceSession::start_keys_only(ComputerId::from("pc1"), device());
+    assert_eq!(
+        actions,
+        vec![Send(Message::RequestSession { device: device() })]
+    );
+    assert!(s.is_keys_only());
+    assert!(!s.is_attach());
+    let actions = s.on_message(
+        &Message::SessionGranted {
+            session: S,
+            device: device(),
+        },
+        now,
+    );
+    assert_eq!(actions, vec![RunHandoff], "STG-8: the handoff steps run");
+    assert_eq!(
+        s.on_handoff_finished(HandoffResult::Done),
+        vec![Send(Message::HandoffDone { session: S })]
+    );
+    let actions = s.on_message(
+        &Message::Started {
+            session: S,
+            verified: false,
+        },
+        now,
+    );
+    assert_eq!(actions, vec![StartForwarding]);
+    assert_eq!(s.phase(), SourcePhase::Forwarding);
+    assert_eq!(s.video_input(), VideoInput::Unverified, "VER-2");
+    s
+}
+
+#[test]
+fn stg8_a_usual_session_is_not_keys_only() {
+    let (s, _) = SourceSession::start(ComputerId::from("pc1"), device());
+    assert!(!s.is_keys_only());
+    let (s, _) = SourceSession::attach(ComputerId::from("pc1"), device());
+    assert!(!s.is_keys_only());
+}
+
+#[test]
+fn stg8_a_keys_only_session_sends_keys_and_nothing_else() {
+    let now = Instant::now();
+    let mut s = keys_only_forwarding(now);
+    let key = InputEvent::Key {
+        key: Key(30),
+        down: true,
+    };
+    assert_eq!(
+        s.on_input(key),
+        vec![Send(Message::Input {
+            session: S,
+            event: key,
+        })]
+    );
+    let button = InputEvent::Button {
+        button: Button::Left,
+        down: true,
+    };
+    let scroll = InputEvent::Scroll {
+        dx: 0.0,
+        dy: 8.0,
+        phase: ScrollPhase::None,
+    };
+    assert!(s.on_input(button).is_empty(), "no button");
+    assert!(s.on_input(scroll).is_empty(), "no scroll");
+    assert_eq!(s.pointer(Normalized { x: 0.2, y: 0.4 }, now), None);
+    assert_eq!(
+        s.pointer(
+            Normalized { x: 0.3, y: 0.4 },
+            now + Duration::from_millis(10)
+        ),
+        None,
+        "no pointer datagram"
+    );
+    // The portal is not on screen: a usual session sends the cursor for the
+    // warning (FLOW-26). A stage target has no warning.
+    assert!(
+        s.on_portal_visible(false).is_empty(),
+        "no PortalHidden: a stage target shows no warning"
+    );
+    assert!(
+        s.portal_cursor(Some(Normalized { x: 0.5, y: 0.5 }))
+            .is_empty(),
+        "no portal cursor"
+    );
+    // The button is not held on the source: a release sends only the key.
+    let released = s.end(EndReason::SourceClosed);
+    assert!(
+        released.contains(&Send(Message::End {
+            session: S,
+            reason: EndReason::SourceClosed,
+        })),
+        "{released:?}"
+    );
+}
+
+#[test]
+fn stg9_the_login_complete_end_stops_the_forwarding() {
+    let now = Instant::now();
+    let mut s = keys_only_forwarding(now);
+    let actions = s.on_message(
+        &Message::End {
+            session: S,
+            reason: EndReason::LoginComplete,
+        },
+        now,
+    );
+    assert!(actions.contains(&StopForwarding), "{actions:?}");
+    assert_eq!(s.phase(), SourcePhase::Ended(EndReason::LoginComplete));
+    // The display still shows the target: the state does not become unknown,
+    // as it does for each other end of an unverified session (FLOW-16).
+    assert_eq!(s.video_input(), VideoInput::Unverified);
+}

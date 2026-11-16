@@ -211,7 +211,7 @@ private func deviceState(_ id: String, in screen: MenuScreen) -> String? {
     return nil
 }
 
-private struct Chip: View {
+struct Chip: View {
     let text: String
     let tint: Color?
 
@@ -255,10 +255,18 @@ struct SessionCard: View {
     /// The dark text on orange of the mockup.
     private let onOrange = Color(red: 0x2a / 255, green: 0x1a / 255, blue: 0)
 
+    private var waitingForDesktop: Bool {
+        source && session.role.phase?.kind == "waiting_for_desktop"
+    }
+
+    private var loginSession: Bool { source && (session.role.keysOnly || waitingForDesktop) }
+
     private var subtitle: String {
+        if waitingForDesktop { return "Login complete" }
         let device = deviceLabel(session.device, in: screen)
         let state = source ? phaseText(session.role.phase) : (session.role.state ?? "").lowercased()
-        return state.isEmpty ? device : "\(device) · \(state)"
+        let text = state.isEmpty ? device : "\(device) · \(state)"
+        return source && session.role.keysOnly && forwarding ? "Login screen · \(text)" : text
     }
 
     private var forwarding: Bool {
@@ -276,7 +284,8 @@ struct SessionCard: View {
                             .foregroundStyle(source ? .white : onOrange)
                     }
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(source ? "Controlling \(session.peerLabel)"
+                    Text(waitingForDesktop ? "Waiting for \(session.peerLabel)"
+                                : source ? "Controlling \(session.peerLabel)"
                                 : "Controlled by \(session.peerLabel)")
                         .font(.system(size: 14, weight: .semibold))
                     Text(subtitle).font(.system(size: 12)).foregroundStyle(menuSecondary)
@@ -285,10 +294,15 @@ struct SessionCard: View {
             }
             let video = videoInputChip(
                 source ? session.role.videoInput : deviceState(session.device, in: screen))
-            if video != nil || forwarding {
+            if video != nil || forwarding || loginSession {
                 HStack(spacing: 6) {
                     if let (text, color) = video { Chip(text: text, tint: color) }
-                    if forwarding {
+                    if waitingForDesktop {
+                        Chip(text: "Keys stay on this Mac", tint: nil)
+                    } else if source && session.role.keysOnly {
+                        Chip(text: "Keyboard only", tint: nil)
+                    }
+                    if forwarding && !loginSession {
                         Chip(text: source ? "Keys go to \(session.peerLabel)"
                                           : "Input from \(session.peerLabel)", tint: nil)
                     }
@@ -297,10 +311,23 @@ struct SessionCard: View {
             if source {
                 HStack(spacing: 8) {
                     let portal = session.id.portal ?? 0
-                    Button("Hand back") {
-                        sendIntent(["kind": "source_hand_back", "portal": portal])
+                    if loginSession {
+                        if session.role.switchBack,
+                           let display = screen.displays.first(where: {
+                               $0.devices.contains { $0.device == session.device }
+                           }) {
+                            Button("Switch back") {
+                                sendIntent(["kind": "switch_back", "display": display.token,
+                                            "device": session.device])
+                            }
+                            .buttonStyle(CardButtonStyle(fill: .accentColor))
+                        }
+                    } else {
+                        Button("Hand back") {
+                            sendIntent(["kind": "source_hand_back", "portal": portal])
+                        }
+                        .buttonStyle(CardButtonStyle(fill: .accentColor))
                     }
-                    .buttonStyle(CardButtonStyle(fill: .accentColor))
                     Button("End session") { sendIntent(["kind": "end_session", "portal": portal]) }
                         .buttonStyle(CardButtonStyle())
                 }
@@ -409,6 +436,9 @@ private struct DisplaySection: View {
                             },
                             style: .menu)
                     }
+                    if device.switchBack {
+                        SwitchBackRow(display: display, device: device, style: .menu)
+                    }
                 }
             }
         }
@@ -474,6 +504,19 @@ struct RefreshButton: View {
     /// Rust selects the primary action (UI-18).
     var primary: Action? { actions.first { $0.kind == candidate.primary } }
 
+    var loginAction: Action? {
+        switch candidate.logIn.kind {
+        case "hint":
+            return Action(title: "Switch & log in…", kind: "open_login_hint", unavailable: nil)
+        case "start":
+            return Action(title: "Switch & log in", kind: "switch_and_log_in", unavailable: nil)
+        case "unavailable":
+            return Action(title: "Switch & log in…", kind: "open_login_hint",
+                          unavailable: candidate.logIn.reason)
+        default: return nil
+        }
+    }
+
     var online: Bool { candidate.status == "online" }
 
     var subtitle: String {
@@ -489,7 +532,7 @@ struct RefreshButton: View {
         let available = actions.filter { $0.unavailable == nil }.count
             + (request.map { $0.waiting ? 0 : 1 } ?? 0)
             + (candidate.wake.kind == "available" ? 1 : 0)
-        return available != 1 || primary == nil
+        return loginAction != nil || available != 1 || primary == nil
     }
 
     func run(_ action: Action) {
@@ -498,7 +541,7 @@ struct RefreshButton: View {
     }
 
     @ViewBuilder var menuItems: some View {
-        ForEach(actions, id: \.kind) { action in
+        ForEach(actions + (loginAction.map { [$0] } ?? []), id: \.kind) { action in
             Button {
                 run(action)
             } label: {
@@ -543,6 +586,9 @@ struct CandidateRow: View {
     let request: ControlRequestRow?
     let style: Style
     @StateObject private var hover = Hover()
+    /// The pointer is on the "⋯" button (UI-18): the button has the fill, and
+    /// the row has none, so that the user sees which control a click runs.
+    @StateObject private var moreHover = Hover()
 
     private func subtitleStyle(online: Bool) -> Color {
         switch (style, online) {
@@ -574,9 +620,12 @@ struct CandidateRow: View {
                             }
                     }
                     VStack(alignment: .leading, spacing: style == .menu ? 0 : 2) {
-                        Text(candidate.label)
-                            .font(.system(size: style == .menu ? 14 : 13))
-                            .foregroundStyle(model.online ? Color.primary : style == .menu ? menuSecondary : Color.secondary)
+                        HStack(spacing: 6) {
+                            Text(candidate.label)
+                                .font(.system(size: style == .menu ? 14 : 13))
+                                .foregroundStyle(model.online ? Color.primary : style == .menu ? menuSecondary : Color.secondary)
+                            if candidate.stage == "login" { Chip(text: "Login screen", tint: nil) }
+                        }
                         Text(model.subtitle).font(.system(size: 12))
                             .foregroundStyle(subtitleStyle(online: model.online))
                     }
@@ -599,9 +648,9 @@ struct CandidateRow: View {
                         .font(.system(size: 13, weight: .semibold))
                         .frame(width: size, height: size)
                         .background {
-                            if hover.on && style == .menu {
+                            if moreHover.on {
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(.primary.opacity(0.30))
+                                    .fill(.primary.opacity(style == .menu ? 0.30 : 0.10))
                             }
                         }
                         .contentShape(Rectangle())
@@ -610,12 +659,15 @@ struct CandidateRow: View {
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .onHover { moreHover.on = $0 }
                 .padding(.trailing, style == .menu ? 6 : 2)
                 .accessibilityLabel("More actions for \(candidate.label)")
             }
         }
         .background {
-            if hover.on {
+            // A row with no primary action does nothing on a click, so it
+            // has no hover fill.
+            if hover.on && !moreHover.on && model.primary != nil {
                 if style == .menu {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(menuHover)
@@ -626,6 +678,48 @@ struct CandidateRow: View {
         }
         .onHover { hover.on = $0 }
         .contextMenu { model.menuItems }
+    }
+}
+
+/// The local action of a device (ACT-8), shared by the menu and main window.
+struct SwitchBackRow: View {
+    let display: MenuDisplay
+    let device: MenuDevice
+    let style: CandidateRow.Style
+    @StateObject private var hover = Hover()
+
+    var body: some View {
+        Button {
+            sendIntent(["kind": "switch_back", "display": display.token, "device": device.device])
+        } label: {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(.primary.opacity(0.14))
+                    .frame(width: 30, height: 30)
+                    .overlay {
+                        Image(systemName: "arrow.uturn.backward").font(.system(size: 14))
+                            .foregroundStyle(Color.secondary)
+                    }
+                Text("Switch back to this Mac")
+                    .font(.system(size: style == .menu ? 14 : 13))
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, style == .menu ? 6 : 0)
+            .padding(.horizontal, style == .menu ? 8 : 14)
+            .frame(minHeight: style == .menu ? nil : 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background {
+            if hover.on {
+                if style == .menu {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous).fill(menuHover)
+                } else {
+                    Rectangle().fill(.primary.opacity(0.05))
+                }
+            }
+        }
+        .onHover { hover.on = $0 }
     }
 }
 
