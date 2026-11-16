@@ -14,6 +14,17 @@ use super::{Config, Device, Driver, Operation};
 pub fn errors(config: &Config) -> Vec<String> {
     let mut errors = Vec::new();
     for (computer_id, computer) in &config.computers {
+        for source in computer.stages.login.iter().flat_map(|stage| &stage.from) {
+            if source == computer_id {
+                errors.push(format!(
+                    "{computer_id}.stages.login: from cannot name this computer"
+                ));
+            } else if !config.computers.contains_key(source) {
+                errors.push(format!(
+                    "{computer_id}.stages.login: unknown computer {source}"
+                ));
+            }
+        }
         let mut seen = BTreeSet::new();
         for (alias, device) in &computer.devices {
             let where_ = format!("{computer_id}.devices.{alias}");

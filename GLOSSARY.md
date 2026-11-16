@@ -82,6 +82,17 @@ _Avoid_: video input state
 The plain text of a computer in the config that its prompt shows, for example its copy/paste shortcuts.
 _Avoid_: tip, note
 
+**Stage**:
+A state of a computer before its desktop session, in which a source can control it in a limited way. The kinds are built in. A computer in a desktop session has no stage.
+_Avoid_: phase, mode, boot step
+
+**Login stage**:
+The stage in which a Linux computer shows the login screen of its display manager. The user starts it by hand. A source sends keys only, and the stage ends when the user logs in.
+_Avoid_: pre-login service, greeter mode
+
+**Stage session**:
+A session with a target that is in a stage. In the login stage it sends keys only, and it has no verification.
+
 ## Sessions and input
 
 **Portal**:

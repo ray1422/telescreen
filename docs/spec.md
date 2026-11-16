@@ -14,7 +14,7 @@ Example setup: a MacBook with a built-in display and an external display. A Linu
 
 ### 2.1 Versions
 
-Versions follow Semantic Versioning. There is no stable release, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version. From v0.600.0, the hundreds of the minor version mark a large release, and the two last digits count the small features (user, 2026-11-07). Example: v0.600.0 is the UI redesign, v0.601.0 is its first small feature, v0.601.1 is a fix, and the next large release is v0.700.0. v0.5.0 is the last version before this rule. The rule applies also below v0.600.0: v0.501.0 is the first small feature after v0.5.0, a test release of the partial UI redesign (user, 2026-11-07). v0.502.0 is the next test release, with the Qt UI on Linux and the scroll fixes (user, 2026-11-08). v0.503.0 adds Wake-on-LAN (ACT-7), the special keys of the source config (IN-20), and the row click fix of UI-18 (user, 2026-11-09). v0.504.0 adds the Arch package, the AppImage, the Plasma applet in the release, and the install methods of `install.sh` (DIST-6 to DIST-11, user, 2026-11-10). v0.505.0 adds "Switch back" with the `reclaim` steps of a device (ACT-8, user, 2026-11-17).
+Versions follow Semantic Versioning. There is no stable release, so all versions are 0.x. In 0.x, a new feature increases the minor version, and a fix increases the patch version. From v0.600.0, the hundreds of the minor version mark a large release, and the two last digits count the small features (user, 2026-11-07). Example: v0.600.0 is the UI redesign, v0.601.0 is its first small feature, v0.601.1 is a fix, and the next large release is v0.700.0. v0.5.0 is the last version before this rule. The rule applies also below v0.600.0: v0.501.0 is the first small feature after v0.5.0, a test release of the partial UI redesign (user, 2026-11-07). v0.502.0 is the next test release, with the Qt UI on Linux and the scroll fixes (user, 2026-11-08). v0.503.0 adds Wake-on-LAN (ACT-7), the special keys of the source config (IN-20), and the row click fix of UI-18 (user, 2026-11-09). v0.504.0 adds the Arch package, the AppImage, the Plasma applet in the release, and the install methods of `install.sh` (DIST-6 to DIST-11, user, 2026-11-10). v0.505.0 adds "Switch back" with the `reclaim` steps of a device (ACT-8, user, 2026-11-17). v0.506.0 adds the login stage: keys to the login screen of a Linux target (section 4.9, ADR 0015, user, 2026-11-17).
 
 v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user, 2026-10-27). The first release is v0.3.0.
 
@@ -28,7 +28,7 @@ v0.1.0 and v0.2.0 are internal milestones. They get no tag and no release (user,
 
 ### 2.2 Not part of v0.1.0
 
-Video streaming, clipboard (see 2.1), file transfer, atomic switching of device groups, arbitrary remote shell commands, interception of all system keys on every OS, login screen or secure desktop control, emulated displays, game relative-mouse mode, cross-platform IME translation, shortcut remapping (for example Command+C to Ctrl+C), NAT traversal, Windows.
+Video streaming, clipboard (see 2.1), file transfer, atomic switching of device groups, arbitrary remote shell commands, interception of all system keys on every OS, secure desktop control, login screen control (see section 4.9 for the login stage of v0.506.0), emulated displays, game relative-mouse mode, cross-platform IME translation, shortcut remapping (for example Command+C to Ctrl+C), NAT traversal, Windows.
 
 ### 2.3 General constraints
 
@@ -160,7 +160,7 @@ Actions:
   - After the steps of "Switch display only", the source sends `DisplaySwitched { device }` if the destination is connected. The destination accepts it only if the config of the sender has `handoff.<destination>` for the device (NET-4). Else it ignores the message. When it accepts, it ends its sessions of that device in both roles (FLOW-6), and it verifies as after a hand back (HB-1, VER-4). The source changes its own device state by VER-6, as the computer that ran a route back. If the destination is not connected, the source shows the notice "Switched to <target>, not verified: <target> is not connected". The source does not dial for this message.
   - The receiving peer of a control request refuses with `ControlRefused { device, reason }`. The reasons: the device is unknown; the receiving peer has no `handoff.<asking peer>` route for the device; no display matches; more than one display matches; `portal-match` failed on a display (AC-9); the receiving peer cannot capture or suppress; it already has a session as the source on the matching display (FLOW-2; a session on a different display does not count). It does not guess between two matching displays.
   - "Let <peer> control this display" dials the peer if it is not connected, and sends the request when it connects. The asking peer shows "Waiting for <peer>" until the attach `RequestSession` of that peer for that device arrives, until `ControlRefused` arrives, or for 15 seconds. After 15 seconds it shows "<peer> did not answer".
-  - The wire protocol version is 6.
+  - The wire protocol version is 6. STG-5 makes it 7.
 - **ACT-7** Wake-on-LAN (user, 2026-11-09). "Wake <peer>" sends one magic packet to the peer, so that a sleeping or powered-off peer starts:
   - The action shows for each candidate whose computer section has `wake` (docs/config.md). The source reads `wake` from its own config. The action is available only while the candidate is not connected (offline, connecting). A connected candidate shows it disabled, with the reason "Connected".
   - The packet is the magic packet: 6 bytes `0xFF`, then 16 copies of the 6-byte MAC address (102 bytes). The source sends it one time as a UDP datagram, with `SO_BROADCAST`, to `wake.broadcast` on `wake.port`. The message has no Telescreen data and no authentication.
@@ -274,6 +274,54 @@ ADR 0014. A side discussion with the user (2026-11-07) gave this design. It repl
   - The version number.
   - When mDNS does not work: can B give the address of A (for example `--host`)?
   - A PIN as an option.
+
+### 4.9 Login stage (v0.506.0)
+
+ADR 0015 has the reasons. A stage is a state of a computer before its desktop session. The only stage kind is `login`: the login screen of a display manager on Linux. In v0.506.0, the target is Linux, and only the macOS UI shows the source actions (user, 2026-11-17).
+
+- **STG-1** Config. `stages.login.from` in a computer section lists the source computers that can control the login stage of that computer (`docs/config.md`). A computer with no `stages` has no stage, and nothing changes for it. The current stage of a computer is runtime state; it is not in the config.
+- **STG-2** Start. The user starts the stage on the target with `telescreen run --stage login` (user, 2026-11-16). The process:
+  - runs with the account of the user, and uses the usual config, the saved computer ID or `--computer`, the identity, the trust list, and the endpoint port;
+  - opens no window, and does not take the single-instance name of UI-15;
+  - stops with an error if the section of this computer has no `stages.login`, or if the platform is not Linux;
+  - makes this computer discoverable for the time of NET-14 if its section has `endpoint.discovery: mdns`, and prints a line that says so, because discovery is not a part of the login (user, 2026-11-16);
+  - prints how to stop it.
+- **STG-3** The stage process does not start if the user already has a desktop session (a logind session of the user with a seat), or if the endpoint port is in use. It prints the cause, for example "You are logged in on this computer. Use Telescreen in the desktop session."
+- **STG-4** The stage process stops: when the user logs in to a desktop session (STG-9), when it gets an interrupt, a terminate, or a hangup signal (for example the terminal closes), and when the Telescreen of the desktop session stops it (STG-11). It has no time limit. Before it stops, it ends its session, releases all held keys, closes its connections, and frees the port.
+- **STG-5** Protocol. The wire protocol is version 7. The handshake tells the stage of each peer: no stage (a desktop session), or `login`. A peer in the login stage:
+  - grants a session only to a source that `from` lists; else it refuses with `NoRoute` (NET-4);
+  - grants one session at a time; a second request gets `Busy`;
+  - needs no `input-target`, no display, and no keyboard focus holder, and runs no `verify`: it answers the end of the handoff steps with "started, not verified";
+  - injects key events only. It ignores each pointer position, button, scroll, clipboard message, control request, hand back request, and "display switched" message (user, 2026-11-16, tentative: keys only);
+  - dials no peer.
+- **STG-6** Menu. A candidate whose config section has `stages.login.from` with this computer has the action "Switch & log in" (user, 2026-11-16):
+  - The action needs a handoff route of this computer to the candidate for the device, because it switches the display.
+  - While the candidate is not connected, the item "Switch & log in…" is in the "⋯" menu, after the three actions of ACT-1. It opens the hint window (STG-7).
+  - While the candidate is connected in the login stage, the row shows "Login screen", the primary action is "Switch & log in", and "Switch & control" and "Control only" are unavailable with the reason "At the login screen". "Switch display only" does not change.
+  - While the candidate is connected with no stage, "Switch & log in…" is disabled with the reason "Logged in".
+  - A usual session ("Switch & control", "Control only") does not start with a candidate that is in the login stage: the source would send the pointer and the clipboard to a login screen. The notice is "Cannot control <target>: At the login screen" (Claude decides, 2026-11-17).
+- **STG-7** The hint window. It is a window of the source with one view model on all platforms:
+  - It shows the label of the target, the command of STG-2 with a "Copy" button, and a line that says that the command also makes the target discoverable. The command text comes from Telescreen. Telescreen does not run the command (user, 2026-11-16).
+  - While it waits, it shows "Waiting for <target>…" and "Cancel". The source searches for the target (NET-15) and dials it one time each 5 seconds, also after a failed dial. This is an exception to NET-10 (Claude decides, 2026-11-17).
+  - When the target connects in the login stage, the wait line becomes the button "Switch & log in". The display does not switch before the user selects the button (user, 2026-11-16).
+  - Only one hint window exists. "Cancel" and the close button close it and stop the dials.
+  - If the target connects with no stage while the window waits, the window shows "<target> is logged in" and the usual actions apply.
+- **STG-8** The stage session. The button of STG-7 and the primary action of STG-6 start it:
+  - The source opens the portal on the display of the row, runs its handoff steps (FLOW-6, FLOW-12), and forwards after the target answers. The portal takes the keys, as in a usual session.
+  - The source sends key events only: no pointer position, no button, no scroll, and no clipboard.
+  - The device state is unverified (VER-2).
+  - If the target is not connected in the login stage when the action starts, nothing runs, and the notice is "Cannot log in: <target> does not show its login screen."
+  - The session part of the menu shows the target, "Login screen", "Keyboard only", and the device state. It has "Switch back" if the device has `reclaim` (ACT-8), and "End session". It has no "Hand back".
+  - IN-8 and the other ways to end a session apply.
+- **STG-9** After the login. The stage process watches logind. A new session of the user with a seat is the desktop login. Then the stage process ends the session with the reason "login complete" and stops (STG-4). On the source:
+  - the portal stays open, and the keys stay on the source;
+  - the device state stays unverified: the display still shows the target. This is different from each other end of an unverified session, which makes the state unknown (FLOW-16);
+  - the session part shows "Waiting for <target>" and "Login complete", with "Switch back" and "End session";
+  - the source waits with no time limit (user, 2026-11-16). It searches and dials as in STG-7;
+  - when the target connects with no stage, the source attaches in the same portal (ACT-3) with no action of the user. The target verifies by VER-1, and the acknowledgement is a key in the portal (VER-4);
+  - a connection of the target in the login stage does not end the wait.
+- **STG-10** A stage session that ends for a different reason (the stage process stopped, the connection broke, the user ended it) ends as a usual session: the portal closes, and a notice gives the cause.
+- **STG-11** The Telescreen of the desktop session has priority (measured: desktop programs start less than 1 second after the logind event). The stage process writes its process ID to a record in the data directory and removes it when it stops. If the Telescreen of the desktop session cannot bind the endpoint port, and the record names a live stage process of the same user, it sends that process a terminate signal and tries the bind again for 5 seconds. A record of a process that does not exist is removed.
 
 ## 5. Input
 
@@ -487,6 +535,11 @@ Each row must pass on each environment in the support matrix before you mark a v
 | AC-59 | The config has `wake` for an offline candidate. Select "Wake <peer>" while the peer sleeps or is powered off | The source sends one magic packet to `wake.broadcast`. The notice "Wake request sent to <peer>" shows. The peer starts. The source does not dial. When the peer is connected, "Wake <peer>" is disabled with the reason "Connected" (ACT-7) |
 | AC-60 | The config of this computer has `reclaim` for a display. The display shows a different computer, and that computer does not run Telescreen. Select "Switch back" for the display | The `reclaim` steps run on this computer, and the display shows this computer. This computer verifies: the prompt shows on this display, and the device state is confirmed after the acknowledgement. No dial starts (ACT-8) |
 | AC-61 | This computer controls a target on a display, and its config has `reclaim` for that display. Select "Switch back" | The session ends first, then the `reclaim` steps run. "Hand back" in the same state runs only the route back of the target; if that route fails, the `reclaim` steps do not run (ACT-8) |
+| AC-62 | The target shows its login screen, and no desktop session runs. Start `telescreen run --stage login` on the target through SSH. On the source, select "Switch & log in…" for the target, then the button | The hint window shows the command, then the button after the target connects. The display switches to the target. The keys of the source go to the login screen. No pointer moves on the target (STG-2, STG-7, STG-8) |
+| AC-63 | In the state of AC-62, type the password and press Return. Telescreen starts in the desktop session | The stage process stops. The source shows "Waiting for <target>", then it attaches with no action of the user. After the acknowledgement, the pointer and the keys control the desktop session (STG-9) |
+| AC-64 | In the state of AC-62, close the terminal of the SSH connection | The stage process stops and frees the port. The session ends on the source with a notice. No key stays held on the target (STG-4, STG-10) |
+| AC-65 | Log in on the target with the hardware keyboard while the stage process runs and no source is connected | The stage process stops. The Telescreen of the desktop session starts and listens on the port (STG-9, STG-11) |
+| AC-66 | The user is logged in to the desktop session. Start `telescreen run --stage login` | The process does not start and prints the cause (STG-3) |
 
 Performance: measure p50, p95, and p99 of capture to injection, event loss, and idle CPU/GPU. A network latency number must state how it was measured (round trip on one clock, or the clock synchronization method). There is no hard threshold yet.
 

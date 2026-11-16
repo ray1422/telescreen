@@ -118,6 +118,27 @@ fn invalid_configurations() {
         ("unknown field", Layer::Schema, |c| {
             device(c)["portal_match"] = json!({})
         }),
+        ("unknown stage kind", Layer::Schema, |c| {
+            c["computers"]["pc1"]["stages"] = json!({"boot": {"from": ["mac"]}})
+        }),
+        ("stage with no from", Layer::Schema, |c| {
+            c["computers"]["pc1"]["stages"] = json!({"login": {}})
+        }),
+        ("empty from of a stage", Layer::Schema, |c| {
+            c["computers"]["pc1"]["stages"] = json!({"login": {"from": []}})
+        }),
+        ("duplicate in from of a stage", Layer::Schema, |c| {
+            c["computers"]["pc1"]["stages"] = json!({"login": {"from": ["mac", "mac"]}})
+        }),
+        ("label in a stage", Layer::Schema, |c| {
+            c["computers"]["pc1"]["stages"] = json!({"login": {"from": ["mac"], "label": "Login"}})
+        }),
+        ("stage from this computer", Layer::Semantic, |c| {
+            c["computers"]["pc1"]["stages"] = json!({"login": {"from": ["pc1"]}})
+        }),
+        ("stage from an unknown computer", Layer::Semantic, |c| {
+            c["computers"]["pc1"]["stages"] = json!({"login": {"from": ["absent"]}})
+        }),
         ("duplicate device id", Layer::Semantic, |c| {
             c["computers"]["mac"]["devices"]["Duplicate"] = json!({"id": "shared-lg"})
         }),
@@ -620,4 +641,21 @@ fn act8_reclaim_is_optional_steps_of_a_device() {
     assert!(mac.devices["BuiltIn"].reclaim.is_none());
     let pc1 = config.computer(&ComputerId::from("pc1")).unwrap();
     assert!(pc1.devices["Monitor1"].reclaim.is_none());
+}
+
+#[test]
+fn stg1_the_login_stage_names_the_sources_that_can_control_it() {
+    let config = Config::parse(&example_text()).unwrap();
+    let mac = ComputerId::from("mac");
+    let pc1 = config.computer(&ComputerId::from("pc1")).unwrap();
+    assert_eq!(
+        pc1.stages.login.as_ref().expect("login").from,
+        std::slice::from_ref(&mac)
+    );
+    assert!(pc1.login_stage_permits(&mac));
+    assert!(!pc1.login_stage_permits(&ComputerId::from("pc2")));
+    // A computer with no `stages` has no stage, and nobody can control one.
+    let mac_section = config.computer(&mac).unwrap();
+    assert!(mac_section.stages.login.is_none());
+    assert!(!mac_section.login_stage_permits(&ComputerId::from("pc1")));
 }

@@ -94,11 +94,42 @@ pub struct Computer {
     /// wake this computer.
     #[serde(default)]
     pub wake: Option<WakeConfig>,
+    /// The stages of this computer (STG-1). A different computer reads it to
+    /// control this computer before its desktop session.
+    #[serde(default)]
+    pub stages: Stages,
     pub endpoint: Endpoint,
     /// Keys are local aliases. They have no OS meaning.
     /// In the order of the config file (UI-18: the menu lists the displays
     /// in this order).
     pub devices: IndexMap<String, Device>,
+}
+
+/// The `stages` key of a computer (STG-1, docs/config.md). Each field is a
+/// built-in stage kind.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Stages {
+    #[serde(default)]
+    pub login: Option<LoginStage>,
+}
+
+/// The login stage of a computer: the login screen of its display manager.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginStage {
+    /// The source computers that can control the stage (NET-4).
+    pub from: Vec<ComputerId>,
+}
+
+impl Computer {
+    /// True if `source` can control the login stage of this computer (STG-1).
+    pub fn login_stage_permits(&self, source: &ComputerId) -> bool {
+        self.stages
+            .login
+            .as_ref()
+            .is_some_and(|stage| stage.from.contains(source))
+    }
 }
 
 /// The `wake` key of a computer (ACT-7, docs/config.md).
