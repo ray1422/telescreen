@@ -5911,14 +5911,11 @@ fn stg6_the_menu_has_switch_and_log_in_only_for_a_stage_of_this_source() {
     let candidate = pc1_candidate(&w.mac);
     assert_eq!(candidate.log_in, telescreen_view::LogInAction::Hint);
     assert_eq!(candidate.stage, None);
-    assert_ne!(
-        candidate.primary,
-        Some(telescreen_view::CandidateAction::SwitchAndLogIn)
-    );
+    assert_eq!(candidate.primary, None, "not connected: no row click");
 }
 
 #[test]
-fn stg6_a_candidate_in_the_login_stage_has_switch_and_log_in_as_the_primary_action() {
+fn stg6_ui18_a_candidate_in_the_login_stage_has_switch_and_log_in_only_in_the_menu() {
     let mut w = stage_world();
     w.mac.controller.evaluate_displays();
     mac_step(&mut w);
@@ -5928,10 +5925,9 @@ fn stg6_a_candidate_in_the_login_stage_has_switch_and_log_in_as_the_primary_acti
     assert_eq!(candidate.status, "online");
     assert_eq!(candidate.stage, Some(Stage::Login));
     assert_eq!(candidate.log_in, telescreen_view::LogInAction::Start);
-    assert_eq!(
-        candidate.primary,
-        Some(telescreen_view::CandidateAction::SwitchAndLogIn)
-    );
+    // UI-18: a click on the row runs only an action of ACT-1. "Switch & log
+    // in" is in the "⋯" menu, and the row click runs nothing here.
+    assert_eq!(candidate.primary, None);
     assert_eq!(
         candidate.switch_and_control.as_deref(),
         Some("At the login screen")

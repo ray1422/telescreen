@@ -214,9 +214,11 @@ Menu and entry points:
   - Each display section has the "Refresh" button of NET-10 at the right of its title, as an icon button with the tooltip "Refresh" (user, 2026-11-07, mockup version 81). The button always shows.
   - Each candidate has the actions of ACT-1. "Switch display only" needs only the route. "Switch & control" and "Control only" need the conditions of FLOW-3.
   - Each candidate is one row (user, 2026-11-07, mockup version 57):
+    - The action of a row click does not change (user, 2026-11-17: "除了預設的 handoff 其他一律從選單"). A click on the row runs only the default handoff by the rule below. Each action that is not in ACT-1 is only in the "⋯" menu, and it is never the primary action. Do not make a new action the primary action, and do not change which action a click runs, unless the user states it.
     - A click on any part of the row runs the primary action. A candidate has a primary action only while it is connected: then the primary action is the first available action of "Switch & control", "Switch display only", and "Control only". A candidate that is not connected (offline, connecting) has no primary action, also when "Switch display only" is available (user, 2026-11-09: a click on the row of an offline candidate ran "Switch display only", and the user did not expect it). The Rust view model selects the primary action; the platform UIs do not select it (ADR 0012). The subtitle always shows the status and the primary action, for example "Online · Switch & control", because a touch screen has no hover. If the candidate has no primary action, the row does nothing, and the subtitle shows the status and the reason of "Switch & control".
     - A "⋯" button at the right of the row opens a flat native menu: the three actions, then a separator, "Let <peer> control this display", and "Wake <peer>" (ACT-7). An unavailable action is disabled and shows its reason. There are no submenus. A right-click on the row opens the same menu. The row has no "⋯" only when the menu has one available item and that item is the primary action (Claude decides, 2026-11-09: with no primary action, "⋯" is the only path to an available action).
-    - The row has no colored fill for the primary action. Hover gives the row a light fill.
+    - The row has no colored fill for the primary action. Hover gives the row a light fill, only if the row has a primary action: a row that does nothing on a click has no hover fill (user, 2026-11-17).
+    - The "⋯" button has its own hover fill. While the pointer is on the "⋯" button, the row has no hover fill, so that the user sees which of the two controls a click runs (user, 2026-11-17).
     - All rows of the menu have the same left and right padding.
   - A device with `reclaim` has one more row below its candidates: "Switch back to this Mac" on macOS, "Switch back to this computer" on Linux (ACT-8, user, 2026-11-16). A click on the row runs the action and closes the menu. The row also shows when the device has no candidates. The view model has a flag for the row; the platform UIs do not read the config.
   - "Let <peer> control this display" shows for each local device and each peer whose config has `handoff.<this computer>` for that device. If the peer is a candidate of that device on a display, the action is in the "⋯" menu of the peer (user, 2026-11-07). Else it has its own row with the device name. While the request waits, the row subtitle shows "Waiting for <peer>…".
@@ -297,7 +299,8 @@ ADR 0015 has the reasons. A stage is a state of a computer before its desktop se
 - **STG-6** Menu. A candidate whose config section has `stages.login.from` with this computer has the action "Switch & log in" (user, 2026-11-16):
   - The action needs a handoff route of this computer to the candidate for the device, because it switches the display.
   - While the candidate is not connected, the item "Switch & log in…" is in the "⋯" menu, after the three actions of ACT-1. It opens the hint window (STG-7).
-  - While the candidate is connected in the login stage, the row shows "Login screen", the primary action is "Switch & log in", and "Switch & control" and "Control only" are unavailable with the reason "At the login screen". "Switch display only" does not change.
+  - While the candidate is connected in the login stage, the row shows "Login screen", and the item "Switch & log in" is in the "⋯" menu. It starts the stage session (STG-8). "Switch & control" and "Control only" are unavailable with the reason "At the login screen". "Switch display only" does not change.
+  - "Switch & log in" is never the primary action (user, 2026-11-17): a click on the row runs nothing while the candidate is in the login stage, and the subtitle shows the status and the reason, by UI-18.
   - While the candidate is connected with no stage, "Switch & log in…" is disabled with the reason "Logged in".
   - A usual session ("Switch & control", "Control only") does not start with a candidate that is in the login stage: the source would send the pointer and the clipboard to a login screen. The notice is "Cannot control <target>: At the login screen" (Claude decides, 2026-11-17).
 - **STG-7** The hint window. It is a window of the source with one view model on all platforms:
@@ -306,7 +309,7 @@ ADR 0015 has the reasons. A stage is a state of a computer before its desktop se
   - When the target connects in the login stage, the wait line becomes the button "Switch & log in". The display does not switch before the user selects the button (user, 2026-11-16).
   - Only one hint window exists. "Cancel" and the close button close it and stop the dials.
   - If the target connects with no stage while the window waits, the window shows "<target> is logged in" and the usual actions apply.
-- **STG-8** The stage session. The button of STG-7 and the primary action of STG-6 start it:
+- **STG-8** The stage session. The button of STG-7 and the item "Switch & log in" of STG-6 start it:
   - The source opens the portal on the display of the row, runs its handoff steps (FLOW-6, FLOW-12), and forwards after the target answers. The portal takes the keys, as in a usual session.
   - The source sends key events only: no pointer position, no button, no scroll, and no clipboard.
   - The device state is unverified (VER-2).

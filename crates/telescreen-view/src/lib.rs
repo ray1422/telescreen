@@ -567,15 +567,14 @@ pub enum LogInAction {
     Unavailable { reason: String },
 }
 
-/// An action of ACT-1.
+/// An action of ACT-1 that a click on the row can run (UI-18). An action that
+/// is not in ACT-1 is never the primary action: it is only in the "⋯" menu.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CandidateAction {
     SwitchAndControl,
     SwitchDisplayOnly,
     ControlOnly,
-    /// The candidate is in the login stage (STG-6).
-    SwitchAndLogIn,
 }
 
 /// The state of "Wake <peer>" (ACT-7).

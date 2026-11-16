@@ -502,12 +502,7 @@ struct RefreshButton: View {
     }
 
     /// Rust selects the primary action (UI-18).
-    var primary: Action? {
-        if candidate.primary == "switch_and_log_in" {
-            return Action(title: "Switch & log in", kind: "switch_and_log_in", unavailable: nil)
-        }
-        return actions.first { $0.kind == candidate.primary }
-    }
+    var primary: Action? { actions.first { $0.kind == candidate.primary } }
 
     var loginAction: Action? {
         switch candidate.logIn.kind {
@@ -591,6 +586,9 @@ struct CandidateRow: View {
     let request: ControlRequestRow?
     let style: Style
     @StateObject private var hover = Hover()
+    /// The pointer is on the "⋯" button (UI-18): the button has the fill, and
+    /// the row has none, so that the user sees which control a click runs.
+    @StateObject private var moreHover = Hover()
 
     private func subtitleStyle(online: Bool) -> Color {
         switch (style, online) {
@@ -650,9 +648,9 @@ struct CandidateRow: View {
                         .font(.system(size: 13, weight: .semibold))
                         .frame(width: size, height: size)
                         .background {
-                            if hover.on && style == .menu {
+                            if moreHover.on {
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(.primary.opacity(0.30))
+                                    .fill(.primary.opacity(style == .menu ? 0.30 : 0.10))
                             }
                         }
                         .contentShape(Rectangle())
@@ -661,12 +659,15 @@ struct CandidateRow: View {
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .onHover { moreHover.on = $0 }
                 .padding(.trailing, style == .menu ? 6 : 2)
                 .accessibilityLabel("More actions for \(candidate.label)")
             }
         }
         .background {
-            if hover.on {
+            // A row with no primary action does nothing on a click, so it
+            // has no hover fill.
+            if hover.on && !moreHover.on && model.primary != nil {
                 if style == .menu {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(menuHover)

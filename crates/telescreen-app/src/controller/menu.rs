@@ -342,11 +342,9 @@ impl Controller {
                                     candidate.switch_and_control =
                                         Some("At the login screen".into());
                                     candidate.control_only = Some("At the login screen".into());
-                                    candidate.primary = if candidate.log_in == LogInAction::Start {
-                                        Some(CandidateAction::SwitchAndLogIn)
-                                    } else {
-                                        Some(CandidateAction::SwitchDisplayOnly)
-                                    };
+                                    // UI-18: a click on the row never runs
+                                    // "Switch & log in". It is in the "⋯" menu.
+                                    candidate.primary = None;
                                 }
                                 candidate
                             })
