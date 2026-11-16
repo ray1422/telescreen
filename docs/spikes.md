@@ -40,7 +40,7 @@ Code: `spikes/linux-inject/`. Built on the receiving computer.
 
 | Question | Result |
 | --- | --- |
-| Protocols | niri has `zwlr_virtual_pointer_manager_v1` (version 2), `zwp_virtual_keyboard_manager_v1`, and `zwlr_layer_shell_v1`. Portal injection is not available (see `docs/hardware.md`). |
+| Protocols | niri has `zwlr_virtual_pointer_manager_v1` (version 2), `zwp_virtual_keyboard_manager_v1`, and `zwlr_layer_shell_v1`. Portal injection is not available. |
 | Absolute pointer | `create_virtual_pointer_with_output` plus `motion_absolute` with an extent of 10000x10000 puts the pointer at the given fraction of that output. The user confirmed the center, the 98% edges, the bottom-right corner, and the bottom-left corner. Thus the receiving computer does not need to read the pointer position. |
 | Click | `button(BTN_LEFT, pressed/released)` plus `frame` clicks. The user confirmed a click on a button at the bottom-left corner. |
 | uinput pointer | A uinput device with `REL_X`/`REL_Y` and `BTN_LEFT` moves the pointer (user confirmed). |

@@ -67,7 +67,7 @@ To run one test case, go to `tools/` and run `uv run --with pyyaml --with jsonsc
 - `docs/adr/0007` (tentative until the hardware tests run; user, 2026-10-27): session protocol, leases, heartbeat.
 - `docs/adr/0006`: all computers are symmetric peers. Each listens on its own endpoint, and the source dials the target. v0.1.0 has both directions (Mac to Linux first, then Linux to Mac).
 - `docs/spikes.md`: measured results of the throwaway spikes in `spikes/` (portal window, input tap, Linux injection, QUIC).
-- `docs/hardware.md`: measured facts about the user's display and the Linux receiving computer (niri: no portal injection; uinput is available).
+- `docs/hardware.md`: a local file that is not in the repository (gitignored). It holds the measured facts about the user's hardware. Read it if it exists. Write new measured hardware facts there, and not in committed files.
 
 ## Key concepts (spread across the docs)
 

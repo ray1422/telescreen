@@ -1,6 +1,6 @@
 # Telescreen specification
 
-Status: draft for v0.1.0, 2026-10-27. This file is the normative product specification. `docs/config.md` and `schema/config.schema.json` specify the config and the driver contract. `GLOSSARY.md` defines the terms. `docs/adr/` records why each decision was made. `docs/spikes.md` and `docs/hardware.md` record measured facts.
+Status: draft for v0.1.0, 2026-10-27. This file is the normative product specification. `docs/config.md` and `schema/config.schema.json` specify the config and the driver contract. `GLOSSARY.md` defines the terms. `docs/adr/` records why each decision was made. `docs/spikes.md` records measured facts.
 
 Requirement IDs (for example `FLOW-3`) are stable. Refer to them in tests, tasks, and reviews. "Must" is a requirement. "Should" is a strong recommendation. "Can" is a permission.
 
