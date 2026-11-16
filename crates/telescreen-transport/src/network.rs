@@ -163,7 +163,9 @@ struct Link {
     /// The stage from the Hello of the peer.
     stage: Option<Stage>,
     connection: Connection,
-    frames: mpsc::UnboundedSender<Message>,
+    /// `None` after a close request: the write task sends the waiting
+    /// messages, and then it closes the connection.
+    frames: Option<mpsc::UnboundedSender<Message>>,
 }
 
 type Events = mpsc::UnboundedSender<NetEvent>;
@@ -244,8 +246,10 @@ impl Shared {
             self.command(command);
         }
         accept.abort();
-        for (_, link) in self.links().drain() {
-            link.connection.close(0u32.into(), b"shutdown");
+        // Each write task sends its waiting messages, and then it closes its
+        // connection.
+        for link in self.links().values_mut() {
+            link.frames = None;
         }
         self.endpoint.wait_idle().await;
     }
@@ -282,8 +286,8 @@ impl Shared {
                 });
             }
             NetCommand::Send { peer, message } => {
-                if let Some(link) = self.links().get(&peer) {
-                    let _ = link.frames.send(message);
+                if let Some(frames) = self.links().get(&peer).and_then(|l| l.frames.as_ref()) {
+                    let _ = frames.send(message);
                 }
             }
             NetCommand::SendPointer { peer, datagram } => {
@@ -294,8 +298,9 @@ impl Shared {
                 }
             }
             NetCommand::Close { peer } => {
-                if let Some(link) = self.links().get(&peer) {
-                    link.connection.close(0u32.into(), b"closed");
+                // The write task closes the connection after the waiting messages.
+                if let Some(link) = self.links().get_mut(&peer) {
+                    link.frames = None;
                 }
             }
             NetCommand::Wake {
@@ -541,7 +546,7 @@ impl Shared {
                 id,
                 stage,
                 connection: connection.clone(),
-                frames,
+                frames: Some(frames),
             },
         );
         if let Some(old) = old {
@@ -559,7 +564,7 @@ impl Shared {
         });
 
         let heartbeat = self.timing.auto_heartbeat.then_some(self.timing.heartbeat);
-        tokio::spawn(write_loop(send, frame_rx, heartbeat));
+        tokio::spawn(write_loop(connection.clone(), send, frame_rx, heartbeat));
         let datagrams = {
             let (shared, peer, connection) = (self.clone(), peer.clone(), connection.clone());
             tokio::spawn(async move {
@@ -609,7 +614,14 @@ impl Shared {
     }
 }
 
+/// The longest wait for the peer to get the last messages before a close.
+const CLOSE_FLUSH: Duration = Duration::from_secs(1);
+
+/// Writes frames until the sender goes away. Then it waits until the peer has
+/// the written frames, and it closes the connection. A close with no wait
+/// discards the frames that are not sent.
 async fn write_loop(
+    connection: Connection,
     mut send: SendStream,
     mut frames: mpsc::UnboundedReceiver<Message>,
     heartbeat: Option<Duration>,
@@ -620,7 +632,7 @@ async fn write_loop(
         let message = tokio::select! {
             message = frames.recv() => match message {
                 Some(message) => message,
-                None => return,
+                None => break,
             },
             _ = ticker.tick(), if heartbeat.is_some() => Message::Heartbeat,
         };
@@ -628,6 +640,10 @@ async fn write_loop(
             return;
         }
     }
+    if send.finish().is_ok() {
+        let _ = tokio::time::timeout(CLOSE_FLUSH, send.stopped()).await;
+    }
+    connection.close(0u32.into(), b"closed");
 }
 
 /// About 8 pointer datagrams (64 ms at 125 datagrams each second) wait to be sent.

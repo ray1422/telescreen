@@ -216,6 +216,53 @@ fn close_reports_disconnect_on_both_sides() {
     assert!(matches!(next(&pc1), NetEvent::Disconnected { .. }));
 }
 
+fn send_ends(from: &Peer, to: &Peer, count: u64) {
+    for i in 0..count {
+        from.network.send(NetCommand::Send {
+            peer: to.id.clone(),
+            message: Message::End {
+                session: SessionId(i),
+                reason: telescreen_core::wire::EndReason::LoginComplete,
+            },
+        });
+    }
+}
+
+fn expect_ends(peer: &Peer, count: u64) {
+    for i in 0..count {
+        match next(peer) {
+            NetEvent::Message {
+                message: Message::End { session, .. },
+                ..
+            } => assert_eq!(session, SessionId(i)),
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+/// STG-9: the login stage sends `End` and closes at once. The source must
+/// get the `End`, else it cannot wait for the desktop session.
+#[test]
+fn stg9_a_close_sends_the_waiting_messages_first() {
+    let (mac, pc1) = connected_pair();
+    send_ends(&pc1, &mac, 50);
+    pc1.network.send(NetCommand::Close {
+        peer: mac.id.clone(),
+    });
+    expect_ends(&mac, 50);
+    assert!(matches!(next(&mac), NetEvent::Disconnected { .. }));
+    assert!(matches!(next(&pc1), NetEvent::Disconnected { .. }));
+}
+
+#[test]
+fn stg9_a_network_that_stops_sends_the_waiting_messages_first() {
+    let (mac, pc1) = connected_pair();
+    send_ends(&pc1, &mac, 50);
+    drop(pc1);
+    expect_ends(&mac, 50);
+    assert!(matches!(next(&mac), NetEvent::Disconnected { .. }));
+}
+
 #[test]
 fn ac18_peer_that_stops_is_lost() {
     let (mac, pc1) = connected_pair();
